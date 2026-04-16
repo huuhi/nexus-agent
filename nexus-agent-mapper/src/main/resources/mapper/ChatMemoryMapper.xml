@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.ChatMemoryMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.ChatHistory">
+            <id property="id" column="id" jdbcType="BIGINT"/>
+            <result property="userId" column="user_id" jdbcType="BIGINT"/>
+            <result property="content" column="content" jdbcType="OTHER"/>
+            <result property="type" column="type" jdbcType="OTHER"/>
+            <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
+            <result property="sessionId" column="session_id" jdbcType="OTHER"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,user_id,content,
+        type,create_at,session_id
+    </sql>
+    <insert id="insertBatch" parameterType="java.util.List">
+        insert into chat_memory(content,type,session_id,user_id) values
+        <foreach collection="list" item="item" separator=",">
+            (#{item.content}::jsonb,#{item.type}::message_type,#{item.sessionId}::uuid,#{userId})
+        </foreach>
+    </insert>
+    <delete id="delAllByMemoryId">
+        delete from chat_memory where session_id=#{sessionId}::uuid
+
+    </delete>
+    <select id="getAllByMemoryId" resultMap="BaseResultMap">
+        select * from chat_memory where session_id=#{sessionId}::uuid
+        order by create_at
+    </select>
+</mapper>

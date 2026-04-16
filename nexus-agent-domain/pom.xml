@@ -9,7 +9,7 @@
         <version>0.0.1-SNAPSHOT</version>
     </parent>
 
-    <artifactId>nexus-agent-mapper</artifactId>
+    <artifactId>nexus-agent-domain</artifactId>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -20,11 +20,22 @@
     <dependencies>
         <dependency>
             <groupId>com.huzhijian</groupId>
-            <artifactId>nexus-agent-domain</artifactId>
+            <artifactId>nexus-agent-common</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
-
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
 
     </dependencies>
-
 </project>

@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.UserMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.User">
+            <id property="id" column="id" jdbcType="BIGINT"/>
+            <result property="email" column="email" jdbcType="VARCHAR"/>
+            <result property="username" column="username" jdbcType="VARCHAR"/>
+            <result property="password" column="password" jdbcType="CHAR"/>
+            <result property="avatarImg" column="avatar_img" jdbcType="VARCHAR"/>
+            <result property="registerTime" column="register_time" jdbcType="TIMESTAMP"/>
+            <result property="apiQuota" column="api_quota" jdbcType="SMALLINT"/>
+            <result property="githubId" column="github_id" jdbcType="VARCHAR"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,email,username,
+        password,avatar_img,register_time,
+        api_quota,github_id
+    </sql>
+
+    <select id="selectByPrimaryKey" parameterType="java.lang.Long" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List" />
+        from user
+        where  id = #{id,jdbcType=BIGINT} 
+    </select>
+
+    <delete id="deleteByPrimaryKey" parameterType="java.lang.Long">
+        delete from user
+        where  id = #{id,jdbcType=BIGINT} 
+    </delete>
+    <insert id="insert" keyColumn="id" keyProperty="id" parameterType="com.huzhijian.nexusagentweb.domain.User" useGeneratedKeys="true">
+        insert into user
+        ( id,email,username
+        ,password,avatar_img,register_time
+        ,api_quota,github_id)
+        values (#{id,jdbcType=BIGINT},#{email,jdbcType=VARCHAR},#{username,jdbcType=VARCHAR}
+        ,#{password,jdbcType=CHAR},#{avatarImg,jdbcType=VARCHAR},#{registerTime,jdbcType=TIMESTAMP}
+        ,#{apiQuota,jdbcType=SMALLINT},#{githubId,jdbcType=VARCHAR})
+    </insert>
+    <insert id="insertSelective" keyColumn="id" keyProperty="id" parameterType="com.huzhijian.nexusagentweb.domain.User" useGeneratedKeys="true">
+        insert into user
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+                <if test="id != null">id,</if>
+                <if test="email != null">email,</if>
+                <if test="username != null">username,</if>
+                <if test="password != null">password,</if>
+                <if test="avatarImg != null">avatar_img,</if>
+                <if test="registerTime != null">register_time,</if>
+                <if test="apiQuota != null">api_quota,</if>
+                <if test="githubId != null">github_id,</if>
+        </trim>
+        <trim prefix="values (" suffix=")" suffixOverrides=",">
+                <if test="id != null">#{id,jdbcType=BIGINT},</if>
+                <if test="email != null">#{email,jdbcType=VARCHAR},</if>
+                <if test="username != null">#{username,jdbcType=VARCHAR},</if>
+                <if test="password != null">#{password,jdbcType=CHAR},</if>
+                <if test="avatarImg != null">#{avatarImg,jdbcType=VARCHAR},</if>
+                <if test="registerTime != null">#{registerTime,jdbcType=TIMESTAMP},</if>
+                <if test="apiQuota != null">#{apiQuota,jdbcType=SMALLINT},</if>
+                <if test="githubId != null">#{githubId,jdbcType=VARCHAR},</if>
+        </trim>
+    </insert>
+    <update id="updateByPrimaryKeySelective" parameterType="com.huzhijian.nexusagentweb.domain.User">
+        update user
+        <set>
+                <if test="email != null">
+                    email = #{email,jdbcType=VARCHAR},
+                </if>
+                <if test="username != null">
+                    username = #{username,jdbcType=VARCHAR},
+                </if>
+                <if test="password != null">
+                    password = #{password,jdbcType=CHAR},
+                </if>
+                <if test="avatarImg != null">
+                    avatar_img = #{avatarImg,jdbcType=VARCHAR},
+                </if>
+                <if test="registerTime != null">
+                    register_time = #{registerTime,jdbcType=TIMESTAMP},
+                </if>
+                <if test="apiQuota != null">
+                    api_quota = #{apiQuota,jdbcType=SMALLINT},
+                </if>
+                <if test="githubId != null">
+                    github_id = #{githubId,jdbcType=VARCHAR},
+                </if>
+        </set>
+        where   id = #{id,jdbcType=BIGINT} 
+    </update>
+    <update id="updateByPrimaryKey" parameterType="com.huzhijian.nexusagentweb.domain.User">
+        update user
+        set 
+            email =  #{email,jdbcType=VARCHAR},
+            username =  #{username,jdbcType=VARCHAR},
+            password =  #{password,jdbcType=CHAR},
+            avatar_img =  #{avatarImg,jdbcType=VARCHAR},
+            register_time =  #{registerTime,jdbcType=TIMESTAMP},
+            api_quota =  #{apiQuota,jdbcType=SMALLINT},
+            github_id =  #{githubId,jdbcType=VARCHAR}
+        where   id = #{id,jdbcType=BIGINT} 
+    </update>
+</mapper>

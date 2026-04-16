@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: nexus-agent-web
+  profiles:
+    active: dev
+logging:
+  level:
+    com:
+      huzhijian:
+        nexusagentweb: debug
