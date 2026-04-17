@@ -15,4 +15,9 @@
         knowledge_base_id,file_id,status,
         fail_reason
     </sql>
+
+    <update id="updateKnowledge">
+        update knowledge_base_file set status=cast(#{status} AS upload_status),fail_reason=#{failReason}
+        where knowledge_base_id=#{knowledgeBaseId} and file_id=#{fileId}
+    </update>
 </mapper>

@@ -7,6 +7,7 @@ import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.SkillMcpInformationService;
+import com.huzhijian.nexusagentweb.tools.RagTool;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
@@ -36,10 +37,12 @@ public class ChatServiceImpl implements ChatService {
     private final StreamingChatModel model;
     private final SkillMcpInformationService skillMcpInformationService;
     private final PgChatMemoryStore chatMemoryStore;
+    private final RagTool ragTool;
 
-    public ChatServiceImpl(StreamingChatModel model, SkillMcpInformationService skillMcpInformationService, PgChatMemoryStore chatMemoryStore) {
+    public ChatServiceImpl(StreamingChatModel model, SkillMcpInformationService skillMcpInformationService, PgChatMemoryStore chatMemoryStore, RagTool ragTool) {
         this.skillMcpInformationService = skillMcpInformationService;
         this.chatMemoryStore = chatMemoryStore;
+        this.ragTool = ragTool;
         Long userConfig = UserConfigContextHolder.getUserConfig();
         this.model = model;
         //TODO 使用用户的配置！
@@ -63,6 +66,7 @@ public class ChatServiceImpl implements ChatService {
 
         AiServices<ChatAssistant> chatAssistantAiServices = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
+                .tools(ragTool)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory.builder()
                         .chatMemoryStore(chatMemoryStore)
                         .maxTokens(8000, new OpenAiTokenCountEstimator("gpt-4o"))

@@ -1,6 +1,6 @@
 package com.huzhijian.nexusagentweb.mapper;
 
-import com.huzhijian.nexusagentweb.domain.File;
+import com.huzhijian.nexusagentweb.domain.KnowledgeFile;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 
 /**
@@ -9,7 +9,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 * @createDate 2026-04-16 20:02:47
 * @Entity com.huzhijian.nexusagentweb.domain.File
 */
-public interface FileMapper extends BaseMapper<File> {
+public interface FileMapper extends BaseMapper<KnowledgeFile> {
 
 }
 

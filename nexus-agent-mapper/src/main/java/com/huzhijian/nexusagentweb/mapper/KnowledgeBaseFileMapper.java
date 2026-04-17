@@ -3,6 +3,8 @@ package com.huzhijian.nexusagentweb.mapper;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBaseFile;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 
+import java.util.List;
+
 /**
 * @author windows
 * @description 针对表【knowledge_base_file】的数据库操作Mapper
@@ -11,6 +13,8 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 */
 public interface KnowledgeBaseFileMapper extends BaseMapper<KnowledgeBaseFile> {
 
+
+    void updateKnowledge(KnowledgeBaseFile knowledgeBaseFile);
 }
 
 

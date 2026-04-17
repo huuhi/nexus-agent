@@ -3,6 +3,8 @@ package com.huzhijian.nexusagentweb.service;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.baomidou.mybatisplus.extension.service.IService;
 
+import java.util.List;
+
 /**
 * @author windows
 * @description 针对表【knowledge_base】的数据库操作Service
@@ -10,4 +12,5 @@ import com.baomidou.mybatisplus.extension.service.IService;
 */
 public interface KnowledgeBaseService extends IService<KnowledgeBase> {
 
+    String insertKnowledge(List<Long> fileIds,Integer knowledgeId);
 }

@@ -4,6 +4,7 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 /nexus-agent-web/src/main/resources/application-dev.yml
+/nexus-agent-web/src/main/resources/.env
 ### STS ###
 .apt_generated
 .classpath

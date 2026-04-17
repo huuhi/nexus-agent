@@ -1,9 +1,14 @@
 package com.huzhijian.nexusagentweb.domain;
 
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import java.util.Date;
+
+import com.huzhijian.nexusagentweb.em.UploadStatus;
+import com.huzhijian.nexusagentweb.typehandler.PgEnumTypeHandler;
+import lombok.Builder;
 import lombok.Data;
 
 /**
@@ -12,7 +17,8 @@ import lombok.Data;
  */
 @TableName(value ="file")
 @Data
-public class File {
+@Builder
+public class KnowledgeFile {
     /**
      * 
      */
@@ -47,7 +53,8 @@ public class File {
     /**
      * 
      */
-    private Object uploadStatus;
+    @TableField(value = "upload_status",typeHandler = PgEnumTypeHandler.class)
+    private UploadStatus uploadStatus;
 
     /**
      * 
