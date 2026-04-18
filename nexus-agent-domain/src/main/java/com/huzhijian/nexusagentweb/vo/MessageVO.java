@@ -16,7 +16,7 @@ import java.util.List;
 @Builder
 @Data
 public class MessageVO {
-    private MessageType type;
+    private String type;
     private String content;
     private String thinking;
 //    private UserMessageVO userMessageVO;
@@ -24,7 +24,6 @@ public class MessageVO {
     private ToolResultVO toolResultVO;
 //    工具请求参数
     private List<ToolRequestVO> toolRequestList;
-    private String toolName;
     @Data
     @Builder
     public static class UserMessageVO{
