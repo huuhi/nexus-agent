@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.controller;
 
+import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import org.springframework.http.ResponseEntity;
@@ -29,8 +30,8 @@ public class FileController {
         return ResponseEntity.ok(url);
     }
     @PostMapping
-    public ResponseEntity<List<String>> uploadFile(MultipartFile[] files){
-        List<String> list = fileService.uploadFile(files);
+    public ResponseEntity<List<KnowledgeFileVO>> uploadFile(@RequestParam MultipartFile[] files, @RequestParam BizType bizType){
+        List<KnowledgeFileVO> list = fileService.uploadFile(files,bizType);
         return ResponseEntity.ok(list);
     }
 

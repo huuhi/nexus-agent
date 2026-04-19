@@ -2,8 +2,6 @@ package com.huzhijian.nexusagentweb.utils;
 
 
 
-import org.apache.tika.metadata.Office;
-
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -18,7 +16,10 @@ public class FileTypeUtils {
     private static final Set<String> SUPPORTED_FILE_EXTENSIONS = new HashSet<>(Arrays.asList(
         "txt", "md", "markdown", "html", "htm", "csv",
         "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-         "pdf","one"
+         "pdf","one","jpg",
+            "png",
+            "gif",
+            "webp"
     ));
     public static final Set<String> MS_OFFICE = new HashSet<>(Arrays.asList(
              "csv", "doc", "docx", "xls", "xlsx", "ppt", "pptx","one"
@@ -32,7 +33,7 @@ public class FileTypeUtils {
     /**
      * 判断文件是否为支持的文档类型
      * 
-     * @param originalFilename 文件扩展名
+     * @param extension 文件扩展名
      * @return 如果是支持的文档类型返回true，否则返回false
      */
     public static boolean isSupportedDocument(String extension) {

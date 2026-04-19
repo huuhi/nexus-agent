@@ -1,12 +1,14 @@
 package com.huzhijian.nexusagentweb.config;
 
 
+import com.huzhijian.nexusagentweb.context.MessageMetadataContext;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageDeserializer;
 import dev.langchain4j.data.message.ChatMessageSerializer;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -51,9 +53,10 @@ public class PgChatMemoryStore implements ChatMemoryStore {
         if (list.size()>count){
             List<ChatMessage> needAdd = list.subList(count, list.size());
             for (ChatMessage chatMessage : needAdd) {
-                log.info("类型：{},chatMessage:{}",chatMessage.type(),chatMessage);
+                if (chatMessage instanceof UserMessage userMessage && MessageMetadataContext.get()!=null){
+                    userMessage.attributes().putAll(MessageMetadataContext.get());
+                }
                 String jsonString = ChatMessageSerializer.messageToJson(chatMessage);
-                log.info("JSON:{}",jsonString);
                 ChatHistory chatHistory = ChatHistory.builder()
                         .sessionId(sessionId)
                         .type(chatMessage.type().name())

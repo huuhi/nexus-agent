@@ -1,9 +1,12 @@
 package com.huzhijian.nexusagentweb.service;
 
+import dev.langchain4j.data.message.Content;
 import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.V;
+
+import java.util.List;
 
 /**
  * @author 胡志坚
@@ -12,5 +15,6 @@ import dev.langchain4j.service.V;
  * 说明:
  */
 public interface ChatAssistant {
-    TokenStream chat(@UserMessage String msg, @V("sessionId") @MemoryId Object memoryId);
+
+    TokenStream chat(@UserMessage List<Content>contents, @V("sessionId") @MemoryId Object memoryId);
 }

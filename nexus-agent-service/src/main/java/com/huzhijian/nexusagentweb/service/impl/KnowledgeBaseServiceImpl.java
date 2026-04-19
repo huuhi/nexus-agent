@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBaseFile;
-import com.huzhijian.nexusagentweb.domain.KnowledgeFile;
+import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.service.FileService;
@@ -43,7 +43,7 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
             throw new UnauthorizedException("未登录！");
         }
 //        这里拿到文件之后，异步处理
-        List<KnowledgeFile> list = fileService.query().in("id", fileIds)
+        List<SysFile> list = fileService.query().in("id", fileIds)
                 .eq("user_id", userId)
                 .list();
         KnowledgeBase knowledgeBase = query().eq("id", knowledgeId).one();
@@ -51,7 +51,7 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
         if (knowledgeBase==null) return "知识库不存在！";
 //        先保存
         List<KnowledgeBaseFile> knowledgeBaseFileList=new ArrayList<>();
-        for (KnowledgeFile knowledgeFile : list) {
+        for (SysFile knowledgeFile : list) {
             KnowledgeBaseFile knowledgeBaseFile = KnowledgeBaseFile.builder().status(UploadStatus.PROCESSING)
                     .fileId(knowledgeFile.getId())
                     .knowledgeBaseId(knowledgeId)

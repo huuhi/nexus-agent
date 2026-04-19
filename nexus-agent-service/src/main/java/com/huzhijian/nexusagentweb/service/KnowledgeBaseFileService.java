@@ -3,7 +3,7 @@ package com.huzhijian.nexusagentweb.service;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBaseFile;
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.huzhijian.nexusagentweb.domain.KnowledgeFile;
+import com.huzhijian.nexusagentweb.domain.SysFile;
 
 import java.util.List;
 
@@ -13,6 +13,6 @@ import java.util.List;
 * @createDate 2026-04-16 20:02:41
 */
 public interface KnowledgeBaseFileService extends IService<KnowledgeBaseFile> {
-    void embedding(List<KnowledgeFile> list, Long userId, KnowledgeBase knowledgeBase);
+    void embedding(List<SysFile> list, Long userId, KnowledgeBase knowledgeBase);
 
 }

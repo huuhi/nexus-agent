@@ -1,25 +1,31 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
+import com.aliyuncs.exceptions.ClientException;
 import com.huzhijian.nexusagentweb.config.PgChatMemoryStore;
+import com.huzhijian.nexusagentweb.context.MessageMetadataContext;
 import com.huzhijian.nexusagentweb.context.UserConfigContextHolder;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
-import com.huzhijian.nexusagentweb.domain.User;
+import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
+import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.em.MessageType;
+import com.huzhijian.nexusagentweb.em.UserMessageType;
+import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.SkillMcpInformationService;
 import com.huzhijian.nexusagentweb.tools.RagTool;
+import com.huzhijian.nexusagentweb.utils.FileUtils;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.message.*;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
-import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
-import dev.langchain4j.model.openai.OpenAiChatModel;
-import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
@@ -29,9 +35,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static com.huzhijian.nexusagentweb.content.MetadataKeyContent.*;
 
 /**
  * @author 胡志坚
@@ -46,12 +53,14 @@ public class ChatServiceImpl implements ChatService {
     private final SkillMcpInformationService skillMcpInformationService;
     private final PgChatMemoryStore chatMemoryStore;
     private final RagTool ragTool;
+    private final FileUtils fileUtils;
     private final ChatHistoryListService chatHistoryListService;
 
-    public ChatServiceImpl(StreamingChatModel model, SkillMcpInformationService skillMcpInformationService, PgChatMemoryStore chatMemoryStore, RagTool ragTool, ChatHistoryListService chatHistoryListService) {
+    public ChatServiceImpl(StreamingChatModel model, SkillMcpInformationService skillMcpInformationService, PgChatMemoryStore chatMemoryStore, RagTool ragTool, FileUtils fileUtils, ChatHistoryListService chatHistoryListService) {
         this.skillMcpInformationService = skillMcpInformationService;
         this.chatMemoryStore = chatMemoryStore;
         this.ragTool = ragTool;
+        this.fileUtils = fileUtils;
         this.chatHistoryListService = chatHistoryListService;
         Long userConfig = UserConfigContextHolder.getUserConfig();
         this.model = model;
@@ -97,7 +106,24 @@ public class ChatServiceImpl implements ChatService {
             chatAssistantAiServices.toolProvider(mcpToolProvider);
         }
         ChatAssistant chatAssistant = chatAssistantAiServices.build();
-        TokenStream tokenStream = chatAssistant.chat(chatDTO.getMessage(),sessionId);
+        List<ChatUserMessage> messages = chatDTO.getMessages();
+
+        List<Content> contents;
+        try {
+            contents = getContents(messages);
+        } catch (ClientException e) {
+            throw new ValidationException("参数错误!");
+        } catch (IOException e) {
+            throw new ParserFileException("解析文件失败!");
+        }
+
+
+        TokenStream tokenStream;
+        try {
+            tokenStream = chatAssistant.chat(contents,sessionId);
+        } finally {
+            MessageMetadataContext.clear();
+        }
         tokenStream.onPartialThinking(thinking -> {
 //            思考
             if (isFinished.get()) return;
@@ -168,7 +194,7 @@ public class ChatServiceImpl implements ChatService {
 //                判断是否为新对话，如果是添加标题，插入会话列表
                 if (isNewSession){
                     // 根据用户的问题和回答，异步生成标题
-                    chatHistoryListService.createTitle(sessionId,chatDTO.getMessage(),answer.toString(),userId);
+                    chatHistoryListService.createTitle(sessionId,getUserMessage(messages),answer.toString(),userId);
                 }
                 sseEmitter.send(SseEmitter.event().name("finish").data("DONE"));
                 sseEmitter.complete();
@@ -180,6 +206,42 @@ public class ChatServiceImpl implements ChatService {
 
         }).start();
         return sseEmitter;
+    }
+    private String getUserMessage(List<ChatUserMessage> messages){
+        // TODO 理论上，用户消息都没有的话，应该在前面就处理了（抛出错误）
+        return messages.stream()
+                .filter(message -> message
+                        .getType().equals(UserMessageType.TEXT))
+                .findFirst().orElse(ChatUserMessage.builder().content("").build()).getContent();
+    }
+
+    private List<Content> getContents(List<ChatUserMessage> messages) throws ClientException, IOException {
+        List<Content> contents=new ArrayList<>();
+        Map<String, Object> allMetadata=new HashMap<>();
+        for (ChatUserMessage message : messages) {
+            Map<String, Object> metadata = message.getMetadata();
+            switch (message.getType()){
+                case UserMessageType.TEXT -> contents.add(TextContent.from(message.getContent()));
+                case UserMessageType.FILE -> {
+                    allMetadata.putAll(metadata);
+                    //解析
+                    String url = metadata.get(FILE_URL).toString();
+                    SysFile knowledgeFile = SysFile.builder().fileUrl(url).extension(metadata.get(FILE_TYPE).toString()).build();
+                    Document document = fileUtils.getDocument(knowledgeFile);
+                    String fileText = """
+                    文件%s,的内容：%s
+                    """.formatted(metadata.get(FILE_NAME),document.toTextSegment().text());
+                    contents.add(TextContent.from(fileText));
+                }
+                case UserMessageType.IMAGE -> {
+                    String url = metadata.get(FILE_URL).toString();
+                    allMetadata.putAll(metadata);
+                    contents.add(ImageContent.from(url));
+                }
+            }
+        }
+        MessageMetadataContext.set(allMetadata);
+        return contents;
     }
 
 }

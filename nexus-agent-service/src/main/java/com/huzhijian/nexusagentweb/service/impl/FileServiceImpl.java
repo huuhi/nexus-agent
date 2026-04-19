@@ -4,7 +4,8 @@ import cn.hutool.core.bean.BeanUtil;
 import com.aliyuncs.exceptions.ClientException;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
-import com.huzhijian.nexusagentweb.domain.KnowledgeFile;
+import com.huzhijian.nexusagentweb.domain.SysFile;
+import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.service.FileService;
@@ -28,7 +29,7 @@ import java.util.List;
 */
 @Service
 @Slf4j
-public class FileServiceImpl extends ServiceImpl<FileMapper, KnowledgeFile>
+public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
     implements FileService{
 
     private final AliOssUtil ossUtil;
@@ -39,12 +40,12 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, KnowledgeFile>
 
     @Override
     @Transactional
-    public List<String> uploadFile(MultipartFile[] files) {
+    public List<KnowledgeFileVO> uploadFile(MultipartFile[] files,BizType bizType) {
         if (files==null||files.length==0){
             throw new ValidationException("文件为空！");
         }
         List<String> urlList=new ArrayList<>();
-        List<KnowledgeFile> fileList =new ArrayList<>();
+        List<SysFile> fileList =new ArrayList<>();
         Long userId = UserContextHolder.getUserId();
         for (MultipartFile file : files) {
             if (file==null||file.isEmpty()) continue;
@@ -65,11 +66,12 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, KnowledgeFile>
             }catch (IOException e){
                 failReason="IO异常！"+e.getMessage().substring(0,450);
             }
-            KnowledgeFile knowledgeFile = KnowledgeFile.builder()
+            SysFile knowledgeFile = SysFile.builder()
                     .fileSize(file.getSize())
                     .fileName(originalFilename)
                     .fileUrl(url)
-                    .extension(fileExtension)
+                    .extension(fileExtension.toUpperCase())
+                    .bizType(bizType)
                     .uploadStatus(failReason.isEmpty()? UploadStatus.SUCCESS: UploadStatus.FAILED)
                     .failReason(failReason)
                     .userId(userId)
@@ -77,7 +79,8 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, KnowledgeFile>
             fileList.add(knowledgeFile);
         }
         saveBatch(fileList);
-        return urlList;
+        return BeanUtil.copyToList(fileList, KnowledgeFileVO.class);
+
     }
 
 
@@ -104,7 +107,8 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, KnowledgeFile>
         if (userId==null){
             return List.of();
         }
-        List<KnowledgeFile> list = query().eq("user_id", userId)
+        List<SysFile> list = query().eq("user_id", userId)
+                .eq("biz_type", BizType.KNOWLEDGE)
                 .like(fileName != null, "file_name", fileName)
                 .list();
         return BeanUtil.copyToList(list, KnowledgeFileVO.class);
