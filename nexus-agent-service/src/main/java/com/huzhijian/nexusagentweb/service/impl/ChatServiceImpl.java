@@ -24,6 +24,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.*;
 import dev.langchain4j.mcp.McpToolProvider;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
@@ -94,9 +95,10 @@ public class ChatServiceImpl implements ChatService {
         AiServices<ChatAssistant> chatAssistantAiServices = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
                 .tools(ragTool)
-                .chatMemoryProvider(memoryId -> TokenWindowChatMemory.builder()
+                .chatMemoryProvider(memoryId -> MessageWindowChatMemory.builder()
                         .chatMemoryStore(chatMemoryStore)
-                        .maxTokens(8000, new OpenAiTokenCountEstimator("gpt-4o"))
+                        .maxMessages(20)
+//                        .maxTokens(8000, new OpenAiTokenCountEstimator("gpt-4o"))
                         .id(sessionId)
                         .build());
         if (skills!=null){
@@ -129,7 +131,7 @@ public class ChatServiceImpl implements ChatService {
             if (isFinished.get()) return;
             try {
                 MessageVO chunk = MessageVO.builder()
-                        .type(MessageType.THINK.getValue())
+                        .type(MessageType.THINK)
                         .thinking(thinking.text()).build();
                 sseEmitter.send(
                         SseEmitter.event().name("message")
@@ -143,7 +145,7 @@ public class ChatServiceImpl implements ChatService {
             answer.append(token);
             try {
                 MessageVO chunk = MessageVO.builder()
-                        .type(MessageType.CONTENT.getValue())
+                        .type(MessageType.CONTENT)
                         .content(token).build();
                 sseEmitter.send(SseEmitter.event().name("message")
                         .data(chunk));
@@ -158,7 +160,7 @@ public class ChatServiceImpl implements ChatService {
                     .toolName(request.name())
                     .result(consumer.result()).build();
             MessageVO messageVO = MessageVO.builder()
-                    .type(MessageType.TOOL_EXECUTION_RESULT.getValue())
+                    .type(MessageType.TOOL_EXECUTION_RESULT)
                     .toolResultVO(resultVO)
                     .build();
             try {
@@ -177,7 +179,7 @@ public class ChatServiceImpl implements ChatService {
                     .id(toolCall.id())
                     .build();
             MessageVO msg = MessageVO.builder()
-                    .type(MessageType.TOOL_EXECUTION.getValue())
+                    .type(MessageType.TOOL_EXECUTION)
                     .toolRequestList(List.of(toolRequestVO))
                     .build();
             try {
@@ -201,7 +203,7 @@ public class ChatServiceImpl implements ChatService {
             } catch (IOException e) {
                 sseEmitter.completeWithError(e);
             }
-            log.info("思考内容:{},完整回复:{},Token消耗:{}",response.aiMessage().thinking(), response.aiMessage().text(), response.tokenUsage());
+//            log.info("思考内容:{},完整回复:{},Token消耗:{}",response.aiMessage().thinking(), response.aiMessage().text(), response.tokenUsage());
         }).onError(error -> {
 
         }).start();
@@ -217,13 +219,13 @@ public class ChatServiceImpl implements ChatService {
 
     private List<Content> getContents(List<ChatUserMessage> messages) throws ClientException, IOException {
         List<Content> contents=new ArrayList<>();
-        Map<String, Object> allMetadata=new HashMap<>();
+        List< Map<String, Object>> attachedFiles=new ArrayList<>();
         for (ChatUserMessage message : messages) {
             Map<String, Object> metadata = message.getMetadata();
             switch (message.getType()){
                 case UserMessageType.TEXT -> contents.add(TextContent.from(message.getContent()));
                 case UserMessageType.FILE -> {
-                    allMetadata.putAll(metadata);
+                    attachedFiles.add(metadata);
                     //解析
                     String url = metadata.get(FILE_URL).toString();
                     SysFile knowledgeFile = SysFile.builder().fileUrl(url).extension(metadata.get(FILE_TYPE).toString()).build();
@@ -235,12 +237,12 @@ public class ChatServiceImpl implements ChatService {
                 }
                 case UserMessageType.IMAGE -> {
                     String url = metadata.get(FILE_URL).toString();
-                    allMetadata.putAll(metadata);
+                    attachedFiles.add(metadata);
                     contents.add(ImageContent.from(url));
                 }
             }
         }
-        MessageMetadataContext.set(allMetadata);
+        MessageMetadataContext.set(Map.of(ATTACHED_FILES, attachedFiles));
         return contents;
     }
 

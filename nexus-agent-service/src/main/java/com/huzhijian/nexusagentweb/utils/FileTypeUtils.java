@@ -16,7 +16,7 @@ public class FileTypeUtils {
     private static final Set<String> SUPPORTED_FILE_EXTENSIONS = new HashSet<>(Arrays.asList(
         "txt", "md", "markdown", "html", "htm", "csv",
         "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-         "pdf","one","jpg",
+         "pdf","one","jpg","jpeg",
             "png",
             "gif",
             "webp"
@@ -28,7 +28,7 @@ public class FileTypeUtils {
             "jpg",
             "png",
             "gif",
-            "webp"
+            "webp","jpeg"
     ));
     /**
      * 判断文件是否为支持的文档类型
@@ -42,16 +42,12 @@ public class FileTypeUtils {
     /**
      * 判断文件是否为支持的图片类型
      *
-     * @param originalFilename 文件扩展名
+     * @param extension 文件扩展名
      * @return 如果是支持的文档类型返回true，否则返回false
      */
-    public static boolean isSupportedImage(String originalFilename) {
+    public static boolean isSupportedImage(String extension) {
         // 方法1: 通过文件扩展名判断
-        if (originalFilename != null) {
-            String extension = getFileExtension(originalFilename).toLowerCase();
-            return SUPPORTED_IMAGE_EXTENSIONS.contains(extension);
-        }
-        return false;
+        return SUPPORTED_IMAGE_EXTENSIONS.contains(extension);
     }
     
     /**

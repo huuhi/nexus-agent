@@ -49,7 +49,7 @@ public class AliOssUtil {
         // 填写Object完整路径，例如202406/1.png。Object完整路径中不能包含Bucket名称。
         //获取当前系统日期的字符串,格式为 yyyy/MM
         //生成一个新的不重复的文件名
-        String newFileName = UUID.randomUUID() + originalFilename.substring(originalFilename.lastIndexOf("."));
+        String newFileName = UUID.randomUUID() + "."+originalFilename;
         String objectName = dir + "/" + newFileName;
         log.info("objectName: {}", objectName);
 

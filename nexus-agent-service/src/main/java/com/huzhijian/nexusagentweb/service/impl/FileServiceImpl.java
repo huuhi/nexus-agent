@@ -7,6 +7,7 @@ import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
+import com.huzhijian.nexusagentweb.exception.NotSupportException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
@@ -44,7 +45,6 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         if (files==null||files.length==0){
             throw new ValidationException("文件为空！");
         }
-        List<String> urlList=new ArrayList<>();
         List<SysFile> fileList =new ArrayList<>();
         Long userId = UserContextHolder.getUserId();
         for (MultipartFile file : files) {
@@ -60,7 +60,6 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
             try {
                 url= ossUtil.uploadDocument(file.getBytes(), fileExtension,userId);
                 log.info("添加成功，url:{}",url);
-                urlList.add(url);
             } catch (ClientException e) {
                 failReason="配置错误！"+e.getMessage().substring(0,450);
             }catch (IOException e){
@@ -91,14 +90,16 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
             throw new ValidationException("文件为空！");
         }
         String originalFilename = file.getOriginalFilename();
-        if (FileTypeUtils.isSupportedImage(originalFilename)){
+        String extension = FileTypeUtils.getFileExtension(originalFilename);
+        if (FileTypeUtils.isSupportedImage(extension)) {
             try {
-                return ossUtil.uploadImage(file.getBytes(), originalFilename);
+                return ossUtil.uploadImage(file.getBytes(), extension);
             } catch (ClientException | IOException e) {
                 throw new ValidationException(e.getMessage());
             }
+        }else{
+            throw new NotSupportException("不支持的图片类型！");
         }
-        return null;
     }
 
     @Override

@@ -4,7 +4,6 @@ import com.huzhijian.nexusagentweb.em.MessageType;
 import lombok.Builder;
 import lombok.Data;
 
-import java.awt.*;
 import java.util.List;
 
 /**
@@ -16,9 +15,10 @@ import java.util.List;
 @Builder
 @Data
 public class MessageVO {
-    private String type;
+    private MessageType type;
     private String content;
     private String thinking;
+    private List<AttachedFileVO>  attachedFiles;
 //    private UserMessageVO userMessageVO;
 //    工具执行结果
     private ToolResultVO toolResultVO;
