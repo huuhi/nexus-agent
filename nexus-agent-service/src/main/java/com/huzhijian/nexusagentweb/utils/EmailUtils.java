@@ -1,6 +1,6 @@
 package com.huzhijian.nexusagentweb.utils;
 
-import cn.hutool.captcha.generator.RandomGenerator;
+import cn.hutool.core.util.RandomUtil;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.springframework.context.annotation.Configuration;
@@ -15,7 +15,6 @@ public class EmailUtils {
     
 
     private final JavaMailSender mailSender;
-    private final RandomGenerator randomGenerator = new RandomGenerator(6);
     private final RedisUtils redisUtils;
 
     public EmailUtils(JavaMailSender mailSender, RedisUtils redisUtils) {
@@ -24,7 +23,7 @@ public class EmailUtils {
     }
 
     public Boolean sendEmail(String to, String subject) {
-        String verificationCode = randomGenerator.generate();
+        String verificationCode =RandomUtil.randomNumbers(4);
 //         写入redis缓存！有效期5分钟！
         redisUtils.set(EMAIL_CODE_PREFIX+to,verificationCode,5L);
         MimeMessage message = mailSender.createMimeMessage();
@@ -116,7 +115,6 @@ public class EmailUtils {
                     </div>
                     <div class="footer">
                         <p>此邮件由系统自动发送，请勿回复。</p>
-                        <p>© 2025 阿里巴巴. 保留所有权利。</p>
                     </div>
                 </div>
             </body>

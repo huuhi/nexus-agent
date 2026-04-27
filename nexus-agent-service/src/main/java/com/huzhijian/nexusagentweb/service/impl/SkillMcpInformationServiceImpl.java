@@ -41,7 +41,6 @@ public class SkillMcpInformationServiceImpl extends ServiceImpl<SkillMcpInformat
 
         List<Skill> loadSkillList= new ArrayList<>(List.of());
         if (skillList.isEmpty()) return null;
-//
         for (SkillMcpInformation information:skillList){
             if (skills.contains(information.getName())) {
 //            如果包含说明是需要这个skill的，添加

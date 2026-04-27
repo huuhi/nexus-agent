@@ -1,7 +1,10 @@
 package com.huzhijian.nexusagentweb.service;
 
-import com.huzhijian.nexusagentweb.domain.User;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.huzhijian.nexusagentweb.domain.User;
+import com.huzhijian.nexusagentweb.dto.UserLoginDTO;
+import com.huzhijian.nexusagentweb.dto.UserPasswordDTO;
+import com.huzhijian.nexusagentweb.dto.UserRegisterDTO;
 
 /**
 * @author windows
@@ -10,4 +13,9 @@ import com.baomidou.mybatisplus.extension.service.IService;
 */
 public interface UserService extends IService<User> {
 
+    String login(UserLoginDTO loginDTO);
+
+    String register(UserRegisterDTO registerDTO);
+
+    void updateOrSetPassword(UserPasswordDTO passwordDTO);
 }

@@ -1,10 +1,8 @@
 package com.huzhijian.nexusagentweb.dto;
 
 import com.huzhijian.nexusagentweb.em.UserMessageType;
-import lombok.AllArgsConstructor;
+import jakarta.validation.constraints.NotNull;
 import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 
 import java.util.Map;
 
@@ -14,12 +12,6 @@ import java.util.Map;
  * 创造日期 2026/4/19
  * 说明: 消息DTO，元数据存储文件url等数据。
  */
-@Data
-@AllArgsConstructor
-@NoArgsConstructor
 @Builder
-public class ChatUserMessage {
-    private UserMessageType type;
-    private String content;
-    private Map<String,Object> metadata;
+public record ChatUserMessage(@NotNull(message = "消息类型不能为空！") UserMessageType type, String content, Map<String, Object> metadata) {
 }

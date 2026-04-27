@@ -2,8 +2,6 @@ package com.huzhijian.nexusagentweb.dto;
 
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
-import lombok.AllArgsConstructor;
-import lombok.Data;
 
 import java.util.List;
 
@@ -13,11 +11,5 @@ import java.util.List;
  * 创造日期 2026/4/17
  * 说明:
  */
-@Data
-@AllArgsConstructor
-public class KnowledgeDTO {
-    @NotEmpty
-    List<Long> fileIds;
-    @NotNull
-    Integer knowledgeId;
+public record KnowledgeDTO(@NotEmpty(message = "文件ID不能为空！") List<Long> fileIds, @NotNull(message = "知识库ID不能为空！") Integer knowledgeId) {
 }

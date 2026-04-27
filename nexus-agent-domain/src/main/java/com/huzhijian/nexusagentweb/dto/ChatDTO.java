@@ -1,7 +1,6 @@
 package com.huzhijian.nexusagentweb.dto;
 
 import jakarta.validation.constraints.NotNull;
-import lombok.Data;
 
 import java.util.List;
 
@@ -11,13 +10,6 @@ import java.util.List;
  * 创造日期 2026/4/16
  * 说明:
  */
-@Data
-public class ChatDTO {
-    @NotNull(message = "发送的消息不能为空！")
-    private List<ChatUserMessage> messages;
-    private String sessionId;
-    private List<String> skills;
-    private List<String> MCPs;
-    private String model;
-    private String knowledgeBase;
+public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<ChatUserMessage> messages, String sessionId,
+                      List<String> skills, List<String> MCPs, String model, String knowledgeBase, boolean enableRag) {
 }

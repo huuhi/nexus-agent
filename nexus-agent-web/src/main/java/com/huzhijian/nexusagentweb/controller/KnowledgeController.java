@@ -2,10 +2,12 @@ package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.dto.KnowledgeDTO;
 import com.huzhijian.nexusagentweb.service.KnowledgeBaseService;
+import com.huzhijian.nexusagentweb.vo.Result;
 import jakarta.validation.Valid;
-
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * @author 胡志坚
@@ -23,8 +25,8 @@ public class KnowledgeController {
     }
 
     @PostMapping
-    public ResponseEntity<String> fileInsertKnowledge(@RequestBody @Valid KnowledgeDTO knowledgeDTO){
-        String msg=knowledgeBaseService.insertKnowledge(knowledgeDTO.getFileIds(),knowledgeDTO.getKnowledgeId());
-        return ResponseEntity.ok(msg);
+    public Result fileInsertKnowledge(@RequestBody @Valid KnowledgeDTO knowledgeDTO){
+        String msg=knowledgeBaseService.insertKnowledge(knowledgeDTO.fileIds(),knowledgeDTO.knowledgeId());
+        return Result.ok(msg);
     }
 }

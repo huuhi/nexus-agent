@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
+import com.huzhijian.nexusagentweb.vo.Result;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,8 +25,8 @@ public class ChatHistoryController {
     }
 
     @GetMapping("/{sessionId}")
-    public ResponseEntity<List<MessageVO>> getMessage(@PathVariable String sessionId){
+    public Result getMessage(@PathVariable String sessionId){
         List<MessageVO> history=chatMemoryService.getHistoryBySessionId(sessionId);
-        return ResponseEntity.ok(history);
+        return Result.ok(history);
     }
 }

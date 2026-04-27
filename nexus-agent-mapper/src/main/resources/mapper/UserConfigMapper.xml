@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.UserConfigMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.UserConfig">
+            <id property="userId" column="user_id" jdbcType="BIGINT"/>
+            <result property="llmApiToken" column="llm_api_token" jdbcType="OTHER"/>
+            <result property="mcpToken" column="mcp_token" jdbcType="OTHER"/>
+            <result property="userDefault" column="user_default" jdbcType="OTHER"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        user_id,llm_api_token,mcp_token,
+        user_default
+    </sql>
+</mapper>

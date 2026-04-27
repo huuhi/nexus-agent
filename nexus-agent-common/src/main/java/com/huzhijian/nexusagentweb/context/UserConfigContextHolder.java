@@ -12,7 +12,7 @@ public class UserConfigContextHolder {
         tl.set(userId);
     }
     public static void removeConfig(){ tl.remove(); }
-    public static Long getUserConfig() {
+    public static Long getUserConfig(Long userId) {
         return null;
     }
 }
