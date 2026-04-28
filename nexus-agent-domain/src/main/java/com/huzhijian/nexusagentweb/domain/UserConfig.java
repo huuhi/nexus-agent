@@ -19,9 +19,11 @@ public class UserConfig {
     @TableId
     private Long userId;
 
+
     /**
-     * 
-     */
+     *
+     * */
+//    @TableField(typeHandler = JacksonTypeHandler.class)
     private Object llmApiToken;
 
     /**
@@ -33,4 +35,6 @@ public class UserConfig {
      * 
      */
     private Object userDefault;
+
+    private String salt;
 }

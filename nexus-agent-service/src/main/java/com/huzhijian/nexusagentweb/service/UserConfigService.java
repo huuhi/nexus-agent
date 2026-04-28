@@ -11,5 +11,5 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 */
 public interface UserConfigService extends IService<UserConfig> {
 
-    void saveAPIConfig(APIConfig config);
+    void saveOrUpdateAPIConfig(APIConfig config);
 }

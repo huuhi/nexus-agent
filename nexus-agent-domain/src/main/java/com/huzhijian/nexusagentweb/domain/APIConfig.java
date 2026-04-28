@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.domain;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
@@ -15,10 +16,15 @@ import java.util.List;
 @Data
 @AllArgsConstructor
 public class APIConfig {
-    @NotBlank
-    private String token;
-    @NotBlank
+//    如果是添加系统自动生成，如果是更新必须要有！
+    private String id;
+    @NotBlank(message = "sc")
+    private String APIKey;
+    @NotBlank(message = "base_url不能为空！")
     private String baseUrl;
 //  模型列表，存储mx ID
+    @NotEmpty(message = "模型列表为空")
     private List<String> model;
+//    是否默认
+    private Boolean isDefault;
 }

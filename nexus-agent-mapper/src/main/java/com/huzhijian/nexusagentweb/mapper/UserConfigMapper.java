@@ -1,7 +1,7 @@
 package com.huzhijian.nexusagentweb.mapper;
 
-import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.huzhijian.nexusagentweb.domain.UserConfig;
 
 /**
 * @author windows
@@ -11,6 +11,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 */
 public interface UserConfigMapper extends BaseMapper<UserConfig> {
 
+
+    void updateAPIconfigById(UserConfig config);
+
+    void save(UserConfig userConfig);
 }
 
 

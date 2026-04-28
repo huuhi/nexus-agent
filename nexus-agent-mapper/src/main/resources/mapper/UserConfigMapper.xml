@@ -6,13 +6,22 @@
 
     <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.UserConfig">
             <id property="userId" column="user_id" jdbcType="BIGINT"/>
-            <result property="llmApiToken" column="llm_api_token" jdbcType="OTHER"/>
+            <result property="llmApiToken" column="llm_api_token" jdbcType="OTHER" typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
             <result property="mcpToken" column="mcp_token" jdbcType="OTHER"/>
             <result property="userDefault" column="user_default" jdbcType="OTHER"/>
+            <result property="salt" column="salt" jdbcType="CHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         user_id,llm_api_token,mcp_token,
-        user_default
+        user_default,salt
     </sql>
+    <insert id="save">
+        insert into user_config(user_id, llm_api_token, mcp_token, user_default, salt)
+        values (#{userId},#{llmApiToken}::json,#{mcpToken}::json,#{userDefault}::json,#{salt})
+    </insert>
+    <update id="updateAPIconfigById">
+        update user_config set llm_api_token=#{llmApiToken}::json,mcp_token=#{mcpToken}::json,user_default=#{userDefault}::json where user_id=#{userId};
+
+    </update>
 </mapper>

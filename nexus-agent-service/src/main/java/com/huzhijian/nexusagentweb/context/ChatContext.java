@@ -1,6 +1,6 @@
 package com.huzhijian.nexusagentweb.context;
 
-import com.huzhijian.nexusagentweb.dto.ChatDTO;
+
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import lombok.Builder;
 import lombok.Getter;

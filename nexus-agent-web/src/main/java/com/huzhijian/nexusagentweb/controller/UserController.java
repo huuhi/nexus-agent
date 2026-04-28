@@ -43,9 +43,10 @@ public class UserController {
         userService.updateOrSetPassword(passwordDTO);
         return Result.okWithMsg("设置成功!");
     }
+//    添加/修改 配置
     @PostMapping("/api-config")
-    public Result setAPIConfig(@RequestBody APIConfig config){
-        userConfigService.saveAPIConfig(config);
+    public Result setOrUpdateAPIConfig(@RequestBody APIConfig config){
+        userConfigService.saveOrUpdateAPIConfig(config);
         return Result.okWithMsg("设置成功！");
     }
 }

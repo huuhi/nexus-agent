@@ -10,6 +10,9 @@ import java.util.List;
  * 创造日期 2026/4/16
  * 说明:
  */
-public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<ChatUserMessage> messages, String sessionId,
-                      List<String> skills, List<String> MCPs, String model, String knowledgeBase, boolean enableRag) {
+public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<ChatUserMessage> messages,
+                      String sessionId,
+                      List<String> skills,
+                      List<String> MCPs,
+                      ModelDTO model, String knowledgeBase, boolean enableRag) {
 }
