@@ -11,7 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * @author 胡志坚
@@ -30,7 +29,7 @@ public class RagTool {
         this.pgVectorEmbeddingStore = pgVectorEmbeddingStore;
     }
 
-    @Tool("检索知识库以回答专业问题.")
+    @Tool(name="rag_search",value = "检索知识库以回答专业问题")
     public String ragSearch(@P("查询语句,提取关键词查询")String query){
         StringBuilder result=new StringBuilder();
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()

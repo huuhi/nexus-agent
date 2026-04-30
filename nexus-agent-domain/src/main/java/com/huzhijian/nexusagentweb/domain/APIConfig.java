@@ -18,7 +18,9 @@ import java.util.List;
 public class APIConfig {
 //    如果是添加系统自动生成，如果是更新必须要有！
     private String id;
-    @NotBlank(message = "sc")
+    @NotBlank(message = "取一个名字吧！")
+    private String name;
+    @NotBlank(message = "key不能为空！")
     private String APIKey;
     @NotBlank(message = "base_url不能为空！")
     private String baseUrl;

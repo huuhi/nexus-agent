@@ -10,18 +10,21 @@ import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
+import com.huzhijian.nexusagentweb.tools.BoxTool;
 import com.huzhijian.nexusagentweb.tools.RagTool;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.mcp.McpToolProvider;
-import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -38,6 +41,7 @@ public class ChatContextFactory {
     private final PgChatMemoryStore chatMemoryStore;
     private final RagTool ragTool;
     private final McpInformationService mcpInformationService;
+    private final BoxTool boxTool;
 
 
     public ChatContext create(ChatDTO chatDTO,Long userId){
@@ -50,8 +54,10 @@ public class ChatContextFactory {
 
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
-                .chatMemoryProvider(memoryId -> MessageWindowChatMemory
-                        .builder().maxMessages(20)
+//                .tools(boxTool)
+                .chatMemoryProvider(memoryId -> TokenWindowChatMemory
+                        .builder()
+                        .maxTokens(32000,new OpenAiTokenCountEstimator("gpt-4o"))
                         .chatMemoryStore(chatMemoryStore)
                         .id(sessionId)
                         .build());
@@ -91,6 +97,9 @@ public class ChatContextFactory {
                     .apiKey(apiKey)
                     .baseUrl(apiConfig.getBaseUrl())
                     .modelName(modelDTO.modelName())
+                    .returnThinking(true)
+//                    目前这个配置只针对deepseek
+                    .customParameters(Map.of("thinking",Map.of("type","enabled")))
                     .httpClientBuilder(new SpringRestClientBuilderFactory().create())
                     .build();
         }

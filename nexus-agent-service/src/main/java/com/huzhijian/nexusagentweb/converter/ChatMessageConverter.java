@@ -8,7 +8,6 @@ import com.huzhijian.nexusagentweb.em.UserMessageType;
 import com.huzhijian.nexusagentweb.utils.FileUtils;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.Content;
-import dev.langchain4j.data.message.ImageContent;
 import dev.langchain4j.data.message.TextContent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -53,9 +52,10 @@ public class ChatMessageConverter {
                     contents.add(TextContent.from(fileText));
                 }
                 case UserMessageType.IMAGE -> {
+//                    如果是图片，不彻底ImageContent，防止token计算错误，将url添加到TextContent中即可
                     String url = metadata.get(FILE_URL).toString();
                     attachedFiles.add(metadata);
-                    contents.add(ImageContent.from(url));
+                    contents.add(TextContent.from("用户传递的图片url:"+url));
                 }
             }
         }
