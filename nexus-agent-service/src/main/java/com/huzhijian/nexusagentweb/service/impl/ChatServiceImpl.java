@@ -43,7 +43,6 @@ public class ChatServiceImpl implements ChatService {
     public ChatServiceImpl(ChatContextFactory chatContextFactory, ChatHistoryListService chatHistoryListService, ChatMessageConverter converter) {
         this.chatContextFactory = chatContextFactory;
         this.chatHistoryListService = chatHistoryListService;
-
         this.converter = converter;
     }
     @Override

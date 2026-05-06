@@ -1,7 +1,7 @@
 package com.huzhijian.nexusagentweb.service;
 
-import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 
 import java.util.List;
@@ -22,4 +22,5 @@ public interface ChatMemoryService extends IService<ChatHistory> {
     int getCountBySessionID(String sessionId);
 
     List<MessageVO> getHistoryBySessionId(String sessionId);
+
 }

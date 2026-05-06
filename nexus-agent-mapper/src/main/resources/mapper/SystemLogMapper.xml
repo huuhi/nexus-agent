@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.SystemLogMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.SystemLog">
+            <id property="id" column="id" jdbcType="BIGINT"/>
+            <result property="content" column="content" jdbcType="OTHER"/>
+            <result property="type" column="type" jdbcType="VARCHAR"/>
+            <result property="aiMessage" column="ai_message" jdbcType="VARCHAR"/>
+            <result property="costMs" column="cost_ms" jdbcType="INTEGER"/>
+            <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,content,type,
+        ai_message,cost_ms,create_at
+    </sql>
+</mapper>

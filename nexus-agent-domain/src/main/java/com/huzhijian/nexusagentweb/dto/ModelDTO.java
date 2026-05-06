@@ -6,5 +6,5 @@ package com.huzhijian.nexusagentweb.dto;
  * 创造日期 2026/4/28
  * 说明:
  */
-public record ModelDTO(String id,String modelName) {
+public record ModelDTO(String id,String modelName,boolean isThinking) {
 }

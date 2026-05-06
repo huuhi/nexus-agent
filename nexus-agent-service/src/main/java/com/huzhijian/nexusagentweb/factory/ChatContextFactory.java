@@ -11,6 +11,7 @@ import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.tools.BoxTool;
+import com.huzhijian.nexusagentweb.tools.LogTool;
 import com.huzhijian.nexusagentweb.tools.RagTool;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.mcp.McpToolProvider;
@@ -21,6 +22,7 @@ import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.map.HashedMap;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -42,6 +44,7 @@ public class ChatContextFactory {
     private final RagTool ragTool;
     private final McpInformationService mcpInformationService;
     private final BoxTool boxTool;
+    private final LogTool logTool;
 
 
     public ChatContext create(ChatDTO chatDTO,Long userId){
@@ -54,7 +57,8 @@ public class ChatContextFactory {
 
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
-//                .tools(boxTool)
+                .tools(logTool)
+//                .tools(boxTool,logTool)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
                         .maxTokens(32000,new OpenAiTokenCountEstimator("gpt-4o"))
@@ -92,14 +96,21 @@ public class ChatContextFactory {
             if (apiConfig==null || !apiConfig.getModel().contains(modelDTO.modelName())) return defaultModel;
             String secretApiKey = apiConfig.getAPIKey();
             String apiKey = EncryptorFactory.text(userConfig.getSalt()).decrypt(secretApiKey);
-//            TODO 这里可以加个customParameters配置,控制是否开启思考
+            Map<String, Object> extraBody = new HashedMap<>();
+            if (modelDTO.isThinking()){
+                extraBody.put("thinking", Map.of("type", "enabled"));
+                extraBody.put("enable_thinking", true);
+            }
+            extraBody.put("enable_search", true);
+//          加个customParameters配置,控制是否开启思考
             return OpenAiStreamingChatModel.builder()
                     .apiKey(apiKey)
                     .baseUrl(apiConfig.getBaseUrl())
                     .modelName(modelDTO.modelName())
                     .returnThinking(true)
+                    .sendThinking(true)
 //                    目前这个配置只针对deepseek
-                    .customParameters(Map.of("thinking",Map.of("type","enabled")))
+                    .customParameters(extraBody)
                     .httpClientBuilder(new SpringRestClientBuilderFactory().create())
                     .build();
         }

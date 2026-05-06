@@ -1,8 +1,9 @@
 package com.huzhijian.nexusagentweb.service;
 
-import com.huzhijian.nexusagentweb.domain.ChatHistoryList;
 import com.baomidou.mybatisplus.extension.service.IService;
-import jakarta.validation.constraints.NotBlank;
+import com.huzhijian.nexusagentweb.domain.ChatHistoryList;
+
+import java.util.List;
 
 /**
 * @author windows
@@ -12,4 +13,9 @@ import jakarta.validation.constraints.NotBlank;
 public interface ChatHistoryListService extends IService<ChatHistoryList> {
 
     void createTitle(String sessionId, String message,String answer,Long userId);
+
+    void deleteSession(String sessionId);
+
+    List<ChatHistoryList> getList();
+
 }

@@ -49,4 +49,10 @@ public class UserController {
         userConfigService.saveOrUpdateAPIConfig(config);
         return Result.okWithMsg("设置成功！");
     }
+    @PostMapping("/mcp-config")
+    public Result setMcpToken(@RequestParam String token){
+        userConfigService.saveOrUpdateMcpToken(token);
+        return Result.okWithMsg("设置成功！");
+    }
+
 }

@@ -85,6 +85,20 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         config.setLlmApiToken(jsonConfigs);
         userConfigMapper.updateAPIconfigById(config);
     }
+
+    @Override
+    public void saveOrUpdateMcpToken(String token) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        UserConfig config = getById(userId);
+        String salt=config.getSalt()==null?KeyGenerators.string().generateKey():config.getSalt();
+        String encrypt = EncryptorFactory.text(salt).encrypt(token);
+        config.setMcpToken(encrypt);
+        config.setSalt(salt);
+        updateById(config);
+    }
 }
 
 

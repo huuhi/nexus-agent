@@ -12,4 +12,6 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 public interface UserConfigService extends IService<UserConfig> {
 
     void saveOrUpdateAPIConfig(APIConfig config);
+
+    void saveOrUpdateMcpToken(String token);
 }

@@ -29,7 +29,7 @@ public class UserConfig {
     /**
      * 
      */
-    private Object mcpToken;
+    private String mcpToken;
 
     /**
      * 

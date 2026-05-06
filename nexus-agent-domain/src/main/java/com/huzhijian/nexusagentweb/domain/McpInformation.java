@@ -32,6 +32,8 @@ public class McpInformation {
      */
     private String description;
 
+    private String logoUrl;
+
     /**
      * 
      */

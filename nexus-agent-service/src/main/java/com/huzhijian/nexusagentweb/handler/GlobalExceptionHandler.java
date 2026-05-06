@@ -1,9 +1,6 @@
 package com.huzhijian.nexusagentweb.handler;
 
-import com.huzhijian.nexusagentweb.exception.NotFoundException;
-import com.huzhijian.nexusagentweb.exception.NotSupportException;
-import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
-import com.huzhijian.nexusagentweb.exception.ValidationException;
+import com.huzhijian.nexusagentweb.exception.*;
 import com.huzhijian.nexusagentweb.vo.Result;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -46,4 +43,6 @@ public class GlobalExceptionHandler {
     public Result handleNotFound(NotFoundException ex){
         return Result.error(ex.getMessage());
     }
+    @ExceptionHandler(PermissionDeniedException.class)
+    public Result handlePermissionDenied(PermissionDeniedException ex){return Result.error(ex.getMessage());}
 }
