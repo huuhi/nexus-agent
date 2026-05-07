@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.domain;
 
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Builder;
 import lombok.Data;
 
 /**
@@ -10,6 +11,7 @@ import lombok.Data;
  */
 @TableName(value ="mcp_information")
 @Data
+@Builder
 public class McpInformation {
     /**
      * 
@@ -48,4 +50,6 @@ public class McpInformation {
      * MCP类型
      */
     private String type;
+
+    private Boolean available;
 }

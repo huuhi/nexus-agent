@@ -101,4 +101,15 @@ public class BoxToolTest {
             log.info("deleteBox: {}", deleteResp);
         }
     }
+    @Test
+    void testCode(){
+        String code = """
+                    print("Hello from sandbox")
+                    x = 1 + 2
+                    print("result:", x)
+                    """;
+        Map<String,Object> codeResp =
+                boxTool.executeCode("i6ps4yn8g812lo4jf3vt8", code);
+        log.info("executeCode: {}", codeResp);
+    }
 }

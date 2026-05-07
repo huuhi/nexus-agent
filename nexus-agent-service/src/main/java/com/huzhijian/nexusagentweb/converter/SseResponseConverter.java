@@ -71,12 +71,12 @@ public class SseResponseConverter {
         }
     }
 
-    public void writeToolRequest(PartialToolCall request) {
+    public void writeToolRequest(String id, String name, String arguments) {
         if (isFinished.get()) return;
         MessageVO.ToolRequestVO vo = MessageVO.ToolRequestVO.builder()
-                .toolName(request.name())
-                .arguments(request.partialArguments())
-                .id(request.id())
+                .toolName(name)
+                .arguments(arguments)
+                .id(id)
                 .build();
         MessageVO msg = MessageVO.builder()
                 .type(MessageType.TOOL_EXECUTION)

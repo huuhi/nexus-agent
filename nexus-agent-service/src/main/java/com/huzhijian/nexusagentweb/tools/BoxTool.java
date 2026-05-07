@@ -67,8 +67,17 @@ public class BoxTool {
 
 //    执行代码
     @Tool(name="execute_code",value = "执行代码，可执行Python,JS/TS代码")
-    public Map<String,Object> executeCode(@P("沙盒ID")String boxId,@P("代码")String code){
-        return httpUtils.post("/execute/code",Map.of("box_id",boxId,"code",code)).block();
+    public Map<String,Object> executeCode(@P("沙盒ID")String boxId,@P("代码")Object code){
+        log.debug("code:{}，类型：{}",code,code.getClass().getName());
+        String codeStr;
+        if (code instanceof Map map){
+            codeStr=map.get("code").toString();
+        }else if(code instanceof List list){
+            codeStr=String.join("\n",list);
+        }else{
+            codeStr=code.toString();
+        }
+        return httpUtils.post("/execute/code",Map.of("box_id",boxId,"code",codeStr)).block();
     }
 //    执行命令
     @Tool(name = "execute_cmd",value = "执行命令(Linux系统)")

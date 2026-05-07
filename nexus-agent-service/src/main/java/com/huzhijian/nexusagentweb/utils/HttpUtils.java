@@ -53,8 +53,16 @@ public class HttpUtils {
                 .bodyToFlux(new ParameterizedTypeReference<Map<String, Object>>(){})
                 .collectList();
     }
+
+    public WebClient.ResponseSpec getWithRaw(String url, Map<String, String> params){
+        LinkedMultiValueMap<String,String> form = new LinkedMultiValueMap<>();
+        params.forEach(form::add);
+        return webClient.get()
+                .uri(urlBuilder->urlBuilder.path(url).queryParams(form).build())
+                .retrieve();
+    }
 //   带请求体的Post请求
-    public Mono<Map<String, Object>> post(String url,Map<String, String> params){
+    public Mono<Map<String, Object>> post(String url,Map<String, Object> params){
         return webClient.post()
                 .uri(url)
                 .contentType(MediaType.APPLICATION_JSON)

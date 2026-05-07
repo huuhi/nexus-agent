@@ -1,7 +1,9 @@
 package com.huzhijian.nexusagentweb.service;
 
-import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.huzhijian.nexusagentweb.domain.McpInformation;
+import com.huzhijian.nexusagentweb.dto.McpServerItemDTO;
+import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
 import dev.langchain4j.mcp.McpToolProvider;
 
 import java.util.List;
@@ -13,5 +15,9 @@ import java.util.List;
 */
 public interface McpInformationService extends IService<McpInformation> {
 
-    McpToolProvider getMcp(List<String> mcPs);
+    McpToolProvider getMcp(List<Long> mcPs,Long userId);
+
+    List<McpServerItemVO> getMcpInformation();
+
+    void saveMcp(List<McpServerItemDTO> mcPs);
 }

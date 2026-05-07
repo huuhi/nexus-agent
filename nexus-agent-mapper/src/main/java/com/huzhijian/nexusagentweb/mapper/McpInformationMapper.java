@@ -1,7 +1,9 @@
 package com.huzhijian.nexusagentweb.mapper;
 
-import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.huzhijian.nexusagentweb.domain.McpInformation;
+
+import java.util.List;
 
 /**
 * @author windows
@@ -11,6 +13,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 */
 public interface McpInformationMapper extends BaseMapper<McpInformation> {
 
+    void saveBatch(List<McpInformation> mcpInformationList);
 }
 
 

@@ -88,11 +88,12 @@ public class ChatServiceImpl implements ChatService {
 
         tokenStream.onPartialThinking(writer::writeThinking)
                 .onPartialResponse(writer::writeContent)
+
                 .onToolExecuted(consumer->{
                     ToolExecutionRequest request = consumer.request();
+                    writer.writeToolRequest(request.id(),request.name(),request.arguments());
                     writer.writeToolResult(request,consumer.hasFailed(),consumer.result());
                 })
-                .onPartialToolCall(writer::writeToolRequest)
                 .onCompleteResponse(response -> writer.finish())
                 .onError(writer::onError)
                 .start();

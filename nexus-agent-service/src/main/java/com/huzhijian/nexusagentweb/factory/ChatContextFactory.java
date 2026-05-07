@@ -53,12 +53,11 @@ public class ChatContextFactory {
 //        是否为新的对话，如果是，创建新的会话ID，并且
         boolean isNewSession=temp==null||temp.isEmpty();
         String sessionId =isNewSession? UUID.randomUUID().toString():temp;
-        McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs());
+        McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
 
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
-                .tools(logTool)
-//                .tools(boxTool,logTool)
+                .tools(boxTool,logTool)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
                         .maxTokens(32000,new OpenAiTokenCountEstimator("gpt-4o"))

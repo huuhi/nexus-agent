@@ -13,6 +13,6 @@ import java.util.List;
 public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<ChatUserMessage> messages,
                       String sessionId,
                       List<String> skills,
-                      List<String> MCPs,
+                      List<Long> MCPs,
                       ModelDTO model, String knowledgeBase, boolean enableRag) {
 }

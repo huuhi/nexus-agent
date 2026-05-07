@@ -12,6 +12,8 @@
             <result property="header" column="header" jdbcType="OTHER"/>
             <result property="userId" column="user_id" jdbcType="BIGINT"/>
             <result property="type" column="type" jdbcType="VARCHAR"/>
+            <result property="logoUrl" column="logo_url" jdbcType="VARCHAR"/>
+            <result property="available" column="available" jdbcType="BOOLEAN"/>
     </resultMap>
 
     <sql id="Base_Column_List">
@@ -19,4 +21,10 @@
         description,header,user_id,
         type
     </sql>
+    <insert id="saveBatch">
+        insert into mcp_information (name, url, description, header, user_id, type, logo_url) values
+        <foreach collection="list" item="item" separator=",">
+         (#{item.name},#{item.url},#{item.description},#{item.header}::jsonb,#{item.userId},#{item.type},#{item.logoUrl})
+        </foreach>
+    </insert>
 </mapper>
