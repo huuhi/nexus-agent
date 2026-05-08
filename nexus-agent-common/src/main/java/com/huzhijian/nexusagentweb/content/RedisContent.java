@@ -8,5 +8,7 @@ package com.huzhijian.nexusagentweb.content;
  */
 public class RedisContent {
     public static final String   EMAIL_CODE_PREFIX="code:";
+    public static final String   LONG_MEMORY_STREAM="memory.stream";
+    public static final String   LONG_MEMORY_GROUP_KEY="memory";
 
 }

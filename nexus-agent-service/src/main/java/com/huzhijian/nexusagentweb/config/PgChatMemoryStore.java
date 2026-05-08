@@ -12,11 +12,15 @@ import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+
+import static com.huzhijian.nexusagentweb.content.RedisContent.LONG_MEMORY_STREAM;
 
 /**
  * @author 胡志坚
@@ -30,6 +34,8 @@ import java.util.List;
 public class PgChatMemoryStore implements ChatMemoryStore {
     @Resource
     private ChatMemoryService chatMemoryService;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public List<ChatMessage> getMessages(Object o) {
@@ -66,11 +72,21 @@ public class PgChatMemoryStore implements ChatMemoryStore {
             }
         }
         chatMemoryService.insertBatch(insertList,userId);
+//         添加长期记忆，更新记忆的时候
+        if (count>0&&count%10==0){
+            checkMessageNeedSave(sessionId);
+        }
     }
 
     @Override
     public void deleteMessages(Object o) {
         if (o==null||o=="") throw new RuntimeException("会话ID不能为NULL/空");
         chatMemoryService.delByMemoryId(o);
+    }
+    private void checkMessageNeedSave(Object sessionId){
+//        查看是否超过十条
+//            写入队列中
+            Map<String, Object> map = Map.of("sessionId", sessionId);
+            stringRedisTemplate.opsForStream().add(LONG_MEMORY_STREAM,map);
     }
 }

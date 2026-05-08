@@ -1,5 +1,10 @@
 package com.huzhijian.nexusagentweb.tools;
 
+import cn.hutool.core.util.RandomUtil;
+import cn.hutool.json.JSONUtil;
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.domain.UserLongMemory;
+import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.data.segment.TextSegment;
@@ -20,13 +25,27 @@ import java.util.List;
  */
 @Component
 @Slf4j
-public class RagTool {
+public class MemoryTool {
     private final EmbeddingModel embeddingModel;
     private final PgVectorEmbeddingStore pgVectorEmbeddingStore;
+    private final UserConfigMapper mapper;
 
-    public RagTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore) {
+    public MemoryTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore, UserConfigMapper mapper) {
         this.embeddingModel = embeddingModel;
         this.pgVectorEmbeddingStore = pgVectorEmbeddingStore;
+        this.mapper = mapper;
+    }
+
+    @Tool(name = "save_user_data",value = "主动保存用户的一些不宜丢失的重要信息，比如用户的喜好，最近做了什么之类的，用户画像")
+    public String saveLongMemory(@P("内容，精简之后的内容") String content,@P("信息分类") String category){
+        Long userId = UserContextHolder.getUserId();
+        log.info("用户ID：{}",userId);
+        String id = RandomUtil.randomString("memory", 6);
+        UserLongMemory userLongMemory = new UserLongMemory(id, content, category);
+        String jsonStr = JSONUtil.toJsonStr(List.of(userLongMemory));
+        log.debug("记忆：{}",jsonStr);
+        mapper.updateUserMemory(jsonStr,userId);
+        return "ok";
     }
 
     @Tool(name="rag_search",value = "检索知识库以回答专业问题")

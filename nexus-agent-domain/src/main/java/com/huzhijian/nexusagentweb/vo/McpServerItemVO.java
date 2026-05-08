@@ -11,9 +11,12 @@ import lombok.Data;
 @Builder
 @AllArgsConstructor
 public class McpServerItemVO {
+    private String strId;
+    private String id;
     private String url;
     private String description;
     private String name;
     private String logoUrl;
     private String type;
+    private Boolean available;
 }

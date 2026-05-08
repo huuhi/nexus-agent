@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserConfigContextHolder;
@@ -12,6 +13,7 @@ import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.McpInformationMapper;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
+import com.huzhijian.nexusagentweb.vo.McpDetailVO;
 import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
@@ -22,8 +24,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
 * @author windows
@@ -71,7 +75,7 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
     }
 
     @Override
-    public List<McpServerItemVO> getMcpInformation() {
+    public List<McpServerItemVO> getMcpInformationByService() {
 //        获取用户的mcp token
         Long userId = UserContextHolder.getUserId();
         if (userId == null) {
@@ -100,19 +104,78 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
-        List<McpInformation> list = mcPs.stream().map(mcp -> {
-            String header = JSONUtil.toJsonStr(mcp.header());
-            log.debug("header:{}", header);
-            return McpInformation.builder()
-                    .type(mcp.type())
-                    .description(mcp.description())
-                    .name(mcp.name())
-                    .url(mcp.url())
-                    .logoUrl(mcp.logoUrl())
-                    .header(header)
-                    .userId(userId).build();
-        }).toList();
+//      应该要过滤一下，如果已经在数据库中存在，则执行更新
+        List<McpInformation> existMCPs = query().eq("user_id", userId).list();
+//        需要添加的MCP服务ID
+        List<McpInformation> list=new ArrayList<>();
+        List<McpInformation> updateList=new ArrayList<>();
+
+
+        Map<String, Long> map = existMCPs.stream().collect(Collectors.toMap(McpInformation::getStrId,McpInformation::getId));
+        for (McpServerItemDTO mcp : mcPs) {
+
+//            相同服务
+            McpInformation mcpInformation = transformMcpInformation(mcp,userId);
+            if (map.containsKey(mcp.strId())) {
+//                相同
+                mcpInformation.setAvailable(true);
+                mcpInformation.setId(map.get(mcp.strId()));
+                updateList.add(mcpInformation);
+            }else{
+                list.add(mcpInformation);
+            }
+        }
+        if (!updateList.isEmpty()) {
+            updateList.forEach(mcpInformationMapper::updateMCP);
+        }
         mcpInformationMapper.saveBatch(list);
+    }
+
+    @Override
+    public List<McpServerItemVO> getMcpInformation() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        List<McpInformation> list = query().eq("user_id", userId)
+                .list();
+        return BeanUtil.copyToList(list, McpServerItemVO.class);
+    }
+
+    @Override
+    public void removeMCP(Long id) {
+        removeById(id);
+    }
+
+    @Override
+    public void updateMCPById(McpServerItemDTO mcPs) {
+        McpInformation mcpInformation = transformMcpInformation(mcPs, null);
+        mcpInformationMapper.updateMCP(mcpInformation);
+    }
+
+    @Override
+    public McpDetailVO getDetailById(Long id) {
+        McpInformation mcpInformation = getById(id);
+        return BeanUtil.copyProperties(mcpInformation,McpDetailVO.class);
+    }
+
+    private McpInformation transformMcpInformation(McpServerItemDTO mcp,Long userId) {
+        String header = JSONUtil.toJsonStr(mcp.header());
+        log.debug("header:{}", header);
+        McpInformation mcpInformation = McpInformation.builder()
+                .type(mcp.type())
+                .description(mcp.description())
+                .name(mcp.name())
+                .id(mcp.id())
+                .url(mcp.url())
+                .logoUrl(mcp.logoUrl())
+                .header(header)
+                .available(mcp.available())
+                .build();
+        if (userId!=null) {
+            mcpInformation.setUserId(userId);
+        }
+        return mcpInformation;
     }
 }
 

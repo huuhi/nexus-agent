@@ -14,6 +14,8 @@ import java.util.List;
 public interface McpInformationMapper extends BaseMapper<McpInformation> {
 
     void saveBatch(List<McpInformation> mcpInformationList);
+
+    void updateMCP(McpInformation data);
 }
 
 

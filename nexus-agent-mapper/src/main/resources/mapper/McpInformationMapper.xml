@@ -27,4 +27,17 @@
          (#{item.name},#{item.url},#{item.description},#{item.header}::jsonb,#{item.userId},#{item.type},#{item.logoUrl})
         </foreach>
     </insert>
+    <update id="updateMCP">
+        update mcp_information
+        set name = #{name},
+            url = #{url},
+            description = #{description},
+            header = #{header},
+            user_id = #{userId},
+            type = #{type},
+            logo_url = #{logoUrl},
+            available = #{available},
+            str_id = #{strId}
+        where id = #{id}
+    </update>
 </mapper>

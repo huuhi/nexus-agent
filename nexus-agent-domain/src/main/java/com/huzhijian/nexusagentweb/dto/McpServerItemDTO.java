@@ -8,8 +8,8 @@ import java.util.Map;
  * 创造日期 2026/5/7
  * 说明:
  */
-public record McpServerItemDTO(String url,
+public record McpServerItemDTO(Long id,String strId,String url,
                                String description,
                                String name,
                                String logoUrl,
-                               String type, Map<String,Object> header){}
+                               String type, Map<String,Object> header,Boolean available){}

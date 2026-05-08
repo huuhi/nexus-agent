@@ -1,9 +1,14 @@
 package com.huzhijian.nexusagentweb.utils;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.stream.*;
+import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -60,7 +65,46 @@ public class RedisUtils {
             return null;
         }
     }
+    public List<MapRecord<String, Object, Object>> getMsg(String key, String group, String c) {
+        try {
+            if (stringRedisTemplate.getConnectionFactory().getConnection().isClosed()) {
+                return Collections.emptyList(); // 连接已关闭，直接返回空
+            }
+            if(!isConsumerGroupExists(key,group)){
+                stringRedisTemplate.opsForStream().createGroup(key, ReadOffset.from("0"), group);
+            }
 
+            return stringRedisTemplate.opsForStream().read(
+                    Consumer.from(group, c),
+                    StreamReadOptions.empty().count(1).block(Duration.ofSeconds(5)),
+                    StreamOffset.create(key, ReadOffset.lastConsumed())
+            );
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    public Long ackAndDelMsg(String key, String group, RecordId recordId) {
+        StreamOperations<String, Object, Object> operations = stringRedisTemplate.opsForStream();
+        operations.acknowledge(key,group,recordId);
+        return  operations.delete(key,recordId);
+    }
+
+    /**
+     * 检查消费者组是否存在
+     */
+    private boolean isConsumerGroupExists(String key, String group) {
+        try {
+            // 使用 XINFO GROUPS 获取 Stream 的所有消费者组
+            StreamInfo.XInfoGroups groups = stringRedisTemplate.opsForStream().groups(key);
+            // 检查目标 Group 是否存在
+            return groups.stream()
+                    .anyMatch(g -> group.equals(g.groupName()));
+        } catch (Exception e) {
+            // 如果 key 不存在或发生其他错误，返回 false
+            return false;
+        }
+    }
     public void delete(String s) {
         stringRedisTemplate.delete(s);
     }

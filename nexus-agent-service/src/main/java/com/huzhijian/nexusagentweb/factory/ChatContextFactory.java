@@ -12,7 +12,7 @@ import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.tools.BoxTool;
 import com.huzhijian.nexusagentweb.tools.LogTool;
-import com.huzhijian.nexusagentweb.tools.RagTool;
+import com.huzhijian.nexusagentweb.tools.MemoryTool;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
@@ -41,7 +41,7 @@ import java.util.UUID;
 public class ChatContextFactory {
     private final StreamingChatModel defaultModel;
     private final PgChatMemoryStore chatMemoryStore;
-    private final RagTool ragTool;
+    private final MemoryTool ragTool;
     private final McpInformationService mcpInformationService;
     private final BoxTool boxTool;
     private final LogTool logTool;
@@ -115,4 +115,6 @@ public class ChatContextFactory {
         }
         return defaultModel;
     }
+
+
 }

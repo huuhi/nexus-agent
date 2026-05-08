@@ -37,6 +37,7 @@ def get_mcp_list(token: str) -> Any:
                     "name": server.get("chinese_name") or server.get("name", ""),
                     "logoUrl": server.get("logo_url", ""),
                     "type": entry.get("transport_type", ""),
+                    "id": server.get("id")
                 })
                 break  # 每个服务器只取一个 streamable_http url
 

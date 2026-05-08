@@ -19,6 +19,9 @@ public class McpInformation {
     @TableId
     private Long id;
 
+//    MCP 服务 唯一标识
+    private String strId;
+
     /**
      * 
      */

@@ -5,15 +5,31 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
+import com.huzhijian.nexusagentweb.domain.UserLongMemory;
+import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
+import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.utils.RedisUtils;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.security.crypto.keygen.KeyGenerators;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+import static com.huzhijian.nexusagentweb.content.RedisContent.LONG_MEMORY_GROUP_KEY;
+import static com.huzhijian.nexusagentweb.content.RedisContent.LONG_MEMORY_STREAM;
 
 /**
 * @author windows
@@ -21,13 +37,81 @@ import java.util.List;
 * @createDate 2026-04-26 20:27:21
 */
 @Service
+@Slf4j
 public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserConfig>
-    implements UserConfigService{
-
+    implements UserConfigService, DisposableBean {
+    private volatile boolean isRunning = true;
     private final UserConfigMapper userConfigMapper;
+    private final RedisUtils redisUtils;
+    private final ChatMemoryServiceImpl chatMemoryService;
+    private final ChatAssistant chatAssistant;
+    private static final ExecutorService COMPLETE_NODE_EXECUTOR =  new ThreadPoolExecutor(
+            5,
+            10,
+            60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1000),
+            new ThreadPoolExecutor.CallerRunsPolicy()
+    );
 
-    public UserConfigServiceImpl(UserConfigMapper userConfigMapper) {
+    @PostConstruct
+    public void init() {
+        COMPLETE_NODE_EXECUTOR.execute(new handleLongMemory());
+    }
+    @Override
+    public void destroy() {
+        isRunning = false;
+        log.info("Stopping LEARN_PATH_EXECUTOR...");
+        COMPLETE_NODE_EXECUTOR.shutdown(); // 停止接收新任务
+        try {
+            // 等待线程池终止（包括处理中的任务）
+            if (!COMPLETE_NODE_EXECUTOR.awaitTermination(30, TimeUnit.SECONDS)) {
+                COMPLETE_NODE_EXECUTOR.shutdownNow(); // 强制终止
+            }
+        } catch (InterruptedException e) {
+            COMPLETE_NODE_EXECUTOR.shutdownNow();
+            Thread.currentThread().interrupt(); // 恢复中断状态
+        }
+        log.info("LEARN_PATH_EXECUTOR stopped.");
+    }
+    public UserConfigServiceImpl(UserConfigMapper userConfigMapper, RedisUtils redisUtils, ChatMemoryServiceImpl chatMemoryService, ChatAssistant chatAssistant) {
         this.userConfigMapper = userConfigMapper;
+        this.redisUtils = redisUtils;
+        this.chatMemoryService = chatMemoryService;
+        this.chatAssistant = chatAssistant;
+    }
+
+    private class handleLongMemory implements Runnable{
+        @Override
+        public void run() {
+            while (isRunning){
+                List<MapRecord<String, Object, Object>> msg = redisUtils.getMsg(LONG_MEMORY_STREAM, LONG_MEMORY_GROUP_KEY, "c1");
+                if (msg==null||msg.size()==0){
+                    continue;
+                }
+                MapRecord<String, Object, Object> record = msg.get(0);
+                handleMemory(record);
+                redisUtils.ackAndDelMsg(LONG_MEMORY_STREAM,LONG_MEMORY_GROUP_KEY,record.getId());
+            }
+        }
+
+        private void handleMemory(MapRecord<String, Object, Object> record) {
+            Object sessionId = record.getValue().get("sessionId");
+            if (sessionId==null){return;}
+            List<ChatHistory> memories = chatMemoryService.getByMemoryId(sessionId);
+            List<ChatHistory> filterMemories = memories.stream().filter(m -> m.getType() != MessageType.TOOL_EXECUTION_RESULT).toList();
+//            获取最新10条消息
+            int size = filterMemories.size();
+            int start = Math.max(0, size - 10);
+            String chatHistory = filterMemories.subList(start, size).stream().map(m -> m.getContent().toString()).toList().toString();
+            Long userId = filterMemories.getFirst().getUserId();
+            String oldMemory = query().eq("user_id", userId)
+                    .one().getUserDefault().toString();
+            log.debug("发送的旧记忆：{}，聊天记录：{}",oldMemory,chatHistory);
+            List<UserLongMemory> userLongMemories = chatAssistant.memoryList(oldMemory,chatHistory);
+            log.debug("AI返回的记录：{}",userLongMemories);
+            String jsonStr = JSONUtil.toJsonStr(userLongMemories);
+            userConfigMapper.saveLongMemory(jsonStr,userId);
+        }
     }
 
     @Override
