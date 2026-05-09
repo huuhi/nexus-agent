@@ -12,9 +12,18 @@ import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
-import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.utils.RedisUtils;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ResponseFormat;
+import dev.langchain4j.model.chat.request.ResponseFormatType;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonSchema;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
@@ -44,7 +53,7 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
     private final UserConfigMapper userConfigMapper;
     private final RedisUtils redisUtils;
     private final ChatMemoryServiceImpl chatMemoryService;
-    private final ChatAssistant chatAssistant;
+    private final ChatModel model;
     private static final ExecutorService COMPLETE_NODE_EXECUTOR =  new ThreadPoolExecutor(
             5,
             10,
@@ -73,12 +82,14 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         }
         log.info("LEARN_PATH_EXECUTOR stopped.");
     }
-    public UserConfigServiceImpl(UserConfigMapper userConfigMapper, RedisUtils redisUtils, ChatMemoryServiceImpl chatMemoryService, ChatAssistant chatAssistant) {
+    public UserConfigServiceImpl(UserConfigMapper userConfigMapper, RedisUtils redisUtils, ChatMemoryServiceImpl chatMemoryService) {
         this.userConfigMapper = userConfigMapper;
         this.redisUtils = redisUtils;
         this.chatMemoryService = chatMemoryService;
-        this.chatAssistant = chatAssistant;
+        this.model = getModel();
     }
+
+
 
     private class handleLongMemory implements Runnable{
         @Override
@@ -107,7 +118,10 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
             String oldMemory = query().eq("user_id", userId)
                     .one().getUserDefault().toString();
             log.debug("发送的旧记忆：{}，聊天记录：{}",oldMemory,chatHistory);
-            List<UserLongMemory> userLongMemories = chatAssistant.memoryList(oldMemory,chatHistory);
+            String message = String.format("之前的记忆:%s,最新的聊天%s", oldMemory, chatHistory);
+            ChatResponse chatResponse = model.chat(UserMessage.from(message));
+            String arrayJson = chatResponse.aiMessage().text();
+            List<UserLongMemory> userLongMemories = JSONUtil.toList(arrayJson, UserLongMemory.class);
             log.debug("AI返回的记录：{}",userLongMemories);
             String jsonStr = JSONUtil.toJsonStr(userLongMemories);
             userConfigMapper.saveLongMemory(jsonStr,userId);
@@ -183,6 +197,38 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         config.setSalt(salt);
         updateById(config);
     }
+
+    private ChatModel getModel(){
+        JsonObjectSchema memoryItemSchema = JsonObjectSchema.builder()
+                .addStringProperty("id", "记忆ID")
+                .addStringProperty("content", "记忆内容")
+                .addStringProperty("category", "记忆的分类")
+                .required("id", "content", "category")
+                .additionalProperties(false)
+                .build();
+        JsonObjectSchema rootSchema = JsonObjectSchema.builder()
+                .addProperty("memories", JsonArraySchema.builder()
+                        .description("所有记忆的列表")
+                        .items(memoryItemSchema)
+                        .build())
+                .required("memories")  // 标记 memories 为必需
+                .additionalProperties(false)  // 禁止在根对象中添加其他字段
+                .build();
+        ResponseFormat responseFormat = ResponseFormat
+                .builder()
+                .type(ResponseFormatType.JSON)
+                .jsonSchema(JsonSchema.builder()
+                        .name("memory")
+                        .rootElement(rootSchema).build())
+                .build();
+        return OpenAiChatModel.builder()
+                .responseFormat(responseFormat)
+                .httpClientBuilder(new SpringRestClientBuilderFactory().create())
+                .apiKey(System.getenv("MOONSHOT"))
+                .baseUrl("https://api.moonshot.cn/v1")
+                .modelName("moonshot-v1-128k").build();
+    }
+
 }
 
 
