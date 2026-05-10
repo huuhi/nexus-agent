@@ -86,7 +86,9 @@ public class PgChatMemoryStore implements ChatMemoryStore {
     private void checkMessageNeedSave(Object sessionId){
 //        查看是否超过十条
 //            写入队列中
-            Map<String, Object> map = Map.of("sessionId", sessionId);
+        Long userId = UserContextHolder.getUserId();
+        log.debug("用户ID：{}",userId);
+        Map<String, Object> map = Map.of("sessionId", sessionId,"userId",userId);
             stringRedisTemplate.opsForStream().add(LONG_MEMORY_STREAM,map);
     }
 }

@@ -3,7 +3,7 @@ package com.huzhijian.nexusagentweb.tools;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
-import com.huzhijian.nexusagentweb.domain.UserLongMemory;
+import com.huzhijian.nexusagentweb.domain.UserMemory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -41,7 +41,7 @@ public class MemoryTool {
         Long userId = UserContextHolder.getUserId();
         log.info("用户ID：{}",userId);
         String id = RandomUtil.randomString("memory", 6);
-        UserLongMemory userLongMemory = new UserLongMemory(id, content, category);
+        UserMemory userLongMemory =  UserMemory.builder().build();
         String jsonStr = JSONUtil.toJsonStr(List.of(userLongMemory));
         log.debug("记忆：{}",jsonStr);
         mapper.updateUserMemory(jsonStr,userId);

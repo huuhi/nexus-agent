@@ -2,7 +2,9 @@ package com.huzhijian.nexusagentweb;
 
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.domain.Memories;
-import com.huzhijian.nexusagentweb.domain.UserLongMemory;
+import com.huzhijian.nexusagentweb.domain.UserMemory;
+import com.huzhijian.nexusagentweb.mapper.UserMemoryMapper;
+import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
@@ -13,10 +15,13 @@ import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.chat.request.json.JsonSchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static com.huzhijian.nexusagentweb.content.ModelSystemContent.GET_MEMORY;
@@ -29,6 +34,13 @@ import static com.huzhijian.nexusagentweb.content.ModelSystemContent.GET_MEMORY;
  */
 @SpringBootTest
 public class ModelTest {
+
+    @Resource
+    private  EmbeddingModel embeddingModel;
+    @Resource
+    private  UserMemoryMapper mapper;
+
+
 
     @Test
     void testMemoryModel(){
@@ -101,7 +113,8 @@ public class ModelTest {
                 """;
 
         String chat="在这个充满可能性的时刻，我为您准备了一段由文字构成的奇妙旅程。这段旅程将带您穿越一个由毫无意义的词语组成的迷宫，这个迷宫没有出口，也没有入口，只有无尽的词语在回荡。您可能会发现，这段旅程没有任何实际意义，但它却充满了文字的魅力和语言的奇妙。就像一场没有目的地的旅行，我们只在乎沿途的风景，而不在乎最终的归宿。所以，请您放松心情，跟随我一起进入这个由废话构成的世界吧。在这里，您可以尽情地享受文字的乐趣，而不用担心它们是否有什么实际意义。因为在这个世界里，意义本身就是一种多余的存在，只有废话才是永恒的真理。让我们一起在废话的海洋中畅游，感受那些毫无意义的词语所带来的奇妙体验吧。";
-        ChatResponse chatResponse = model.chat(systemMessage, UserMessage.from(oldMemories),UserMessage.from(chat));
+        String chat2="我喜欢喝茶，嘿嘿嘿";
+        ChatResponse chatResponse = model.chat(systemMessage, UserMessage.from(oldMemories),UserMessage.from(chat2));
         String response = chatResponse.aiMessage().text();
         String cleanedResponse = response
                 .replaceAll("```json\\s*", "")
@@ -110,10 +123,25 @@ public class ModelTest {
 
         System.out.println(cleanedResponse);
         Memories memories = JSONUtil.toBean(cleanedResponse, Memories.class);
-        List<UserLongMemory> add = memories.getAdd();
+        List<UserMemory> add = memories.getAdd();
         System.out.println("添加"+add);
         System.out.println("更新"+memories.getUpdate());
         System.out.println("删除"+memories.getDelete());
+    }
+
+    @Test
+    void testEmbeddingModel(){
+        Embedding content = embeddingModel.embed("你好，我是谁呢？").content();
+        int dimension = content.dimension();
+        float[] vector = content.vector();
+        System.out.println(dimension+ Arrays.toString(vector));
+        UserMemory memory = UserMemory.builder()
+                .category("随便")
+                .content("内容")
+                .embedding(vector)
+                .userId(1L).build();
+        System.out.println(memory);
+        mapper.insert(memory);
 
 
     }

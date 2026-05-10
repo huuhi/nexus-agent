@@ -14,7 +14,7 @@ import java.util.List;
 @Data
 @AllArgsConstructor
 public class Memories {
-    private List<UserLongMemory> add;
-    private List<UserLongMemory> update;
+    private List<UserMemory> add;
+    private List<UserMemory> update;
     private List<String> delete;
 }
