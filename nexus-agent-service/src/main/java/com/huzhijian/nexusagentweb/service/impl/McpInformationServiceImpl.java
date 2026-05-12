@@ -48,6 +48,9 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 
     @Override
     public McpToolProvider getMcp(List<Long> MCPIds,Long userId) {
+        if (MCPIds==null|| MCPIds.isEmpty()){
+            return null;
+        }
         List<McpInformation> list = query().eq("user_id", userId)
                 .in("id", MCPIds)
                 .eq("available",true)

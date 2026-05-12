@@ -1,10 +1,9 @@
 package com.huzhijian.nexusagentweb.tools;
 
-import cn.hutool.core.util.RandomUtil;
-import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.UserMemory;
-import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
+import com.huzhijian.nexusagentweb.dto.SearchMemoryRequest;
+import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.data.segment.TextSegment;
@@ -28,26 +27,51 @@ import java.util.List;
 public class MemoryTool {
     private final EmbeddingModel embeddingModel;
     private final PgVectorEmbeddingStore pgVectorEmbeddingStore;
-    private final UserConfigMapper mapper;
-
-    public MemoryTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore, UserConfigMapper mapper) {
+    private final UserMemoryService memoryService;
+    private final String SAVE_USER_MEMORY= """
+            主动保存用户长期记忆
+            长期记忆包括：
+            - 长期稳定的喜好
+            - 长期习惯
+            - 长期身份信息
+            - 长期目标
+            - 持续性的事实
+            如果失败，禁止重复执行！
+            """;
+    public MemoryTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore,UserMemoryService memoryService) {
         this.embeddingModel = embeddingModel;
         this.pgVectorEmbeddingStore = pgVectorEmbeddingStore;
-        this.mapper = mapper;
+        this.memoryService = memoryService;
     }
 
-    @Tool(name = "save_user_data",value = "主动保存用户的一些不宜丢失的重要信息，比如用户的喜好，最近做了什么之类的，用户画像")
+    @Tool(name = "search_user_memory",value = "检索用户画像")
+    public String searchUserMemory(@P("关键字") String query){
+        Long userId = UserContextHolder.getUserId();
+        SearchMemoryRequest request = SearchMemoryRequest.builder()
+                .maxResult(5)
+                .minScore(0.5F)
+                .embedding(embeddingModel.embed(query).content().vector())
+                .userId(userId)
+                .build();
+        try {
+            return memoryService.searchMemory(request);
+        } catch (Exception e) {
+            return "错误，请勿重复"+e.getMessage();
+        }
+    }
+
+    @Tool(name = "save_user_data",value = SAVE_USER_MEMORY)
     public String saveLongMemory(@P("内容，精简之后的内容") String content,@P("信息分类") String category){
         Long userId = UserContextHolder.getUserId();
         log.info("用户ID：{}",userId);
-        String id = RandomUtil.randomString("memory", 6);
-        UserMemory userLongMemory =  UserMemory.builder().build();
-        String jsonStr = JSONUtil.toJsonStr(List.of(userLongMemory));
-        log.debug("记忆：{}",jsonStr);
-        mapper.updateUserMemory(jsonStr,userId);
+        UserMemory userLongMemory =  UserMemory.builder().content(content).userId(userId).category(category).build();
+        try {
+            memoryService.saveMemory(userLongMemory);
+        } catch (Exception e) {
+            return "error:"+e.getMessage();
+        }
         return "ok";
     }
-
     @Tool(name="rag_search",value = "检索知识库以回答专业问题")
     public String ragSearch(@P("查询语句,提取关键词查询")String query){
         StringBuilder result=new StringBuilder();

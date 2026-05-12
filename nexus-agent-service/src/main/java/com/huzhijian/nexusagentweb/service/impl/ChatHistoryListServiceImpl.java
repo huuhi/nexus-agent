@@ -46,8 +46,15 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
                  问题：%s
                  回答：%s
             """.formatted(message, answer));
-        ChatResponse chat = model.chat(systemMessage);
-        String title = chat.aiMessage().text();
+        String title = null;
+        try {
+            ChatResponse chat = model.chat(systemMessage);
+            title = chat.aiMessage().text();
+        } catch (Exception e) {
+//          降级  如果出错，就使用用户的问题作为标题
+            int min = Math.min(255, message.length());
+            title=message.substring(0,min).trim();
+        }
         log.info("生成的标题：{}",title);
         ChatHistoryList history = ChatHistoryList.builder().sessionId(sessionId)
                 .title(title)

@@ -24,7 +24,7 @@ public interface UserConfigMapper extends BaseMapper<UserConfig> {
     @Update("update user_cofig set user_default=user_default||#{jsonStr}::jsonb where user_id=#{userId}")
     void updateUserMemory(String jsonStr, Long userId);
 
-    @Select("select user_default from user_confgi where user_id=#{userId}")
+    @Select("select user_default from user_config where user_id=#{userId}")
     Object queryLongMemory(Long userId);
 }
 

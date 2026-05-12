@@ -2,7 +2,6 @@ package com.huzhijian.nexusagentweb.service.impl;
 
 import com.aliyuncs.exceptions.ClientException;
 import com.huzhijian.nexusagentweb.context.ChatContext;
-import com.huzhijian.nexusagentweb.context.MessageMetadataContext;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
@@ -12,7 +11,6 @@ import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
-import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
@@ -22,6 +20,7 @@ import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFact
 import dev.langchain4j.model.catalog.ModelDescription;
 import dev.langchain4j.model.openai.OpenAiModelCatalog;
 import dev.langchain4j.service.TokenStream;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -37,17 +36,11 @@ import java.util.List;
  */
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class ChatServiceImpl implements ChatService {
     private final ChatContextFactory chatContextFactory;
     private final ChatHistoryListService chatHistoryListService;
     private final ChatMessageConverter converter;
-    private final UserConfigMapper configMapper;
-    public ChatServiceImpl(ChatContextFactory chatContextFactory, ChatHistoryListService chatHistoryListService, ChatMessageConverter converter, UserConfigMapper configMapper) {
-        this.chatContextFactory = chatContextFactory;
-        this.chatHistoryListService = chatHistoryListService;
-        this.converter = converter;
-        this.configMapper = configMapper;
-    }
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
 
@@ -71,14 +64,8 @@ public class ChatServiceImpl implements ChatService {
         } catch (IOException e) {
             throw new ParserFileException("解析文件失败!");
         }
-        TokenStream tokenStream;
-        try {
-//          TODO 这里应该存储到redis中去，之后再写
-            String picture = configMapper.queryLongMemory(userId).toString();
-            tokenStream = chatAssistant.chat(contents,sessionId,picture);
-        } finally {
-            MessageMetadataContext.clear();
-        }
+
+        TokenStream tokenStream =chatAssistant.chat(contents,sessionId);
 
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)

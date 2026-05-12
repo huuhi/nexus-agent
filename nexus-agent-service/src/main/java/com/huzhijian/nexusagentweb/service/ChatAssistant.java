@@ -16,7 +16,7 @@ import static com.huzhijian.nexusagentweb.content.ModelSystemContent.CHAT_PROMPT
 public interface ChatAssistant {
 
     @SystemMessage(CHAT_PROMPT)
-    TokenStream chat(@UserMessage List<Content>contents,@V("sessionId") @MemoryId Object memoryId,@V("picture") String picture );
+    TokenStream chat(@UserMessage List<Content> contents,@V("sessionId") @MemoryId Object memoryId);
 
 
 }

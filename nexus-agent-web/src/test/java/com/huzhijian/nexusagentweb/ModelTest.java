@@ -3,7 +3,9 @@ package com.huzhijian.nexusagentweb;
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.domain.Memories;
 import com.huzhijian.nexusagentweb.domain.UserMemory;
+import com.huzhijian.nexusagentweb.dto.SearchMemoryRequest;
 import com.huzhijian.nexusagentweb.mapper.UserMemoryMapper;
+import com.huzhijian.nexusagentweb.vo.MemorySearchResult;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -142,7 +144,21 @@ public class ModelTest {
                 .userId(1L).build();
         System.out.println(memory);
         mapper.insert(memory);
+    }
 
+    @Test
+    void testEmbeddingSearch(){
+        String query="最喜欢的电影";
+        float[] vector = embeddingModel.embed(query).content().vector();
+        SearchMemoryRequest request = SearchMemoryRequest.builder()
+                .minScore(0.3F)
+                .embedding(vector)
+                .userId(1L).maxResult(3).build();
 
+        List<MemorySearchResult> results = mapper.search(request);
+
+        results.forEach(match->{
+            System.out.println(match.getContent()+match.getCategory()+match.getScore());
+        });
     }
 }

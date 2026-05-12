@@ -36,7 +36,7 @@ public class PgVectorEmbeddingFactory {
                 .datasource(dataSourceT)
                 .table(table)
                 .dimension(embeddingModel.dimension())
-                .createTable(true)
+                .createTable(false)
                 .metadataStorageConfig(DefaultMetadataStorageConfig.defaultConfig())
                 .build();
     }

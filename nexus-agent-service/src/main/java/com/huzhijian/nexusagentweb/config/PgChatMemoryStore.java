@@ -88,7 +88,7 @@ public class PgChatMemoryStore implements ChatMemoryStore {
 //            写入队列中
         Long userId = UserContextHolder.getUserId();
         log.debug("用户ID：{}",userId);
-        Map<String, Object> map = Map.of("sessionId", sessionId,"userId",userId);
+        Map<String, Object> map = Map.of("sessionId", sessionId,"userId",userId.toString());
             stringRedisTemplate.opsForStream().add(LONG_MEMORY_STREAM,map);
     }
 }

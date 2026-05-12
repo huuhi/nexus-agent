@@ -5,11 +5,11 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.domain.Memories;
 import com.huzhijian.nexusagentweb.domain.UserMemory;
+import com.huzhijian.nexusagentweb.dto.SearchMemoryRequest;
 import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.mapper.UserMemoryMapper;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import com.huzhijian.nexusagentweb.utils.RedisUtils;
-import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
@@ -27,6 +27,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,6 +55,7 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
     private final ChatMemoryServiceImpl chatMemoryService;
     private final ChatModel model;
     private final EmbeddingModel embeddingModel;
+    private final UserMemoryMapper mapper;
     private static final ExecutorService COMPLETE_NODE_EXECUTOR =  new ThreadPoolExecutor(
             5,
             10,
@@ -62,9 +64,10 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
             new ThreadPoolExecutor.CallerRunsPolicy()
     );
 
-    public UserMemoryServiceImpl(RedisUtils redisUtils, ChatMemoryServiceImpl chatMemoryService, ChatModel model, EmbeddingModel embeddingModel) {
+    public UserMemoryServiceImpl(RedisUtils redisUtils, ChatMemoryServiceImpl chatMemoryService, EmbeddingModel embeddingModel, UserMemoryMapper mapper) {
         this.redisUtils = redisUtils;
         this.chatMemoryService = chatMemoryService;
+        this.mapper = mapper;
         this.model = getModel();
         this.embeddingModel = embeddingModel;
     }
@@ -98,10 +101,10 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
         public void run() {
             while (isRunning){
                 List<MapRecord<String, Object, Object>> msg = redisUtils.getMsg(LONG_MEMORY_STREAM, LONG_MEMORY_GROUP_KEY, "c1");
-                if (msg==null||msg.size()==0){
+                if (msg==null|| msg.isEmpty()){
                     continue;
                 }
-                MapRecord<String, Object, Object> record = msg.get(0);
+                MapRecord<String, Object, Object> record = msg.getFirst();
                 handleMemory(record);
                 redisUtils.ackAndDelMsg(LONG_MEMORY_STREAM,LONG_MEMORY_GROUP_KEY,record.getId());
             }
@@ -120,7 +123,7 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
             Long userId = filterMemories.getFirst().getUserId();
 
             List<String> memory = query().eq("user_id", userId)
-                    .list().stream().map(m -> m.getCategory() + "_" + m.getContent()).toList();
+                    .list().stream().map(m -> "ID:"+m.getId()+"。类型:"+m.getCategory() + "。内容:" + m.getContent()).toList();
             String memoryString = memory.toString();
 
 
@@ -142,31 +145,50 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
 //            如果是更新和添加都需要向量化内容
             List<UserMemory> add = newMemories.getAdd();
             add.forEach(m->{
-                Embedding embedding = embeddingText(m.getContent());
-                float[] vector = embedding.vector();
+                float[] vector = embeddingText(m.getContent());
                 m.setEmbedding(vector);
             });
             List<UserMemory> update = newMemories.getUpdate();
             update.forEach(m->{
-                Embedding embedding = embeddingText(m.getContent());
-                float[] vector = embedding.vector();
+                float[] vector  = embeddingText(m.getContent());
                 m.setEmbedding(vector);
             });
-//            理论上会报错的
             updateBatchById(update);
             saveBatch(add);
         }
     }
 
-    public Embedding embeddingText(String text){
+    public float[] embeddingText(String text){
         if (text==null){return null;}
-        return embeddingModel.embed(text).content();
+        return embeddingModel.embed(text).content().vector();
     }
     private String cleanJson(String jsonStr){
         return jsonStr
                 .replaceAll("```json\\s*", "")
                 .replaceAll("```\\s*", "")
                 .trim();
+    }
+
+    @Async
+    public void saveMemory(UserMemory userMemory){
+        String content = userMemory.getContent();
+        float[] embedding = embeddingText(content);
+        userMemory.setEmbedding(embedding);
+        save(userMemory);
+    }
+
+    @Override
+    public String searchMemory(SearchMemoryRequest request) {
+//        float[] embedding = request.embedding();
+//        String query = request.query();
+//        if (embedding == null&&query==null) {
+//            return "参数错误！";
+//        }
+//        if (embedding == null) {
+//            embedding = embeddingModel.embed(query).content().vector();
+//        }
+        List<String> list = mapper.search(request).stream().map(m -> m.getCategory() + "_" + m.getContent()).toList();
+        return list.isEmpty() ?"啥也没有":list.toString();
     }
 
     private ChatModel getModel(){

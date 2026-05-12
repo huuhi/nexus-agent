@@ -13,10 +13,26 @@
             <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
             <result property="updateAt" column="update_at" jdbcType="TIMESTAMP"/>
     </resultMap>
+    <resultMap id="MemorySearchResultMap"
+               type="com.huzhijian.nexusagentweb.vo.MemorySearchResult">
+        <id property="id" column="id"/>
+        <result property="content" column="content"/>
+        <result property="category" column="category"/>
+        <result property="score" column="score"/>
 
-    <sql id="Base_Column_List">
-        id,user_id,content,
-        category,embedding,create_at,
-        update_at
-    </sql>
+    </resultMap>
+    <select id="search" resultMap="MemorySearchResultMap">
+        <![CDATA[
+        SELECT
+        id,
+        content,
+        category,
+        1 - (embedding <=> CAST(#{embedding} AS vector)) AS score
+        FROM user_memory
+        WHERE user_id = #{userId} AND
+        1 - (embedding <=> CAST(#{embedding} AS vector)) > #{minScore}
+        ORDER BY embedding <=> CAST(#{embedding} AS vector)
+        LIMIT #{maxResult}
+        ]]>
+    </select>
 </mapper>
