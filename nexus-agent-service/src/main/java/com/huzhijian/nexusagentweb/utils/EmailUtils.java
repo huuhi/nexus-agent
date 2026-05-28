@@ -22,7 +22,7 @@ public class EmailUtils {
         this.redisUtils = redisUtils;
     }
 
-    public Boolean sendEmail(String to, String subject) {
+    public void sendEmail(String to, String subject) {
         String verificationCode =RandomUtil.randomNumbers(4);
 //         写入redis缓存！有效期5分钟！
         redisUtils.set(EMAIL_CODE_PREFIX+to,verificationCode,5L);
@@ -38,10 +38,9 @@ public class EmailUtils {
             String htmlContent = buildHtmlContent(verificationCode);
             helper.setText(htmlContent, true);    // 设置为HTML格式
         } catch (MessagingException e) {
-            return false;
+            return;
         }
         mailSender.send(message);
-        return true;
     }
     
     // 构建HTML格式的邮件内容

@@ -45,10 +45,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
 
         if (loginDTO.type()== LoginType.CODE){
 //            验证码登录
-            String code = redisUtils.get(EMAIL_CODE_PREFIX+email);
-            if (code==null||!code.equals(loginDTO.code())) {
-                throw new ValidationException("验证码错误/过期！");
-            }
+            validCode(email,loginDTO.code());
         }else if (loginDTO.type()==LoginType.PASSWORD){
             if (user==null){
                 throw new ValidationException("邮箱/密码错误！");
@@ -82,9 +79,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         if (user != null) {
             throw new ValidationException("用户已存在！");
         }
-        if (!redisUtils.get(EMAIL_CODE_PREFIX+email).equals(registerDTO.code())) {
-            throw new ValidationException("验证码错误/过期！");
-        }
+        validCode(email,registerDTO.code());
         return register(email,registerDTO.username());
     }
 
@@ -101,10 +96,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         if (!user.getId().equals(UserContextHolder.getUserId())){
             throw new ValidationException("邮箱错误！");
         }
-        String code = redisUtils.get(EMAIL_CODE_PREFIX + email);
-        if (code==null||!code.equals(passwordDTO.code())) {
-            throw new ValidationException("验证码错误/过期！");
-        }
+        validCode(email,passwordDTO.code());
         update().eq("email",email)
                 .set("password",encoder.encode(passwordDTO.password()))
                 .update();
@@ -126,6 +118,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     }
 
 
+    private void validCode(String email,String userCode){
+        String code = redisUtils.get(EMAIL_CODE_PREFIX + email);
+        if (code==null||!code.equals(userCode)) {
+            throw new ValidationException("验证码错误/过期！");
+        }
+    }
 
 
 }

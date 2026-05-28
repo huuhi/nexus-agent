@@ -3,6 +3,9 @@ spring:
     name: nexus-agent-web
   profiles:
     active: dev
+  threads:
+    virtual:
+      enabled: true
 logging:
   level:
     com:

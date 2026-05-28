@@ -1,13 +1,15 @@
 package com.huzhijian.nexusagentweb.controller;
 
+import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.huzhijian.nexusagentweb.dto.KnowledgeDTO;
+import com.huzhijian.nexusagentweb.dto.KnowledgeFileDTO;
 import com.huzhijian.nexusagentweb.service.KnowledgeBaseService;
+import com.huzhijian.nexusagentweb.vo.KnowledgeDetailVO;
 import com.huzhijian.nexusagentweb.vo.Result;
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * @author 胡志坚
@@ -24,9 +26,26 @@ public class KnowledgeController {
         this.knowledgeBaseService = knowledgeBaseService;
     }
 
-    @PostMapping
-    public Result fileInsertKnowledge(@RequestBody @Valid KnowledgeDTO knowledgeDTO){
+    @PostMapping("/file")
+    public Result fileInsertKnowledge(@RequestBody @Valid KnowledgeFileDTO knowledgeDTO){
         String msg=knowledgeBaseService.insertKnowledge(knowledgeDTO.fileIds(),knowledgeDTO.knowledgeId());
         return Result.ok(msg);
     }
+    @PostMapping
+    public Result createKnowledge(@RequestBody @Valid KnowledgeDTO knowledgeDTO){
+        knowledgeBaseService.createKnowledge(knowledgeDTO);
+        return Result.ok();
+    }
+    @GetMapping("/list")
+    public Result getKnowledge(){
+        List<KnowledgeBase> list= knowledgeBaseService.getKnowledgeList();
+        return Result.ok(list);
+    }
+    @GetMapping("/{id}")
+    public Result getKnowledgeById(@PathVariable("id") Integer id){
+        KnowledgeDetailVO detailVO=knowledgeBaseService.getKnowledgeById(id);
+        return Result.ok(detailVO);
+    }
+
+
 }

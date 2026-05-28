@@ -107,8 +107,8 @@ public class ChatContextFactory {
                     .baseUrl(apiConfig.getBaseUrl())
                     .modelName(modelDTO.modelName())
                     .returnThinking(true)
-                    .sendThinking(true)
 //                    目前这个配置只针对deepseek
+                    .sendThinking(true)
                     .customParameters(extraBody)
                     .httpClientBuilder(new SpringRestClientBuilderFactory().create())
                     .build();

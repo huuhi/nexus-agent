@@ -25,6 +25,7 @@ public class KnowledgeBaseFile {
      * 
      */
     private Long fileId;
+    private String fileName;
 
     @TableField(value = "status",typeHandler = PgEnumTypeHandler.class)
     private UploadStatus status;

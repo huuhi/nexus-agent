@@ -14,5 +14,5 @@ public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<
                       String sessionId,
                       List<String> skills,
                       List<Long> MCPs,
-                      ModelDTO model, String knowledgeBase, boolean enableRag) {
+                      ModelDTO model, boolean enableRag) {
 }

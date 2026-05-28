@@ -70,10 +70,8 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
-        boolean remove = update().eq("session_id", sessionId)
-                .eq("user_id", userId)
-                .remove();
-        if (remove) {
+        int remove= mapper.removeBySessionAndUserId(sessionId,userId);
+        if (remove==1) {
             chatMemoryService.delByMemoryId(sessionId);
         }
     }
