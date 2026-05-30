@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.ChatHistoryList;
@@ -7,6 +8,7 @@ import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.mapper.ChatHistoryListMapper;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
+import com.huzhijian.nexusagentweb.service.WebSocketService;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -15,6 +17,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 
 /**
@@ -30,11 +33,13 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
     private final OpenAiChatModel model;
     private final ChatHistoryListMapper mapper;
     private final ChatMemoryService chatMemoryService;
+    private final WebSocketService webSocketService;
 
-    public ChatHistoryListServiceImpl(OpenAiChatModel model1, ChatHistoryListMapper mapper, ChatMemoryService chatMemoryService) {
+    public ChatHistoryListServiceImpl(OpenAiChatModel model1, ChatHistoryListMapper mapper, ChatMemoryService chatMemoryService, WebSocketService webSocketService) {
         this.model = model1;
         this.mapper = mapper;
         this.chatMemoryService = chatMemoryService;
+        this.webSocketService = webSocketService;
     }
 
     @Override
@@ -61,7 +66,10 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
                 .userId(userId)
                 .build();
         mapper.save(history);
-//        TODO 发送给前端
+//        发送给前端
+        Map<String, String> map = Map.of("type", "title", "data", title);
+        String jsonStr = JSONUtil.toJsonStr(map);
+        webSocketService.sendToClient(userId.toString(),jsonStr);
     }
 
     @Override
@@ -82,7 +90,7 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
         if (userId == null) {
             return List.of();
         }
-        return query().eq("user_id", userId).list();
+        return query().eq("user_id", userId).orderByDesc("update_time").list();
 
     }
 }

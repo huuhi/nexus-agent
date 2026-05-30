@@ -10,6 +10,8 @@ import com.huzhijian.nexusagentweb.vo.Result;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 /**
  * @author 胡志坚
  * @version 1.0
@@ -54,5 +56,11 @@ public class UserController {
         userConfigService.saveOrUpdateMcpToken(token);
         return Result.okWithMsg("设置成功！");
     }
+    @GetMapping("/api-config")
+    public Result getAPIConfig(){
+        List<APIConfig> configs=userConfigService.getApiConfig();
+        return Result.ok(configs);
+    }
+
 
 }

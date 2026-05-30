@@ -67,11 +67,13 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         String id = apiConfig.getId();
         List<APIConfig> apiConfigs= JSONUtil.toList(config.getLlmApiToken().toString(), APIConfig.class);
 
-        if (id==null){
+        if (id==null||id.isEmpty()){
 //            说明是添加配置
+            log.debug("添加新的配置：{}",apiConfig);
             apiConfig.setId(generateId);
             apiConfigs.add(apiConfig);
         }else{
+            log.debug("更新配置");
             apiConfigs=apiConfigs.stream().map(c -> {
                 if (c.getId().equals(id)) {
                     return apiConfig;
@@ -100,6 +102,34 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         config.setMcpToken(encrypt);
         config.setSalt(salt);
         updateById(config);
+    }
+
+    @Override
+    public List<APIConfig> getApiConfig() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        UserConfig config = query().eq("user_id",userId).one();
+        if (config==null){
+            return List.of();
+        }
+        String json = config.getLlmApiToken().toString();
+        List<APIConfig> configs = JSONUtil.toList(json, APIConfig.class);
+        configs.forEach(key->{
+//            解密，并且只显示前面和末尾
+            String salt = config.getSalt();
+            String apiKey = EncryptorFactory.text(salt).decrypt(key.getAPIKey());
+            int keepPrefix=2;
+            int keepSuffix=4;
+            if (apiKey.length()>keepSuffix+keepPrefix) {
+                apiKey = apiKey.substring(0, 2) + "****" + apiKey.substring(apiKey.length() - 4);
+            }else{
+                apiKey="******";
+            }
+            key.setAPIKey(apiKey);
+        });
+        return configs;
     }
 
 

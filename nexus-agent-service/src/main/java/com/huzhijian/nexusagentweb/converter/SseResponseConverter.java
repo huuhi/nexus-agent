@@ -5,7 +5,6 @@ import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.model.chat.response.PartialThinking;
-import dev.langchain4j.model.chat.response.PartialToolCall;
 import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -123,8 +122,9 @@ public class SseResponseConverter {
     public void finish() {
         if (isFinished.get()) return;
         try {
-            // 新会话时生成标题
+            // 新会话时生成标题并且返回新的会话ID
             if (isNewSession) {
+                emitter.send(SseEmitter.event().name("session_id").data(sessionId));
                 chatHistoryListService.createTitle(sessionId, message, answer.toString(), userId);
             }
             emitter.send(SseEmitter.event().name("finish").data("DONE"));

@@ -31,10 +31,5 @@ public class UserConfig {
      */
     private String mcpToken;
 
-    /**
-     * 
-     */
-    private Object userDefault;
-
     private String salt;
 }
