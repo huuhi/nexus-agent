@@ -80,9 +80,13 @@ public class MemoryTool {
                 .maxResults(3).minScore(0.7)
                 .queryEmbedding(embeddingModel.embed(query).content())
                 .build();
-        log.info("查询：{}",request.query());
-        List<EmbeddingMatch<TextSegment>> matches = pgVectorEmbeddingStore.search(request)
-                .matches();
+        List<EmbeddingMatch<TextSegment>> matches = null;
+        try {
+            matches = pgVectorEmbeddingStore.search(request)
+                    .matches();
+        } catch (Exception e) {
+            return e.getMessage();
+        }
         if (matches==null||matches.isEmpty()){
             return "知识库中未查询到修改知识片段，你可以修改关键词再次尝试查询";
         }

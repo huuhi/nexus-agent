@@ -79,6 +79,7 @@ public class ChatContextFactory {
     }
 
     private StreamingChatModel createModel(ModelDTO modelDTO) {
+        log.debug("模型配置：{}", modelDTO);
         UserConfig userConfig = UserConfigContextHolder.getUserConfig();
 
         if (userConfig!=null&&modelDTO!=null){
@@ -92,16 +93,24 @@ public class ChatContextFactory {
                 }
                 return config.getIsDefault();
             }).findFirst().orElse(null);
-            if (apiConfig==null || !apiConfig.getModel().contains(modelDTO.modelName())) return defaultModel;
+            if (apiConfig==null || !apiConfig.getModel().contains(modelDTO.modelName())){
+
+                return defaultModel;
+            }
             String secretApiKey = apiConfig.getAPIKey();
             String apiKey = EncryptorFactory.text(userConfig.getSalt()).decrypt(secretApiKey);
             Map<String, Object> extraBody = new HashedMap<>();
+//          加个customParameters配置,控制是否开启思考
             if (modelDTO.isThinking()){
+                log.debug("开启思考");
                 extraBody.put("thinking", Map.of("type", "enabled"));
                 extraBody.put("enable_thinking", true);
+            }else{
+                log.debug("不思考");
+                extraBody.put("thinking", Map.of("type", "disabled"));
+                extraBody.put("enable_thinking", false);
             }
             extraBody.put("enable_search", true);
-//          加个customParameters配置,控制是否开启思考
             return OpenAiStreamingChatModel.builder()
                     .apiKey(apiKey)
                     .baseUrl(apiConfig.getBaseUrl())

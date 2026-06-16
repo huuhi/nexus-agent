@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  nexus-agent-box:
+    build: .
+    container_name: nexus-agent-box
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped

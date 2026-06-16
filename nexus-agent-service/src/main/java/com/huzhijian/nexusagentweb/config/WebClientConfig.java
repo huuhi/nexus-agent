@@ -1,7 +1,9 @@
 package com.huzhijian.nexusagentweb.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -18,10 +20,13 @@ import java.time.Duration;
  * 创造日期 2026/4/30
  * 说明:
  */
+@Slf4j
 @Configuration
 public class WebClientConfig {
 
+    private final String base_url=System.getenv().getOrDefault("BASE_URL", "http://localhost:8000");
     @Bean
+    @Primary
     public WebClient webClient(){
         ConnectionProvider httpPool = ConnectionProvider.builder("http_pool")
                 .disposeTimeout(Duration.ofSeconds(20))
@@ -32,7 +37,7 @@ public class WebClientConfig {
                 .evictInBackground(Duration.ofMinutes(1))  // 清理后台连接间隔
                 .build();
         return WebClient.builder()
-                .baseUrl("http://localhost:8000")
+                .baseUrl(base_url)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(

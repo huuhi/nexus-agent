@@ -73,9 +73,10 @@ public class PgChatMemoryStore implements ChatMemoryStore {
         }
         chatMemoryService.insertBatch(insertList,userId);
 //         添加长期记忆，更新记忆的时候
-        if (count>0&&count%10==0){
-            checkMessageNeedSave(sessionId);
-        }
+//         6.16 取消被动添加
+//        if (count>0&&count%10==0){
+//            checkMessageNeedSave(sessionId);
+//        }
     }
 
     @Override

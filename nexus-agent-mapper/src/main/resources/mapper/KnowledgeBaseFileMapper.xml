@@ -9,12 +9,9 @@
             <result property="fileId" column="file_id" jdbcType="BIGINT"/>
             <result property="status" column="status" jdbcType="OTHER"/>
             <result property="failReason" column="fail_reason" jdbcType="VARCHAR"/>
+            <result property="fileName" column="fail_name" jdbcType="VARCHAR"/>
     </resultMap>
 
-    <sql id="Base_Column_List">
-        knowledge_base_id,file_id,status,
-        fail_reason
-    </sql>
 
     <update id="updateKnowledge">
         update knowledge_base_file set status=cast(#{status} AS upload_status),fail_reason=#{failReason}

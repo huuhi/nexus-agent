@@ -25,7 +25,11 @@ public class LogTool {
                 .aiMessage(message)
                 .type("AI")
                 .build();
-        systemLogService.save(log);
+        try {
+            systemLogService.save(log);
+        } catch (Exception e) {
+            return e.getMessage();
+        }
         return "success";
     }
 

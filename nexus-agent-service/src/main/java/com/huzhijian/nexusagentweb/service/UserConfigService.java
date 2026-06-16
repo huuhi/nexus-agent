@@ -19,4 +19,6 @@ public interface UserConfigService extends IService<UserConfig> {
 
     List<APIConfig> getApiConfig();
 
+    String getMCPConfig();
+
 }

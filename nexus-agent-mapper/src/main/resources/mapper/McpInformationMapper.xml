@@ -14,6 +14,7 @@
             <result property="type" column="type" jdbcType="VARCHAR"/>
             <result property="logoUrl" column="logo_url" jdbcType="VARCHAR"/>
             <result property="available" column="available" jdbcType="BOOLEAN"/>
+            <result property="strId" column="str_id" jdbcType="VARCHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
@@ -22,9 +23,9 @@
         type
     </sql>
     <insert id="saveBatch">
-        insert into mcp_information (name, url, description, header, user_id, type, logo_url) values
+        insert into mcp_information (name, url, description, header, user_id, type, logo_url,str_id) values
         <foreach collection="list" item="item" separator=",">
-         (#{item.name},#{item.url},#{item.description},#{item.header}::jsonb,#{item.userId},#{item.type},#{item.logoUrl})
+         (#{item.name},#{item.url},#{item.description},#{item.header}::jsonb,#{item.userId},#{item.type},#{item.logoUrl},#{item.strId})
         </foreach>
     </insert>
     <update id="updateMCP">
@@ -33,11 +34,9 @@
             url = #{url},
             description = #{description},
             header = #{header},
-            user_id = #{userId},
             type = #{type},
             logo_url = #{logoUrl},
-            available = #{available},
-            str_id = #{strId}
+            available = #{available}
         where id = #{id}
     </update>
 </mapper>

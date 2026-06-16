@@ -80,10 +80,10 @@ public class ChatServiceImpl implements ChatService {
 
         tokenStream.onPartialThinking(writer::writeThinking)
                 .onPartialResponse(writer::writeContent)
-
+                .onPartialToolCallWithContext(writer::writeToolRequestWithStream)
                 .onToolExecuted(consumer->{
                     ToolExecutionRequest request = consumer.request();
-                    writer.writeToolRequest(request.id(),request.name(),request.arguments());
+//                    writer.writeToolRequest(request.id(),request.name(),request.arguments());
                     writer.writeToolResult(request,consumer.hasFailed(),consumer.result());
                 })
                 .onCompleteResponse(response -> writer.finish())

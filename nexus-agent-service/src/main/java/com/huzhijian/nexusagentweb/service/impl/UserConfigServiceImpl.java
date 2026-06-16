@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
+import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
@@ -117,19 +118,37 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         String json = config.getLlmApiToken().toString();
         List<APIConfig> configs = JSONUtil.toList(json, APIConfig.class);
         configs.forEach(key->{
-//            解密，并且只显示前面和末尾
-            String salt = config.getSalt();
-            String apiKey = EncryptorFactory.text(salt).decrypt(key.getAPIKey());
-            int keepPrefix=2;
-            int keepSuffix=4;
-            if (apiKey.length()>keepSuffix+keepPrefix) {
-                apiKey = apiKey.substring(0, 2) + "****" + apiKey.substring(apiKey.length() - 4);
-            }else{
-                apiKey="******";
-            }
+            String apiKey = decryptKey(config.getSalt(), key.getAPIKey());
             key.setAPIKey(apiKey);
         });
         return configs;
+    }
+
+    @Override
+    public String getMCPConfig() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        UserConfig config = query().eq("user_id",userId).one();
+        if (config==null||config.getMcpToken()==null){
+            throw new NotFoundException("未设置MCP的APIKEY");
+        }
+        String mcpToken = config.getMcpToken();
+        return decryptKey(config.getSalt(), mcpToken);
+    }
+
+    private String decryptKey(String salt,String encryptKey){
+        //            解密，并且只显示前面和末尾
+        String apiKey = EncryptorFactory.text(salt).decrypt(encryptKey);
+        int keepPrefix=2;
+        int keepSuffix=4;
+        if (apiKey.length()>keepSuffix+keepPrefix) {
+            apiKey = apiKey.substring(0, 2) + "****" + apiKey.substring(apiKey.length() - 4);
+        }else{
+            apiKey="******";
+        }
+        return apiKey;
     }
 
 

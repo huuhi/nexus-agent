@@ -11,6 +11,8 @@ import org.springframework.scheduling.annotation.EnableAsync;
 public class NexusAgentWebApplication {
 
     public static void main(String[] args) {
+        String baseUrl = System.getenv("BASE_URL");
+        System.out.println("baseUrl:" + baseUrl);
         SpringApplication.run(NexusAgentWebApplication.class, args);
     }
 

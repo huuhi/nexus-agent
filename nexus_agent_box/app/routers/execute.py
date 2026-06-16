@@ -7,14 +7,13 @@ from app.schema.code import CodeRequest
 from e2b_code_interpreter import Sandbox
 from fastapi import APIRouter
 
-from nexus_agent_box.app.schema.code import CmdRequest
 
 router = APIRouter(prefix="/execute")
 
 
 # 创建环境，执行命令
 @router.post("/cmd")
-def execute_cmd(req:CmdRequest):
+def execute_cmd(req:CodeRequest):
     try:
         print("执行的命令："+req.cmd)
         box= Sandbox.connect(req.box_id)

@@ -5,6 +5,8 @@ import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.model.chat.response.PartialThinking;
+import dev.langchain4j.model.chat.response.PartialToolCall;
+import dev.langchain4j.model.chat.response.PartialToolCallContext;
 import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -69,8 +71,16 @@ public class SseResponseConverter {
             completeWithError(e);
         }
     }
+    public void writeToolRequestWithStream(PartialToolCall toolcall, PartialToolCallContext contexts) {
+        String name = toolcall.name();
+        String id = toolcall.id();
+        String arguments = toolcall.partialArguments();
 
-    public void writeToolRequest(String id, String name, String arguments) {
+        sendRequest(name, arguments, id);
+
+    }
+
+    private void sendRequest(String name, String arguments, String id) {
         if (isFinished.get()) return;
         MessageVO.ToolRequestVO vo = MessageVO.ToolRequestVO.builder()
                 .toolName(name)
@@ -88,6 +98,10 @@ public class SseResponseConverter {
         } catch (IOException e) {
             completeWithError(e);
         }
+    }
+
+    public void writeToolRequest(String id,String name,String arguments) {
+        sendRequest(name, arguments, id);
     }
 
     public void writeToolResult(ToolExecutionRequest request, boolean isError, String result) {

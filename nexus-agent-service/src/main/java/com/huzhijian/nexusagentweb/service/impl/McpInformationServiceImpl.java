@@ -98,7 +98,16 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (response==null) {
             throw new RuntimeException("错误");
         }
-        return response.getBody();
+        List<McpServerItemVO> body = response.getBody();
+        if (body==null||body.isEmpty()){
+            return List.of();
+        }
+//        这里将服务返回的ID设置为StrID，方便之后添加时 判断更新/添加
+        body.forEach(item->{
+            item.setStrId(item.getId());
+            item.setId("");
+        });
+        return body;
     }
 
     @Override
@@ -111,9 +120,10 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         List<McpInformation> existMCPs = query().eq("user_id", userId).list();
 //        需要添加的MCP服务ID
         List<McpInformation> list=new ArrayList<>();
+//        更新
         List<McpInformation> updateList=new ArrayList<>();
 
-
+//        收集
         Map<String, Long> map = existMCPs.stream().collect(Collectors.toMap(McpInformation::getStrId,McpInformation::getId));
         for (McpServerItemDTO mcp : mcPs) {
 
@@ -131,7 +141,9 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (!updateList.isEmpty()) {
             updateList.forEach(mcpInformationMapper::updateMCP);
         }
-        mcpInformationMapper.saveBatch(list);
+        if (!list.isEmpty()) {
+            mcpInformationMapper.saveBatch(list);
+        }
     }
 
     @Override
@@ -152,7 +164,11 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 
     @Override
     public void updateMCPById(McpServerItemDTO mcPs) {
-        McpInformation mcpInformation = transformMcpInformation(mcPs, null);
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("用户未登录");
+        }
+        McpInformation mcpInformation = transformMcpInformation(mcPs, userId);
         mcpInformationMapper.updateMCP(mcpInformation);
     }
 
@@ -164,21 +180,20 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 
     private McpInformation transformMcpInformation(McpServerItemDTO mcp,Long userId) {
         String header = JSONUtil.toJsonStr(mcp.header());
-        log.debug("header:{}", header);
-        McpInformation mcpInformation = McpInformation.builder()
+        log.debug("header:{}", mcp);
+        return McpInformation.builder()
                 .type(mcp.type())
                 .description(mcp.description())
                 .name(mcp.name())
                 .id(mcp.id())
                 .url(mcp.url())
+                .strId(mcp.strId())
                 .logoUrl(mcp.logoUrl())
+                .userId(userId)
                 .header(header)
                 .available(mcp.available())
                 .build();
-        if (userId!=null) {
-            mcpInformation.setUserId(userId);
-        }
-        return mcpInformation;
+
     }
 }
 

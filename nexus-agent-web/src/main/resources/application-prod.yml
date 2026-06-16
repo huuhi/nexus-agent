@@ -1,0 +1,57 @@
+langchain4j:
+  open-ai:
+    chat-model:
+      model-name: moonshot-v1-8k
+      base-url: https://api.moonshot.cn/v1
+      api-key: ${MOONSHOT}
+    streaming-chat-model:
+      model-name: deepseek-v4-flash
+      base-url: https://api.deepseek.com
+      custom-parameters:
+        enable_search: true
+        enable_thinking: true
+      api-key: ${DEEPSEEK}
+      return-thinking: true
+    embedding-model:
+      api-key: ${AI_KEY}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model-name: text-embedding-v4
+      dimensions: 1024
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${DOCKER_IP}:5432/nexus_agent?reWriteBatchedInserts=true?stringtype=unspecified
+    password: postgres
+    username: postgres
+    hikari:
+      maximum-pool-size: 100
+      minimum-idle: 5
+      idle-timeout: 600000
+      max-lifetime: 550000
+      connection-timeout: 30000
+      validation-timeout: 5000
+      leak-detection-threshold: 60000
+  mail:
+    host: smtp.qq.com
+    port: 587
+    username: ${MAIL_USERNAME}
+    password: ${MAIL_PASSWORD}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+  aliyun:
+    bucket-name: nexus-agent-file
+    region: cn-guangzhou
+    endpoint: https://oss-cn-guangzhou.aliyuncs.com
+    image-dir: user/avatar
+    file-dir: user/file
+  data:
+    redis:
+      host: ${DOCKER_IP}
+      password: redis
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml

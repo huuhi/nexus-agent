@@ -147,11 +147,13 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
             add.forEach(m->{
                 float[] vector = embeddingText(m.getContent());
                 m.setEmbedding(vector);
+                m.setUserId(userId);
             });
             List<UserMemory> update = newMemories.getUpdate();
             update.forEach(m->{
                 float[] vector  = embeddingText(m.getContent());
                 m.setEmbedding(vector);
+                m.setUserId(userId);
             });
             updateBatchById(update);
             saveBatch(add);

@@ -61,6 +61,10 @@ public class UserController {
         List<APIConfig> configs=userConfigService.getApiConfig();
         return Result.ok(configs);
     }
-
+    @GetMapping("/mcp-config")
+    public Result getMCPConfig(){
+        String config=userConfigService.getMCPConfig();
+        return Result.ok(config);
+    }
 
 }

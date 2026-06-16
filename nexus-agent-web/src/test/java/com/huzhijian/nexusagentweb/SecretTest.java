@@ -4,7 +4,10 @@ import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.keygen.KeyGenerators;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -27,5 +30,32 @@ public class SecretTest {
         String key1 = KeyGenerators.string().generateKey();
         System.out.println(key1);
         System.out.println(key1.length());
+    }
+
+    @Test
+    void getAAA(){
+        String a= System.getenv("BASE_URL")==null?"http://localhost:8000": java.lang.System.getProperty("BASE_URL");
+        System.out.println(a);
+    }
+
+    @Test
+    public void testDirectConnection() {
+        WebClient client = WebClient.builder()
+                .baseUrl("http://100.106.145.17:8000")
+                .build();
+
+        Flux<String> result = client.get()
+                .uri("/box")          // 根据实际接口路径调整
+                .retrieve()
+                .bodyToFlux(String.class)
+                .timeout(Duration.ofSeconds(10));
+
+        result.subscribe(
+                data -> System.out.println("收到: " + data),
+                error -> System.err.println("错误: " + error.getMessage())
+        );
+
+        // 等待足够时间让请求完成
+        try { Thread.sleep(8000); } catch (InterruptedException e) { }
     }
 }
