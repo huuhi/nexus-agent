@@ -11,11 +11,16 @@ import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.utils.RedisUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.keygen.KeyGenerators;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static com.huzhijian.nexusagentweb.content.RedisContent.CONFIG_KEY;
+import static com.huzhijian.nexusagentweb.content.RedisContent.CONFIG_TTL;
 
 /**
 * @author windows
@@ -27,9 +32,11 @@ import java.util.List;
 public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserConfig>
     implements UserConfigService {
     private final UserConfigMapper userConfigMapper;
+    private final RedisUtils redisUtils;
 
-    public UserConfigServiceImpl(UserConfigMapper userConfigMapper) {
+    public UserConfigServiceImpl(UserConfigMapper userConfigMapper, RedisUtils redisUtils) {
         this.userConfigMapper = userConfigMapper;
+        this.redisUtils = redisUtils;
     }
 
 
@@ -40,6 +47,7 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
+        redisUtils.delete(CONFIG_KEY+userId);
 
         String generateId= RandomUtil.randomString(10)+RandomUtil.randomNumber();
 //        加密KEY
@@ -54,7 +62,8 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
             apiConfig.setId(generateId);
             String encryptKey = EncryptorFactory.text(salt).encrypt(apiKey);
             apiConfig.setAPIKey(encryptKey);
-
+            //第一个添加，设为默认
+            apiConfig.setIsDefault(true);
             String jsonConfig = JSONUtil.toJsonStr(List.of(apiConfig));
             UserConfig userConfig = UserConfig.builder().userId(userId).llmApiToken(jsonConfig).salt(salt).build();
             userConfigMapper.save(userConfig);
@@ -92,11 +101,23 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
     }
 
     @Override
+    public UserConfig getUserConfig(Long userId) {
+        return redisUtils.queryWithPassThrough(
+                CONFIG_KEY,
+                userId,
+                UserConfig.class,
+                this::getById,
+                CONFIG_TTL,
+                TimeUnit.DAYS);
+    }
+
+    @Override
     public void saveOrUpdateMcpToken(String token) {
         Long userId = UserContextHolder.getUserId();
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
+        redisUtils.delete(CONFIG_KEY+userId);
         UserConfig config = getById(userId);
         String salt=config.getSalt()==null?KeyGenerators.string().generateKey():config.getSalt();
         String encrypt = EncryptorFactory.text(salt).encrypt(token);
@@ -111,7 +132,7 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
-        UserConfig config = query().eq("user_id",userId).one();
+        UserConfig config = getUserConfig(userId);
         if (config==null){
             return List.of();
         }
@@ -122,6 +143,13 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
             key.setAPIKey(apiKey);
         });
         return configs;
+    }
+
+
+
+    private UserConfig getById(Long userId){
+        log.debug("查询配置~");
+        return query().eq("user_id", userId).one();
     }
 
     @Override

@@ -11,5 +11,8 @@ import java.util.List;
  * 创造日期 2026/4/17
  * 说明:
  */
-public record KnowledgeFileDTO(@NotEmpty(message = "文件ID不能为空！") List<Long> fileIds, @NotNull(message = "知识库ID不能为空！") Integer knowledgeId) {
+public record KnowledgeFileDTO(@NotEmpty(message = "文件ID不能为空！") List<Long> fileIds,
+                               @NotNull(message = "知识库ID不能为空！") Integer knowledgeId,
+                               @NotNull(message = "配置ID不能为空！") String configId,
+                               @NotNull(message = "模型名称不能为空！") String model) {
 }

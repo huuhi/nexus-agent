@@ -28,7 +28,7 @@ public class KnowledgeController {
 
     @PostMapping("/file")
     public Result fileInsertKnowledge(@RequestBody @Valid KnowledgeFileDTO knowledgeDTO){
-        String msg=knowledgeBaseService.insertKnowledge(knowledgeDTO.fileIds(),knowledgeDTO.knowledgeId());
+        String msg=knowledgeBaseService.insertKnowledge(knowledgeDTO);
         return Result.ok(msg);
     }
     @PostMapping

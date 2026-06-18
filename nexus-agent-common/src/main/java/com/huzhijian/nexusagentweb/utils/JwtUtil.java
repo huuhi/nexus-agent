@@ -23,7 +23,7 @@ public class JwtUtil {
     // 默认过期时间：7天
     private static final long DEFAULT_TTL_MILLIS = 60 * 60 * 1000L * 24 * 7;
 
-    // 优先从环境变量加载密钥，否则生成随机密钥（仅适合单机开发）
+    // 优先从环境变量加载密钥，否则生成随机密钥（仅适合单机开发）xz
     private static final SecretKey SECRET_KEY;
     private static final JwtParser PARSER;
 

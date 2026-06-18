@@ -1,7 +1,7 @@
 package com.huzhijian.nexusagentweb.service;
 
-import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,5 +19,7 @@ public interface FileService extends IService<SysFile> {
 
     String uploadImage(MultipartFile file);
 
-    List<KnowledgeFileVO> getFileByUserId(String fileName);
+    List<KnowledgeFileVO> getFileByUserId(String fileName,BizType bizType);
+
+    List<KnowledgeFileVO> queryFileByids(List<Long> fileIds);
 }

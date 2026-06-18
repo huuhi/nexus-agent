@@ -15,6 +15,8 @@ public interface UserConfigService extends IService<UserConfig> {
 
     void saveOrUpdateAPIConfig(APIConfig config);
 
+    UserConfig getUserConfig(Long userId);
+
     void saveOrUpdateMcpToken(String token);
 
     List<APIConfig> getApiConfig();

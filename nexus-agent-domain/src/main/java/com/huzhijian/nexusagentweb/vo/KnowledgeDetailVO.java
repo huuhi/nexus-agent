@@ -1,6 +1,5 @@
 package com.huzhijian.nexusagentweb.vo;
 
-import com.huzhijian.nexusagentweb.domain.KnowledgeBaseFile;
 import lombok.Data;
 
 import java.util.List;
@@ -35,5 +34,5 @@ public class KnowledgeDetailVO {
      */
     private String languageCode;
 
-    private List<KnowledgeBaseFile>  knowledgeBaseFileList;
+    private List<KnowledgeFileVO>  knowledgeBaseFileList;
 }

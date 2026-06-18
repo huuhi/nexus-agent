@@ -7,6 +7,7 @@ import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBaseFile;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.dto.KnowledgeDTO;
+import com.huzhijian.nexusagentweb.dto.KnowledgeFileDTO;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
@@ -15,6 +16,7 @@ import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.service.KnowledgeBaseFileService;
 import com.huzhijian.nexusagentweb.service.KnowledgeBaseService;
 import com.huzhijian.nexusagentweb.vo.KnowledgeDetailVO;
+import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -40,12 +42,14 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
 
 
     @Override
-    public String insertKnowledge(List<Long> fileIds,Integer knowledgeId) {
+    public String insertKnowledge(KnowledgeFileDTO knowledgeDTO) {
         Long userId = UserContextHolder.getUserId();
         if (userId==null){
 //            抛出401
             throw new UnauthorizedException("未登录！");
         }
+        Integer knowledgeId = knowledgeDTO.knowledgeId();
+        List<Long> fileIds = knowledgeDTO.fileIds();
 //        这里拿到文件之后，异步处理
         List<SysFile> list = fileService.query().in("id", fileIds)
                 .eq("user_id", userId)
@@ -64,7 +68,7 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
             knowledgeBaseFileList.add(knowledgeBaseFile);
         }
         knowledgeBaseFileService.saveBatch(knowledgeBaseFileList);
-        knowledgeBaseFileService.embedding(list,userId,knowledgeBase);
+        knowledgeBaseFileService.embedding(list,userId,knowledgeId,knowledgeDTO.configId(),knowledgeDTO.model());
         return "上传中~";
     }
 
@@ -103,7 +107,10 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
         if (knowledgeBase==null){
             throw new NotFoundException("知识库不存在！");
         };
-        List<KnowledgeBaseFile> files = knowledgeBaseFileService.query().eq("knowledge_base_id", id).list();
+        List<KnowledgeBaseFile> fileBaseList = knowledgeBaseFileService.query().eq("knowledge_base_id", id).list();
+        List<Long> fileIds = fileBaseList.stream().map(KnowledgeBaseFile::getFileId).toList();
+        List<KnowledgeFileVO> files= fileService.queryFileByids(fileIds);
+
         KnowledgeDetailVO detailVO = BeanUtil.copyProperties(knowledgeBase, KnowledgeDetailVO.class);
         detailVO.setKnowledgeBaseFileList(files);
         return detailVO;

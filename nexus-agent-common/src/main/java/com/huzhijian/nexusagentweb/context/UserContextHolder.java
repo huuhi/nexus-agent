@@ -14,6 +14,6 @@ public class UserContextHolder {
     }
     public static void removeUserId(){ tl.remove(); }
     public static Long getUserId() {
-        return 1L;
+        return tl.get();
     }
 }

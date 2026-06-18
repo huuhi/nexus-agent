@@ -37,8 +37,8 @@ public class FileController {
 
 //    获取当前用户的文件列表
     @GetMapping
-    public Result getUserFile(@RequestParam String fileName){
-        List<KnowledgeFileVO> knowledgeFileVOS=fileService.getFileByUserId(fileName);
+    public Result getUserFile(@RequestParam(value = "fileName", required = false)String fileName,@RequestParam(value = "bizType", required = false)  BizType bizType){
+        List<KnowledgeFileVO> knowledgeFileVOS=fileService.getFileByUserId(fileName,bizType);
         return Result.ok(knowledgeFileVOS);
     }
 }

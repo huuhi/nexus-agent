@@ -8,9 +8,10 @@ import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.exception.NotSupportException;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
-import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
 import com.huzhijian.nexusagentweb.utils.FileTypeUtils;
 import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
@@ -103,16 +104,25 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
     }
 
     @Override
-    public List<KnowledgeFileVO> getFileByUserId(String fileName) {
+    public List<KnowledgeFileVO> getFileByUserId( String fileName, BizType bizType) {
         Long userId = UserContextHolder.getUserId();
         if (userId==null){
-            return List.of();
+            throw new UnauthorizedException("用户未登录！");
         }
         List<SysFile> list = query().eq("user_id", userId)
-                .eq("biz_type", BizType.KNOWLEDGE)
+                .eq(bizType!=null,"biz_type", bizType)
                 .like(fileName != null, "file_name", fileName)
                 .list();
         return BeanUtil.copyToList(list, KnowledgeFileVO.class);
+    }
+
+    @Override
+    public List<KnowledgeFileVO> queryFileByids(List<Long> fileIds) {
+        if (fileIds==null|| fileIds.isEmpty()){
+            return List.of();
+        }
+        List<SysFile> sysFiles = query().in("id",fileIds).list();
+        return BeanUtil.copyToList(sysFiles, KnowledgeFileVO.class);
     }
 
 }

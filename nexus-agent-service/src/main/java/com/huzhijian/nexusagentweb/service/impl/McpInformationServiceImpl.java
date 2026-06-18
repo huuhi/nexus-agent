@@ -3,7 +3,6 @@ package com.huzhijian.nexusagentweb.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.huzhijian.nexusagentweb.context.UserConfigContextHolder;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
@@ -12,6 +11,7 @@ import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.McpInformationMapper;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
+import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
 import com.huzhijian.nexusagentweb.vo.McpDetailVO;
 import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
@@ -40,10 +40,12 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
     implements McpInformationService{
     private final HttpUtils  httpUtils;
     private final McpInformationMapper mcpInformationMapper;
+    private final UserConfigService userConfigService;
 
-    public McpInformationServiceImpl(HttpUtils httpUtils, McpInformationMapper mcpInformationMapper) {
+    public McpInformationServiceImpl(HttpUtils httpUtils, McpInformationMapper mcpInformationMapper, UserConfigService userConfigService) {
         this.httpUtils = httpUtils;
         this.mcpInformationMapper = mcpInformationMapper;
+        this.userConfigService = userConfigService;
     }
 
     @Override
@@ -84,7 +86,9 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
-        UserConfig userConfig = UserConfigContextHolder.getUserConfig();
+        UserConfig userConfig = userConfigService.getUserConfig(userId);
+
+
         if (userConfig == null) {
             throw new UnauthorizedException("未配置");
         }

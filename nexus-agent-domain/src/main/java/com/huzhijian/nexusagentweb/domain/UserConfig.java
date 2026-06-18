@@ -24,7 +24,7 @@ public class UserConfig {
      *
      * */
 //    @TableField(typeHandler = JacksonTypeHandler.class)
-    private Object llmApiToken;
+    private String llmApiToken;
 
     /**
      * 

@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.vo;
 
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.typehandler.PgEnumTypeHandler;
 import lombok.AllArgsConstructor;
@@ -51,6 +52,8 @@ public class KnowledgeFileVO {
      */
     private Date createTime;
 
+
+    private BizType bizType;
     /**
      *
      */

@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.service;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.huzhijian.nexusagentweb.domain.KnowledgeBase;
 import com.huzhijian.nexusagentweb.dto.KnowledgeDTO;
+import com.huzhijian.nexusagentweb.dto.KnowledgeFileDTO;
 import com.huzhijian.nexusagentweb.vo.KnowledgeDetailVO;
 
 import java.util.List;
@@ -14,7 +15,7 @@ import java.util.List;
 */
 public interface KnowledgeBaseService extends IService<KnowledgeBase> {
 
-    String insertKnowledge(List<Long> fileIds,Integer knowledgeId);
+    String insertKnowledge(KnowledgeFileDTO knowledgeDTO);
 
     void createKnowledge(KnowledgeDTO knowledgeDTO);
 

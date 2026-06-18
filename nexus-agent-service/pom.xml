@@ -10,8 +10,8 @@
     </parent>
 
     <artifactId>nexus-agent-service</artifactId>
-    <version>0.0.1</version>
-    <description>初步完成主要功能</description>
+    <version>0.1.0</version>
+    <description>修改配置，添加向量模型配置</description>
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -30,12 +30,7 @@
             <artifactId>langchain4j-open-ai-spring-boot-starter</artifactId>
         </dependency>
 
-<!--        AOP-->
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-aop</artifactId>
-        </dependency>
 <!--        网络请求-->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -99,11 +94,7 @@
             <artifactId>hutool-all</artifactId>
             <version>5.8.27</version>
         </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <scope>provided</scope>
-        </dependency>
+
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-webmvc</artifactId>

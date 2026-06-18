@@ -26,7 +26,7 @@ public class APIConfig {
     private String baseUrl;
 //  模型列表，存储mx ID
     @NotEmpty(message = "模型列表为空")
-    private List<String> model;
+    private List<Model> model;
 //    是否默认
     private Boolean isDefault;
 }
