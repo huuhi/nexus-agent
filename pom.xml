@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.13</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.huzhijian</groupId>
+    <artifactId>nexus-agent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>nexus-agent</name>
+    <description>nexus-agent</description>
+    <packaging>pom</packaging>
+    <properties>
+        <java.version>21</java.version>
+        <langchain4j.version>1.12.1</langchain4j.version>
+        <mybatis.version>3.5.6</mybatis.version>
+    </properties>
+    <modules>
+        <module>nexus-agent-web</module>
+        <module>nexus-agent-service</module>
+        <module>nexus-agent-mapper</module>
+        <module>nexus-agent-common</module>
+        <module>nexus-agent-domain</module>
+    </modules>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

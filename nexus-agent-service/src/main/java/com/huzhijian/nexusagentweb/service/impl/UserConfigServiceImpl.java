@@ -1,0 +1,187 @@
+package com.huzhijian.nexusagentweb.service.impl;
+
+import cn.hutool.core.util.RandomUtil;
+import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.domain.UserConfig;
+import com.huzhijian.nexusagentweb.exception.NotFoundException;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
+import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
+import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.utils.RedisUtils;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.keygen.KeyGenerators;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static com.huzhijian.nexusagentweb.content.RedisContent.CONFIG_KEY;
+import static com.huzhijian.nexusagentweb.content.RedisContent.CONFIG_TTL;
+
+/**
+* @author windows
+* @description 针对表【user_config(用户SKILL关系模型)】的数据库操作Service实现
+* @createDate 2026-04-26 20:27:21
+*/
+@Service
+@Slf4j
+public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserConfig>
+    implements UserConfigService {
+    private final UserConfigMapper userConfigMapper;
+    private final RedisUtils redisUtils;
+
+    public UserConfigServiceImpl(UserConfigMapper userConfigMapper, RedisUtils redisUtils) {
+        this.userConfigMapper = userConfigMapper;
+        this.redisUtils = redisUtils;
+    }
+
+
+    @Override
+    public void saveOrUpdateAPIConfig(APIConfig apiConfig) {
+//        API_KEY_SECRET
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        redisUtils.delete(CONFIG_KEY+userId);
+
+        String generateId= RandomUtil.randomString(10)+RandomUtil.randomNumber();
+//        加密KEY
+        String apiKey = apiConfig.getAPIKey();
+        String salt = KeyGenerators.string().generateKey();
+
+//      根据用户ID获取配置
+        UserConfig config = getById(userId);
+        if (config==null){
+//        添加 配置
+//            添加api配置
+            apiConfig.setId(generateId);
+            String encryptKey = EncryptorFactory.text(salt).encrypt(apiKey);
+            apiConfig.setAPIKey(encryptKey);
+            //第一个添加，设为默认
+            apiConfig.setIsDefault(true);
+            String jsonConfig = JSONUtil.toJsonStr(List.of(apiConfig));
+            UserConfig userConfig = UserConfig.builder().userId(userId).llmApiToken(jsonConfig).salt(salt).build();
+            userConfigMapper.save(userConfig);
+            return;
+        }
+//        如果说不是新增用户配置，说明有salt，使用用户专有的进行加密。
+        salt=config.getSalt();
+        String encryptKey = EncryptorFactory.text(salt).encrypt(apiKey);
+        apiConfig.setAPIKey(encryptKey);
+//        更新
+        String id = apiConfig.getId();
+        List<APIConfig> apiConfigs= JSONUtil.toList(config.getLlmApiToken().toString(), APIConfig.class);
+
+        if (id==null||id.isEmpty()){
+//            说明是添加配置
+            log.debug("添加新的配置：{}",apiConfig);
+            apiConfig.setId(generateId);
+            apiConfigs.add(apiConfig);
+        }else{
+            log.debug("更新配置");
+            apiConfigs=apiConfigs.stream().map(c -> {
+                if (c.getId().equals(id)) {
+                    return apiConfig;
+                }
+//            如果当前配置为默认，那么其他配置设置成非默认，只能存在一个默认配置。
+                if (apiConfig.getIsDefault()){
+                    c.setIsDefault(false);
+                }
+                return c;
+            }).toList();
+        }
+        String jsonConfigs = JSONUtil.toJsonStr(apiConfigs);
+        config.setLlmApiToken(jsonConfigs);
+        userConfigMapper.updateAPIconfigById(config);
+    }
+
+    @Override
+    public UserConfig getUserConfig(Long userId) {
+        return redisUtils.queryWithPassThrough(
+                CONFIG_KEY,
+                userId,
+                UserConfig.class,
+                this::getById,
+                CONFIG_TTL,
+                TimeUnit.DAYS);
+    }
+
+    @Override
+    public void saveOrUpdateMcpToken(String token) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        redisUtils.delete(CONFIG_KEY+userId);
+        UserConfig config = getById(userId);
+        String salt=config.getSalt()==null?KeyGenerators.string().generateKey():config.getSalt();
+        String encrypt = EncryptorFactory.text(salt).encrypt(token);
+        config.setMcpToken(encrypt);
+        config.setSalt(salt);
+        updateById(config);
+    }
+
+    @Override
+    public List<APIConfig> getApiConfig() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        UserConfig config = getUserConfig(userId);
+        if (config==null){
+            return List.of();
+        }
+        String json = config.getLlmApiToken().toString();
+        List<APIConfig> configs = JSONUtil.toList(json, APIConfig.class);
+        configs.forEach(key->{
+            String apiKey = decryptKey(config.getSalt(), key.getAPIKey());
+            key.setAPIKey(apiKey);
+        });
+        return configs;
+    }
+
+
+
+    private UserConfig getById(Long userId){
+        log.debug("查询配置~");
+        return query().eq("user_id", userId).one();
+    }
+
+    @Override
+    public String getMCPConfig() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        UserConfig config = query().eq("user_id",userId).one();
+        if (config==null||config.getMcpToken()==null){
+            throw new NotFoundException("未设置MCP的APIKEY");
+        }
+        String mcpToken = config.getMcpToken();
+        return decryptKey(config.getSalt(), mcpToken);
+    }
+
+    private String decryptKey(String salt,String encryptKey){
+        //            解密，并且只显示前面和末尾
+        String apiKey = EncryptorFactory.text(salt).decrypt(encryptKey);
+        int keepPrefix=2;
+        int keepSuffix=4;
+        if (apiKey.length()>keepSuffix+keepPrefix) {
+            apiKey = apiKey.substring(0, 2) + "****" + apiKey.substring(apiKey.length() - 4);
+        }else{
+            apiKey="******";
+        }
+        return apiKey;
+    }
+
+
+}
+
+
+
+

@@ -1,0 +1,142 @@
+package com.huzhijian.nexusagentweb.factory;
+
+import cn.hutool.json.JSONUtil;
+import com.huzhijian.nexusagentweb.config.PgChatMemoryStore;
+import com.huzhijian.nexusagentweb.context.ChatContext;
+import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.domain.Model;
+import com.huzhijian.nexusagentweb.domain.UserConfig;
+import com.huzhijian.nexusagentweb.dto.ChatDTO;
+import com.huzhijian.nexusagentweb.dto.ModelDTO;
+import com.huzhijian.nexusagentweb.em.ModelType;
+import com.huzhijian.nexusagentweb.service.ChatAssistant;
+import com.huzhijian.nexusagentweb.service.McpInformationService;
+import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.tools.BoxTool;
+import com.huzhijian.nexusagentweb.tools.LogTool;
+import com.huzhijian.nexusagentweb.tools.MemoryTool;
+import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
+import dev.langchain4j.mcp.McpToolProvider;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+import dev.langchain4j.service.AiServices;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.map.HashedMap;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * @author 胡志坚
+ * @version 1.0
+ * 创造日期 2026/4/24
+ * 说明:
+ */
+@Component
+@Slf4j
+@RequiredArgsConstructor
+public class ChatContextFactory {
+    private final StreamingChatModel defaultModel;
+    private final PgChatMemoryStore chatMemoryStore;
+    private final MemoryTool ragTool;
+    private final McpInformationService mcpInformationService;
+    private final BoxTool boxTool;
+    private final LogTool logTool;
+    private final UserConfigService  userConfigService;
+
+
+    public ChatContext create(ChatDTO chatDTO,Long userId){
+        StreamingChatModel  model=createModel(chatDTO.model(),userId);
+        String temp=chatDTO.sessionId();
+//        是否为新的对话，如果是，创建新的会话ID，并且
+        boolean isNewSession=temp==null||temp.isEmpty();
+        String sessionId =isNewSession? UUID.randomUUID().toString():temp;
+        McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
+        AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
+                .streamingChatModel(model)
+                .tools(boxTool,logTool)
+                .chatMemoryProvider(memoryId -> TokenWindowChatMemory
+                        .builder()
+                        .maxTokens(100000,new OpenAiTokenCountEstimator("gpt-4o"))
+                        .chatMemoryStore(chatMemoryStore)
+                        .id(sessionId)
+                        .build());
+
+        if (chatDTO.enableRag()){
+            builder.tools(ragTool);
+        }
+        if (mcp!=null){
+            builder.toolProvider(mcp);
+        }
+        ChatAssistant chatAssistant = builder.build();
+        return ChatContext.builder().chatAssistant(chatAssistant)
+                .sessionId(sessionId)
+                .isNewSession(isNewSession)
+                .build();
+    }
+
+    private StreamingChatModel createModel(ModelDTO modelDTO,Long userId) {
+        log.debug("模型配置：{}", modelDTO);
+        UserConfig userConfig = userConfigService.getUserConfig(userId);
+
+        if (userConfig!=null&&modelDTO!=null){
+//            构造模型
+            String configJson = userConfig.getLlmApiToken().toString();
+            List<APIConfig> apiConfigs = JSONUtil.toList(configJson, APIConfig.class);
+            APIConfig apiConfig = apiConfigs.stream().filter(config -> {
+//                如果ID不为空也不为null，那么优先根据id寻找配置，如果为null，那么使用默认配置
+                if (modelDTO.id() != null && !modelDTO.id().isEmpty()) {
+                    return config.getId().equals(modelDTO.id());
+                }
+                return config.getIsDefault();
+            }).findFirst().orElse(null);
+
+
+            if (apiConfig==null){
+//              TODO  判断余额是否足够
+                return defaultModel;
+            }
+            List<Model> models = apiConfig.getModel();
+            boolean match = models.stream().anyMatch(model -> {
+//                类型为Chat并且模型名称存在配置中
+                return model.getType().equals(ModelType.CHAT) && model.getName().equals(modelDTO.modelName());
+            });
+            if (!match){
+                return defaultModel;
+            }
+
+            String secretApiKey = apiConfig.getAPIKey();
+            String apiKey = EncryptorFactory.text(userConfig.getSalt()).decrypt(secretApiKey);
+            Map<String, Object> extraBody = new HashedMap<>();
+//          加个customParameters配置,控制是否开启思考
+            if (modelDTO.isThinking()){
+                log.debug("开启思考");
+                extraBody.put("thinking", Map.of("type", "enabled"));
+                extraBody.put("enable_thinking", true);
+            }else{
+                log.debug("不思考");
+                extraBody.put("thinking", Map.of("type", "disabled"));
+                extraBody.put("enable_thinking", false);
+            }
+            extraBody.put("enable_search", true);
+            return OpenAiStreamingChatModel.builder()
+                    .apiKey(apiKey)
+                    .baseUrl(apiConfig.getBaseUrl())
+                    .modelName(modelDTO.modelName())
+                    .returnThinking(true)
+//                    目前这个配置只针对deepseek
+                    .sendThinking(true)
+                    .customParameters(extraBody)
+                    .httpClientBuilder(new SpringRestClientBuilderFactory().create())
+                    .build();
+        }
+        return defaultModel;
+    }
+
+
+}

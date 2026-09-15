@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.UserMemoryMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.UserMemory">
+            <id property="id" column="id" jdbcType="BIGINT"/>
+            <result property="userId" column="user_id" jdbcType="BIGINT"/>
+            <result property="content" column="content" jdbcType="VARCHAR"/>
+            <result property="source" column="source" jdbcType="VARCHAR"/>
+            <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
+    </resultMap>
+    <resultMap id="MemorySearchResultMap"
+               type="com.huzhijian.nexusagentweb.vo.MemorySearchResult">
+        <id property="id" column="id"/>
+        <result property="content" column="content"/>
+        <result property="category" column="category"/>
+        <result property="score" column="score"/>
+
+    </resultMap>
+    <select id="search" resultMap="MemorySearchResultMap">
+        <![CDATA[
+        SELECT
+        id,
+        content,
+        category,
+        1 - (embedding <=> CAST(#{embedding} AS vector)) AS score
+        FROM user_memory
+        WHERE user_id = #{userId} AND
+        1 - (embedding <=> CAST(#{embedding} AS vector)) > #{minScore}
+        ORDER BY embedding <=> CAST(#{embedding} AS vector)
+        LIMIT #{maxResult}
+        ]]>
+    </select>
+</mapper>

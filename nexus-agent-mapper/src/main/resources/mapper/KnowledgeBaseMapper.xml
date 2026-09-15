@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.huzhijian.nexusagentweb.mapper.KnowledgeBaseMapper">
+
+    <resultMap id="BaseResultMap" type="com.huzhijian.nexusagentweb.domain.KnowledgeBase">
+            <id property="id" column="id" jdbcType="INTEGER"/>
+            <result property="userId" column="user_id" jdbcType="BIGINT"/>
+            <result property="name" column="name" jdbcType="VARCHAR"/>
+            <result property="describe" column="describe" jdbcType="VARCHAR"/>
+            <result property="isPublic" column="is_public" jdbcType="BOOLEAN"/>
+            <result property="languageCode" column="language_code" jdbcType="VARCHAR"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,user_id,name,
+        describe,is_public,language_code
+    </sql>
+</mapper>

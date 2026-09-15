@@ -1,0 +1,100 @@
+package com.huzhijian.nexusagentweb.service.impl;
+
+import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.domain.ChatHistoryList;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.mapper.ChatHistoryListMapper;
+import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
+import com.huzhijian.nexusagentweb.service.ChatMemoryService;
+import com.huzhijian.nexusagentweb.service.WebSocketService;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Map;
+
+
+/**
+* @author windows
+* @description 针对表【chat_history_list】的数据库操作Service实现
+* @createDate 2026-04-18 11:52:04
+*/
+@Service
+@Slf4j
+public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMapper, ChatHistoryList>
+    implements ChatHistoryListService{
+
+    private final OpenAiChatModel model;
+    private final ChatHistoryListMapper mapper;
+    private final ChatMemoryService chatMemoryService;
+    private final WebSocketService webSocketService;
+
+    public ChatHistoryListServiceImpl(OpenAiChatModel model1, ChatHistoryListMapper mapper, ChatMemoryService chatMemoryService, WebSocketService webSocketService) {
+        this.model = model1;
+        this.mapper = mapper;
+        this.chatMemoryService = chatMemoryService;
+        this.webSocketService = webSocketService;
+    }
+
+    @Override
+    @Async
+    public void createTitle(String sessionId, String message,String answer,Long userId) {
+//        异步生成标题
+        SystemMessage systemMessage = SystemMessage.from("""
+            根据用户的问题及AI的回答生成标题。只返回标题内容，不允许返回其他任何无关内容，不允许自言自语，不要加"标题："等前缀。
+                 问题：%s
+                 回答：%s
+            """.formatted(message, answer));
+        String title = null;
+        try {
+            ChatResponse chat = model.chat(systemMessage);
+            title = chat.aiMessage().text();
+        } catch (Exception e) {
+//          降级  如果出错，就使用用户的问题作为标题
+            int min = Math.min(255, message.length());
+            title=message.substring(0,min).trim();
+        }
+        log.info("生成的标题：{}",title);
+        ChatHistoryList history = ChatHistoryList.builder().sessionId(sessionId)
+                .title(title)
+                .userId(userId)
+                .build();
+        mapper.save(history);
+//        发送给前端
+        Map<String, String> map = Map.of("type", "title", "data", title);
+        String jsonStr = JSONUtil.toJsonStr(map);
+        webSocketService.sendToClient(userId.toString(),jsonStr);
+    }
+
+    @Override
+    public void deleteSession(String sessionId) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        int remove= mapper.removeBySessionAndUserId(sessionId,userId);
+        if (remove==1) {
+            chatMemoryService.delByMemoryId(sessionId);
+        }
+    }
+
+    @Override
+    public List<ChatHistoryList> getList() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            return List.of();
+        }
+        return query().eq("user_id", userId).orderByDesc("update_time").list();
+
+    }
+}
+
+
+
+

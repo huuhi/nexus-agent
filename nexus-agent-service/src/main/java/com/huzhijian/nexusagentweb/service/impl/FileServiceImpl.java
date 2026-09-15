@@ -1,0 +1,132 @@
+package com.huzhijian.nexusagentweb.service.impl;
+
+import cn.hutool.core.bean.BeanUtil;
+import com.aliyuncs.exceptions.ClientException;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.domain.SysFile;
+import com.huzhijian.nexusagentweb.em.BizType;
+import com.huzhijian.nexusagentweb.em.UploadStatus;
+import com.huzhijian.nexusagentweb.exception.NotSupportException;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.exception.ValidationException;
+import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.service.FileService;
+import com.huzhijian.nexusagentweb.utils.AliOssUtil;
+import com.huzhijian.nexusagentweb.utils.FileTypeUtils;
+import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+* @author windows
+* @description 针对表【file】的数据库操作Service实现
+* @createDate 2026-04-16 20:02:47
+*/
+@Service
+@Slf4j
+public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
+    implements FileService{
+
+    private final AliOssUtil ossUtil;
+
+    public FileServiceImpl(AliOssUtil ossUtil) {
+        this.ossUtil = ossUtil;
+    }
+
+    @Override
+    @Transactional
+    public List<KnowledgeFileVO> uploadFile(MultipartFile[] files,BizType bizType) {
+        if (files==null||files.length==0){
+            throw new ValidationException("文件为空！");
+        }
+        List<SysFile> fileList =new ArrayList<>();
+        Long userId = UserContextHolder.getUserId();
+        for (MultipartFile file : files) {
+            if (file==null||file.isEmpty()) continue;
+            String originalFilename = file.getOriginalFilename();
+//        判断类型
+            String fileExtension = FileTypeUtils.getFileExtension(originalFilename);
+            if (!FileTypeUtils.isSupportedDocument(fileExtension)) {
+                continue;
+            }
+            String url = "";
+            String failReason="";
+            try {
+                url= ossUtil.uploadDocument(file.getBytes(), fileExtension,userId);
+                log.info("添加成功，url:{}",url);
+            } catch (ClientException e) {
+                failReason="配置错误！"+e.getMessage().substring(0,450);
+            }catch (IOException e){
+                failReason="IO异常！"+e.getMessage().substring(0,450);
+            }
+            SysFile knowledgeFile = SysFile.builder()
+                    .fileSize(file.getSize())
+                    .fileName(originalFilename)
+                    .fileUrl(url)
+                    .extension(fileExtension.toUpperCase())
+                    .bizType(bizType)
+                    .uploadStatus(failReason.isEmpty()? UploadStatus.SUCCESS: UploadStatus.FAILED)
+                    .failReason(failReason)
+                    .userId(userId)
+                    .build();
+            fileList.add(knowledgeFile);
+        }
+        saveBatch(fileList);
+        return BeanUtil.copyToList(fileList, KnowledgeFileVO.class);
+
+    }
+
+
+
+    @Override
+    public String uploadImage(MultipartFile file) {
+        if (file==null||file.isEmpty()){
+            throw new ValidationException("文件为空！");
+        }
+        String originalFilename = file.getOriginalFilename();
+        String extension = FileTypeUtils.getFileExtension(originalFilename);
+        if (FileTypeUtils.isSupportedImage(extension)) {
+            try {
+                return ossUtil.uploadImage(file.getBytes(), extension);
+            } catch (ClientException | IOException e) {
+                throw new ValidationException(e.getMessage());
+            }
+        }else{
+            throw new NotSupportException("不支持的图片类型！");
+        }
+    }
+
+    @Override
+    public List<KnowledgeFileVO> getFileByUserId( String fileName, BizType bizType) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId==null){
+            throw new UnauthorizedException("用户未登录！");
+        }
+        List<SysFile> list = query().eq("user_id", userId)
+                .eq(bizType!=null,"biz_type", bizType)
+                .like(fileName != null, "file_name", fileName)
+                .list();
+        return BeanUtil.copyToList(list, KnowledgeFileVO.class);
+    }
+
+    @Override
+    public List<KnowledgeFileVO> queryFileByids(List<Long> fileIds) {
+        if (fileIds==null|| fileIds.isEmpty()){
+            return List.of();
+        }
+        List<SysFile> sysFiles = query().in("id",fileIds).list();
+        return BeanUtil.copyToList(sysFiles, KnowledgeFileVO.class);
+    }
+
+}
+
+
+
+

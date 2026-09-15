@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>极简 AI 对话助手</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .prose pre { background-color: #f3f4f6; padding: 1rem; border-radius: 0.5rem; }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex flex-col">
+
+<!-- 顶部导航 -->
+<header class="bg-white border-b p-4 flex justify-between items-center shadow-sm">
+    <h1 class="text-xl font-bold text-gray-800"><i class="fas fa-robot text-blue-500 mr-2"></i>AI Assistant</h1>
+    <div class="flex gap-2">
+        <input id="sessionId" type="text" value="default-session"
+               class="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+        <button onclick="loadHistory()"
+                class="bg-blue-600 text-white px-4 py-1 rounded text-sm hover:bg-blue-700 transition">
+            加载历史
+        </button>
+    </div>
+</header>
+
+<!-- 聊天内容区 -->
+<main id="chat-box" class="flex-1 overflow-y-auto p-4 md:p-8 space-y-3 no-scrollbar">
+    <div class="flex justify-center text-gray-400 text-sm italic">
+        输入 Session ID 并点击加载以获取对话记录
+    </div>
+</main>
+
+<!-- 底部信息 -->
+<footer class="p-4 text-center text-xs text-gray-400">
+    Backend: localhost:8080 | 协议: JSON (流式工具调用结果)
+</footer>
+
+<script>
+    /**
+     * HTML 转义，防止 XSS
+     */
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * 加载会话历史
+     */
+    async function loadHistory() {
+        const sessionId = document.getElementById('sessionId').value.trim();
+        const chatBox = document.getElementById('chat-box');
+        if (!sessionId) {
+            chatBox.innerHTML = '<div class="text-red-500 text-center">请输入 Session ID</div>';
+            return;
+        }
+
+        try {
+            const response = await fetch(`http://localhost:8080/history/${sessionId}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const result = await response.json();
+
+            // 适配 { code: 0, msg: "ok", data: [...] } 格式
+            if (result.code !== 0) throw new Error(result.msg || '后端返回错误');
+            const data = result.data;
+            if (!Array.isArray(data)) throw new Error('数据类型错误');
+
+            chatBox.innerHTML = ''; // 清空
+
+            if (data.length === 0) {
+                chatBox.innerHTML = '<div class="text-gray-400 text-center">暂无对话记录</div>';
+                return;
+            }
+
+            data.forEach(item => {
+                const messageEl = renderMessage(item);
+                chatBox.appendChild(messageEl);
+            });
+
+            // 滚到底部
+            chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: 'smooth' });
+
+        } catch (error) {
+            console.error(error);
+            chatBox.innerHTML = `<div class="text-red-500 text-center">错误: ${escapeHtml(error.message)} (请检查后端跨域或网络)</div>`;
+        }
+    }
+
+    /**
+     * 根据消息对象渲染 DOM 节点
+     * 支持类型：USER, AI, 工具请求, 工具结果 (基于新字段 toolRequestList / toolResultVO / thinking)
+     */
+    function renderMessage(item) {
+        const wrapper = document.createElement('div');
+
+        // ----- 0. 类型字段优先 (兼容旧版) -----
+        if (item.type === 'USER') {
+            wrapper.className = 'flex justify-end';
+            wrapper.innerHTML = `
+                <div class="max-w-[80%] bg-blue-600 text-white rounded-2xl px-4 py-2 shadow-sm">
+                    ${escapeHtml(item.content)}
+                </div>`;
+            return wrapper;
+        }
+
+        if (item.type === 'AI') {
+            wrapper.className = 'flex justify-start';
+            wrapper.innerHTML = buildAICard(item);
+            return wrapper;
+        }
+
+        if (item.type === 'TOOL_EXECUTION_RESULT') {
+            // 兼容旧版的 toolResultDTO 字段
+            const tool = item.toolResultDTO || item.toolResultVO;
+            if (tool) {
+                wrapper.className = 'flex justify-start ml-8';
+                wrapper.innerHTML = buildToolResult(tool.toolName, tool.result, tool.isError);
+            } else {
+                wrapper.className = 'flex justify-start';
+                wrapper.innerHTML = '<div class="text-gray-400 text-xs">未知工具结果</div>';
+            }
+            return wrapper;
+        }
+
+        // ----- 1. 新格式：工具调用请求 (toolRequestList) -----
+        if (item.toolRequestList && item.toolRequestList.length > 0) {
+            wrapper.className = 'flex justify-start';
+            let toolsHtml = '';
+            item.toolRequestList.forEach(tool => {
+                toolsHtml += `
+                    <div class="flex items-center gap-2 text-xs text-blue-700 font-mono bg-blue-50 px-3 py-1.5 rounded mb-1">
+                        <i class="fas fa-tools"></i>
+                        调用工具: <strong>${escapeHtml(tool.toolName)}</strong>
+                        <span class="text-gray-500 ml-1">${escapeHtml(tool.arguments || '')}</span>
+                    </div>`;
+            });
+            wrapper.innerHTML = `<div class="max-w-[95%]">${toolsHtml}</div>`;
+            return wrapper;
+        }
+
+        // ----- 2. 新格式：工具执行结果 (toolResultVO) -----
+        if (item.toolResultVO) {
+            const vo = item.toolResultVO;
+            wrapper.className = 'flex justify-start ml-8';
+            wrapper.innerHTML = buildToolResult(vo.toolName, vo.result, vo.isError);
+            return wrapper;
+        }
+
+        // ----- 3. 文本内容 (区分用户消息 / AI 消息) -----
+        if (item.content) {
+            // AI 消息：存在 thinking 或显式 type === 'AI'
+            if (item.thinking || item.type === 'AI') {
+                wrapper.className = 'flex justify-start';
+                wrapper.innerHTML = buildAICard(item);
+            } else {
+                // 默认为用户消息
+                wrapper.className = 'flex justify-end';
+                wrapper.innerHTML = `
+                    <div class="max-w-[80%] bg-blue-600 text-white rounded-2xl px-4 py-2 shadow-sm">
+                        ${escapeHtml(item.content)}
+                    </div>`;
+            }
+            return wrapper;
+        }
+
+        // ----- 4. 空消息，占位 -----
+        wrapper.className = 'flex justify-start';
+        wrapper.innerHTML = '<div class="text-gray-300 text-sm italic">···</div>';
+        return wrapper;
+    }
+
+    /**
+     * 构建 AI 卡片 (包含思考过程与 Markdown 正文)
+     */
+    function buildAICard(item) {
+        let html = '<div class="max-w-[90%] bg-white border border-gray-200 rounded-2xl p-4 shadow-sm text-gray-800">';
+
+        // 思考过程
+        if (item.thinking) {
+            html += `
+                <details class="mb-3 group" open>
+                    <summary class="text-xs text-gray-400 cursor-pointer list-none flex items-center gap-1 group-open:mb-2">
+                        <i class="fas fa-brain text-purple-400"></i> 思考过程
+                        <i class="fas fa-chevron-right text-[10px] transition-transform group-open:rotate-90"></i>
+                    </summary>
+                    <div class="text-sm text-gray-500 italic border-l-2 border-gray-100 pl-3 py-1 bg-gray-50 rounded-r">
+                        ${escapeHtml(item.thinking).replace(/\n/g, '<br>')}
+                    </div>
+                </details>`;
+        }
+
+        // Markdown 正文
+        if (item.content) {
+            html += `<div class="prose prose-blue max-w-none">${marked.parse(item.content)}</div>`;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    /**
+     * 构建工具执行结果标签
+     */
+    function buildToolResult(toolName, resultText, isError) {
+        const state = isError ? {
+            bg: 'bg-red-50',
+            border: 'border-red-100',
+            text: 'text-red-700',
+            icon: 'fa-exclamation-circle'
+        } : {
+            bg: 'bg-green-50',
+            border: 'border-green-100',
+            text: 'text-green-700',
+            icon: 'fa-check-circle'
+        };
+
+        // 结果可能很长，用 pre 保留格式
+        return `
+            <div class="text-xs ${state.bg} ${state.text} border ${state.border} px-3 py-2 rounded flex items-start gap-1.5 max-w-full">
+                <i class="fas ${state.icon} mt-0.5"></i>
+                <div class="min-w-0">
+                    <strong>${escapeHtml(toolName)}</strong> 结果:
+                    <pre class="whitespace-pre-wrap text-xs mt-1 max-h-40 overflow-y-auto">${escapeHtml(resultText || '')}</pre>
+                </div>
+            </div>`;
+    }
+</script>
+</body>
+</html>
