@@ -6,11 +6,6 @@ import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
-import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.EmbeddingMatch;
-import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
-import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -20,13 +15,14 @@ import java.util.List;
  * @author 胡志坚
  * @version 1.0
  * 创造日期 2026/4/1
- * 说明:
+ * 说明: 用户长期记忆工具。
+ * <p>
+ * 注意职责边界：知识库检索（RAG）已拆分到 {@link RagTool}，
+ * 本类只负责"用户长期记忆"的检索与写入，不要在这里再加 RAG 相关方法。
  */
 @Component
 @Slf4j
 public class MemoryTool {
-    private final EmbeddingModel embeddingModel;
-    private final PgVectorEmbeddingStore pgVectorEmbeddingStore;
     private final UserMemoryService memoryService;
     private final String SAVE_USER_MEMORY= """
             用于主动保存用户的长期记忆。
@@ -46,21 +42,12 @@ public class MemoryTool {
             
             如果执行失败，禁止重复尝试！
             """;
-    public MemoryTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore,UserMemoryService memoryService) {
-        this.embeddingModel = embeddingModel;
-        this.pgVectorEmbeddingStore = pgVectorEmbeddingStore;
+    public MemoryTool(UserMemoryService memoryService) {
         this.memoryService = memoryService;
     }
 
     @Tool(name = "search_user_memory",value = "检索用户画像")
     public String searchUserMemory(@P("关键字") String query){
-//        取消向量，直接使用模糊搜索
-//        SearchMemoryRequest request = SearchMemoryRequest.builder()
-//                .maxResult(5)
-//                .minScore(0.5F)
-//                .embedding(embeddingModel.embed(query).content().vector())
-//                .userId(userId)
-//                .build();
         try {
             List<UserMemoryVO> memory = memoryService.getMemory(query);
             StringBuilder builder = new StringBuilder();
@@ -69,7 +56,6 @@ public class MemoryTool {
                 builder.append(content);
             });
             return builder.toString();
-            //            return memoryService.searchMemory(request);
         } catch (Exception e) {
             return "错误，请勿重复"+e.getMessage();
         }
@@ -87,33 +73,4 @@ public class MemoryTool {
         }
         return "ok";
     }
-    @Tool(name="rag_search",value = "检索知识库以回答专业问题")
-    public String ragSearch(@P("查询语句,提取关键词查询")String query){
-        StringBuilder result=new StringBuilder();
-        EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
-                .query(query)
-                .maxResults(3).minScore(0.7)
-                .queryEmbedding(embeddingModel.embed(query).content())
-                .build();
-        List<EmbeddingMatch<TextSegment>> matches = null;
-        try {
-            matches = pgVectorEmbeddingStore.search(request)
-                    .matches();
-        } catch (Exception e) {
-            return e.getMessage();
-        }
-        if (matches==null||matches.isEmpty()){
-            return "知识库中未查询到修改知识片段，你可以修改关键词再次尝试查询";
-        }
-        result.append("以下是检索到的资料:");
-        matches.forEach(t->{
-            TextSegment embedded = t.embedded();
-            result.append("知识来源:").append(embedded.metadata().getString("file_name"));
-            result.append(t.embedded().text());
-            result.append("--------结束---------");
-        });
-        return result.toString();
-    }
-
-
 }

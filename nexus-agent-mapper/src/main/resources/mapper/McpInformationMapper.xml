@@ -38,5 +38,6 @@
             logo_url = #{logoUrl},
             available = #{available}
         where id = #{id}
+          and user_id = #{userId}
     </update>
 </mapper>

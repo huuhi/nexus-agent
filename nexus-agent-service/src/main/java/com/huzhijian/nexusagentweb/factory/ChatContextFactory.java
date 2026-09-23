@@ -15,6 +15,7 @@ import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.tools.BoxTool;
 import com.huzhijian.nexusagentweb.tools.LogTool;
 import com.huzhijian.nexusagentweb.tools.MemoryTool;
+import com.huzhijian.nexusagentweb.tools.RagTool;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
@@ -43,7 +44,11 @@ import java.util.UUID;
 public class ChatContextFactory {
     private final StreamingChatModel defaultModel;
     private final PgChatMemoryStore chatMemoryStore;
-    private final MemoryTool ragTool;
+//    注意：memoryTool 与 ragTool 是两个不同的东西。
+//    历史实现里字段名叫 ragTool，装的却是 MemoryTool，且只在 enableRag 时才注册，
+//    导致不勾选知识库时模型连长期记忆都用不了。这里完成职责拆分。
+    private final MemoryTool memoryTool;
+    private final RagTool ragTool;
     private final McpInformationService mcpInformationService;
     private final BoxTool boxTool;
     private final LogTool logTool;
@@ -59,7 +64,9 @@ public class ChatContextFactory {
         McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
-                .tools(boxTool,logTool)
+//                常驻工具：沙盒、系统日志、用户长期记忆
+//                长期记忆与知识库无关，必须常驻，否则"AI 主动检索记忆"的能力形同虚设
+                .tools(boxTool, logTool, memoryTool)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
                         .maxTokens(100000,new OpenAiTokenCountEstimator("gpt-4o"))
@@ -67,6 +74,7 @@ public class ChatContextFactory {
                         .id(sessionId)
                         .build());
 
+//        知识库检索按需开启
         if (chatDTO.enableRag()){
             builder.tools(ragTool);
         }

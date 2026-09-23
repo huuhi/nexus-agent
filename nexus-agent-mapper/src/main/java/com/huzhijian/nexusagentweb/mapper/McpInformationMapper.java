@@ -15,7 +15,12 @@ public interface McpInformationMapper extends BaseMapper<McpInformation> {
 
     void saveBatch(List<McpInformation> mcpInformationList);
 
-    void updateMCP(McpInformation data);
+    /**
+     * 按 id 更新 MCP，同时限定 user_id，防止越权修改他人配置。
+     *
+     * @return 受影响行数，0 表示不存在或无权限
+     */
+    int updateMCP(McpInformation data);
 }
 
 

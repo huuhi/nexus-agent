@@ -65,7 +65,7 @@
         }
 
         try {
-            const response = await fetch(`http://localhost:8080/history/${sessionId}`);
+            const response = await fetch(`http://localhost:8080/api/history/${sessionId}`);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const result = await response.json();
 

@@ -6,8 +6,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.em.MessageType;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.mapper.ChatMemoryMapper;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import com.huzhijian.nexusagentweb.vo.AttachedFileVO;
@@ -73,7 +75,12 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
 
     @Override
     public List<MessageVO> getHistoryBySessionId(String sessionId) {
-        List<ChatHistory> chatHistories = mapper.getAllByMemoryId(sessionId);
+//        越权修复：对外读取历史必须限定当前登录用户，否则知道 sessionId 就能读他人会话
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("用户未登录！");
+        }
+        List<ChatHistory> chatHistories = mapper.getAllByMemoryIdAndUserId(sessionId, userId);
         if (chatHistories==null||chatHistories.isEmpty()) return List.of();
         List<ChatMessage> history = chatHistories.stream().map(entity ->{
             String content = entity.getContent().toString();
@@ -105,25 +112,31 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                         */
                         messageVOBuilder.content(text);
                     }else{
-//                        说明有文件等其他内容
+//                        说明有文件/图片等其他内容
                         Map<String, Object> attributes = userMessage.attributes();
                         log.debug("attributes:{}",attributes);
-                        String attachedFilesJSON = JSONUtil.toJsonStr(attributes.get(ATTACHED_FILES));
-                        log.debug("attachedFilesJSON:{}",attachedFilesJSON);
 
-//                        元数据
-                        List<AttachedFileVO> list = JSONUtil.toList(attachedFilesJSON, AttachedFileVO.class);
-//                        文本内容
-                        List<Content> contents = userMessage.contents();
-                        for (Content content:contents){
-                            TextContent x= (TextContent)content;
-                            String text = x.text();
-                            if (text.startsWith(FILE_START)&&text.endsWith(FILE_END)||text.startsWith(IMAGE_START)&&text.endsWith(IMAGE_END)){
+//                        附件元数据（可能为 null，用空集合兜底）
+                        Object attachedFilesRaw = attributes.get(ATTACHED_FILES);
+                        List<AttachedFileVO> attachedFiles = attachedFilesRaw == null
+                                ? List.of()
+                                : JSONUtil.toList(JSONUtil.toJsonStr(attachedFilesRaw), AttachedFileVO.class);
+
+//                        文本内容：过滤掉文件/图片的包裹片段，只保留用户真正输入的文本。
+//                        注意：必须用 instanceof 判断——历史上这里直接强转 TextContent，
+//                        遇到图片等非文本内容会抛 ClassCastException。
+                        StringBuilder textBuilder = new StringBuilder();
+                        for (Content content : userMessage.contents()) {
+                            if (!(content instanceof TextContent textContent)) {
                                 continue;
                             }
-                            messageVOBuilder.content(text).attachedFiles(list);
+                            String text = textContent.text();
+                            if (isFileOrImageWrapper(text)) {
+                                continue;
+                            }
+                            textBuilder.append(text);
                         }
-//                        如果第一条不是文本消息怎么处理？如果文本消息是文件内容，不是用户消息怎么判断？怎么处理？
+                        messageVOBuilder.content(textBuilder.toString()).attachedFiles(attachedFiles);
                     }
 
 
@@ -163,6 +176,11 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
         }).toList();
     }
 
+
+    private static boolean isFileOrImageWrapper(String text) {
+        return (text.startsWith(FILE_START) && text.endsWith(FILE_END))
+                || (text.startsWith(IMAGE_START) && text.endsWith(IMAGE_END));
+    }
 
     private static String toStandardToolExecutionResult(String rawJson) throws JsonProcessingException {
         ObjectNode root =(ObjectNode) MAPPER.readTree(rawJson);

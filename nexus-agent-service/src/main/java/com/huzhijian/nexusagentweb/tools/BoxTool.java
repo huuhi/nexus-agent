@@ -75,32 +75,34 @@ public class BoxTool {
         req.put("box_id", boxId);
         req.put("code", code);
 
-        log.error("请求参数: {}", req);
+        log.debug("execute_code 请求参数: {}", req);
 
         Map<String,Object> result =
                 safeExecuteToolHandler.mapTool(
                         () -> httpUtils.post("/execute/code", req).block()
                 );
 
-        log.error("返回值: {}", result);
+        log.debug("execute_code 返回值: {}", result);
 
         return result;
     }
 //    执行命令
     @Tool(name = "execute_cmd",value = "执行命令(Linux系统)")
     public Map<String,Object> executeCmd(@P("沙盒ID")String boxId,@P("命令")String cmd){
+//        注意：沙盒侧 /execute/cmd 接收的字段名是 cmd，不是 code。
+//        历史上这里错打到了 /execute/code 并传 code 字段，导致命令被当成 Python 源码执行。
         HashMap<String,Object> req = new HashMap<>();
         req.put("box_id", boxId);
-        req.put("code", cmd);
+        req.put("cmd", cmd);
 
-        log.error("请求参数: {}", req);
+        log.debug("execute_cmd 请求参数: {}", req);
 
         Map<String,Object> result =
                 safeExecuteToolHandler.mapTool(
-                        () -> httpUtils.post("/execute/code", req).block()
+                        () -> httpUtils.post("/execute/cmd", req).block()
                 );
 
-        log.error("返回值: {}", result);
+        log.debug("execute_cmd 返回值: {}", result);
 
         return result;
     }

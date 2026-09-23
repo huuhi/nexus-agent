@@ -31,4 +31,12 @@
         select * from chat_memory where session_id=#{sessionId}::uuid
         order by create_at
     </select>
+
+    <!-- 对外读取历史：同时限定 user_id，防止越权读取他人会话 -->
+    <select id="getAllByMemoryIdAndUserId" resultMap="BaseResultMap">
+        select * from chat_memory
+        where session_id=#{sessionId}::uuid
+          and user_id=#{userId}
+        order by create_at
+    </select>
 </mapper>

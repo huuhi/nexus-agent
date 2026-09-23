@@ -10,8 +10,7 @@
     </parent>
 
     <artifactId>nexus-agent-service</artifactId>
-    <version>0.2.0</version>
-    <description>修改配置，添加向量模型配置</description>
+    <description>LangChain4j 集成、聊天引擎、工具、配置工厂</description>
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -22,7 +21,7 @@
         <dependency>
             <groupId>com.huzhijian</groupId>
             <artifactId>nexus-agent-mapper</artifactId>
-            <version>0.0.1-SNAPSHOT</version>
+            <version>${project.version}</version>
         </dependency>
 
         <dependency>

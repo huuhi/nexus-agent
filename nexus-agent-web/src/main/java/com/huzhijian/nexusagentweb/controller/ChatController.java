@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
+import com.huzhijian.nexusagentweb.dto.ModelListDTO;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.vo.Result;
 import jakarta.validation.Valid;
@@ -33,9 +34,14 @@ public class ChatController {
         return ResponseEntity.ok(sse);
     }
 
-    @GetMapping("/model")
-    public Result getModelList(@RequestParam String baseUrl,@RequestParam String token){
-        List<String> models= chatService.getModelList(baseUrl,token);
+    /**
+     * 查询某个 API 供应商下可用的模型列表。
+     * <p>
+     * 注意：使用 POST + 请求体，不要改回 GET query 参数——token 是用户密钥，不能出现在 URL 里。
+     */
+    @PostMapping("/model")
+    public Result getModelList(@RequestBody @Valid ModelListDTO modelListDTO){
+        List<String> models= chatService.getModelList(modelListDTO.baseUrl(), modelListDTO.token());
         return Result.ok(models);
     }
 }

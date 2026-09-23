@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
@@ -13,7 +14,17 @@ import java.util.List;
 * @Entity com.huzhijian.nexusagentweb.domain.ChatMemory
 */
 public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
+    /**
+     * 供流式对话的记忆读写使用（内存 ID 即 sessionId，此时还没有用户上下文）。
+     * ⚠️ 对外接口一律不要用这个方法，改用 {@link #getAllByMemoryIdAndUserId}。
+     */
     List<ChatHistory> getAllByMemoryId(Object sessionId);
+
+    /**
+     * 对外读取历史专用：同时限定 session_id 与 user_id，防止越权读取他人会话。
+     */
+    List<ChatHistory> getAllByMemoryIdAndUserId(@Param("sessionId") Object sessionId,
+                                                @Param("userId") Long userId);
 
     void delAllByMemoryId(Object sessionId);
 

@@ -8,9 +8,8 @@
         <version>0.0.1-SNAPSHOT</version>
     </parent>
     <artifactId>nexus-agent-web</artifactId>
-    <version>0.1.0</version>
     <name>nexus-agent-web</name>
-    <description>重构长期记忆，修复已知bug</description>
+    <description>REST 接口层与应用启动入口</description>
     <properties>
         <java.version>21</java.version>
     </properties>
@@ -18,7 +17,7 @@
         <dependency>
             <groupId>com.huzhijian</groupId>
             <artifactId>nexus-agent-service</artifactId>
-            <version>0.2.0</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

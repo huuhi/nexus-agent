@@ -75,7 +75,9 @@ public class KnowledgeBaseFileServiceImpl extends ServiceImpl<KnowledgeBaseFileM
                 List<List<TextSegment>> batches = ListUtil.partition(textSegments, 10);
                 for (List<TextSegment> batch : batches) {
                     List<Embedding>  content= embeddingModel.embedAll(batch).content();
-                    pgVectorEmbeddingStore.addAll(content,textSegments);
+//                    必须传 batch，不能传 textSegments：embedAll 只对 batch 做了向量化，
+//                    传全量会导致向量与文本错位（历史上这里写的是 textSegments，导致 RAG 检索串味）
+                    pgVectorEmbeddingStore.addAll(content,batch);
                     Thread.sleep(200);
                 }
 
@@ -121,7 +123,8 @@ public class KnowledgeBaseFileServiceImpl extends ServiceImpl<KnowledgeBaseFileM
         }
         String apiKey = EncryptorFactory.text(salt).decrypt(apiConfig.getAPIKey());
         //使用用户配置的向量模型
-        System.out.println(apiKey);
+        // 注意：禁止打印 apiKey，属于用户机密，会进日志
+        log.debug("使用用户配置的向量模型，configId={}, model={}", configId, modelName);
 
         return OpenAiEmbeddingModel.builder()
                 .apiKey(apiKey)

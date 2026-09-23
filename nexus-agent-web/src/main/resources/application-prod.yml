@@ -20,7 +20,11 @@ langchain4j:
 
 spring:
   datasource:
-    url: jdbc:postgresql://${DOCKER_IP}:5432/nexus_agent?reWriteBatchedInserts=true?stringtype=unspecified
+    # 注意：多个 JDBC 参数之间必须用 & 分隔。
+    # 历史上这里是 ...=true?stringtype=unspecified，第二个 '?' 让整个 query 被解析成一个
+    # 参数值，导致 reWriteBatchedInserts 与 stringtype 双双失效；
+    # 而 stringtype=unspecified 是 chat_memory.content::jsonb 等写入正常工作的前提。
+    url: jdbc:postgresql://${SERVICE_IP}:5432/nexus_agent?reWriteBatchedInserts=true&stringtype=unspecified
     password: postgres
     username: postgres
     hikari:
@@ -50,7 +54,7 @@ spring:
     file-dir: user/file
   data:
     redis:
-      host: ${DOCKER_IP}
+      host: ${SERVICE_IP}
       password: redis
 
 mybatis-plus:

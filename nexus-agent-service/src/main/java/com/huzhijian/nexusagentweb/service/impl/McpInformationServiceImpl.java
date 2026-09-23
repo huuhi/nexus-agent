@@ -2,12 +2,15 @@ package com.huzhijian.nexusagentweb.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.McpServerItemDTO;
+import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.McpInformationMapper;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
@@ -163,23 +166,50 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 
     @Override
     public void removeMCP(Long id) {
-        removeById(id);
+//        越权修复：必须限定 user_id，否则任何人可用别人的 id 删除其 MCP
+        Long userId = requireUserId();
+        boolean removed = remove(Wrappers.<McpInformation>lambdaQuery()
+                .eq(McpInformation::getId, id)
+                .eq(McpInformation::getUserId, userId));
+        if (!removed) {
+            throw new NotFoundException("MCP 不存在或无权限操作");
+        }
     }
 
     @Override
     public void updateMCPById(McpServerItemDTO mcPs) {
-        Long userId = UserContextHolder.getUserId();
-        if (userId == null) {
-            throw new UnauthorizedException("用户未登录");
+        Long userId = requireUserId();
+        if (mcPs.id() == null) {
+            throw new ValidationException("更新 MCP 时 id 不能为空！");
         }
+//        SQL 侧同样限定了 user_id（见 McpInformationMapper.xml 的 updateMCP）
         McpInformation mcpInformation = transformMcpInformation(mcPs, userId);
-        mcpInformationMapper.updateMCP(mcpInformation);
+        int updated = mcpInformationMapper.updateMCP(mcpInformation);
+        if (updated == 0) {
+            throw new NotFoundException("MCP 不存在或无权限操作");
+        }
     }
 
     @Override
     public McpDetailVO getDetailById(Long id) {
-        McpInformation mcpInformation = getById(id);
-        return BeanUtil.copyProperties(mcpInformation,McpDetailVO.class);
+//        越权修复：必须限定 user_id
+        Long userId = requireUserId();
+        McpInformation mcpInformation = query()
+                .eq("id", id)
+                .eq("user_id", userId)
+                .one();
+        if (mcpInformation == null) {
+            throw new NotFoundException("MCP 不存在或无权限查看");
+        }
+        return BeanUtil.copyProperties(mcpInformation, McpDetailVO.class);
+    }
+
+    private Long requireUserId() {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("用户未登录");
+        }
+        return userId;
     }
 
     private McpInformation transformMcpInformation(McpServerItemDTO mcp,Long userId) {

@@ -5,6 +5,10 @@ target/
 !**/src/test/**/target/
 /nexus-agent-web/src/main/resources/application-dev.yml
 /nexus-agent-web/src/main/resources/.env
+
+### WorkBuddy / AI Agent 本地状态 ###
+# 会话记忆与本地缓存，属于个人环境，不纳入版本管理
+.workbuddy/
 ### STS ###
 .apt_generated
 .classpath
