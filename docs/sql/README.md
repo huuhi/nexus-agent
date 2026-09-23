@@ -33,6 +33,47 @@ Navicat：右键目标库 → 运行 SQL 文件 → 选择 `001_baseline.sql`。
 
 > ⚠️ **破坏性**：它会先 DROP 掉全部表再重建。**只能在空库或允许清空的环境执行。**
 
+## ✅ 执行结果（已验证）
+
+2026-09-23 已在目标库实际执行 `001_baseline.sql`：**0 错误，12 张表创建成功**。
+
+由于脚本**没有吞异常**（第 3/4/5 节的 `ALTER TABLE ... ADD CONSTRAINT` 与 `CREATE INDEX`
+任一条失败都会中断并报错），因此「0 错误」同时说明：
+
+- ✅ 12 张表全部建成，主键全部创建成功
+- ✅ 4 个外键全部创建成功
+- ✅ 9 个索引全部创建成功（含 HNSW 向量索引）
+- ✅ `users.email` 唯一约束创建成功 ← 说明库里没有重复邮箱
+- ✅ `CREATE EXTENSION vector` 成功 ← pgvector 已安装
+
+### 复核查询（换环境重建后建议再跑一遍）
+
+```sql
+-- 1) 表清单，应为 12 张
+select table_name from information_schema.tables
+where table_schema='public' and table_type='BASE TABLE' order by 1;
+
+-- 2) 主键，应为 12 条
+select c.relname as tbl, con.conname
+from pg_constraint con join pg_class c on c.oid = con.conrelid
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname='public' and con.contype='p' order by 1;
+
+-- 3) 外键，应为 4 条
+select con.conname from pg_constraint con
+join pg_class c on c.oid = con.conrelid
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname='public' and con.contype='f' order by 1;
+
+-- 4) 索引，应含 9 个业务索引 + 各主键/唯一约束自带的索引
+select indexname from pg_indexes where schemaname='public' order by 1;
+
+-- 5) 向量列维度，应为 1024
+select attname, format_type(atttypid, atttypmod) as type
+from pg_attribute where attrelid='public.knowledge_embedding'::regclass
+  and attname='embedding';
+```
+
 ## 这份基线是怎么来的（重要）
 
 它**不是**从旧库照抄的，而是**重新设计**的。原因：

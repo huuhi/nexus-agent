@@ -423,6 +423,8 @@ public class XxxTool {
 - 向量维度 **1024**（`text-embedding-v4`）；基线已把列定为 `vector(1024)` 并建 HNSW 索引
 - `knowledge_embedding` 应用也会用 `createTable(true)` 建它，但表已存在时不会覆盖，
   所以**基线里的定义才是权威**
+- ✅ **基线已于 2026-09-23 在目标库实际执行验证：0 错误、12 张表**。脚本不吞异常，
+  因此主键/外键/索引/唯一约束/`CREATE EXTENSION vector` 均已确认生效。复核查询见 `docs/sql/README.md`
 
 ### 9.1 ⚠️ 历史背景：库被清空过，schema 曾严重不完整
 
@@ -489,6 +491,7 @@ public class XxxTool {
 | 2026-09-23 | 修 `KnowledgeBaseFileMapper.xml` 的 `fail_name` 笔误 → `file_name` | `KnowledgeBaseFileMapper.xml` | 知识库入库/详情查询原本必报错 |
 | 2026-09-23 | `User` 实体补 `@TableId(type = IdType.AUTO)` | `domain/User.java` | 原先 `getById`/`updateById` 不可用、`save()` 后取不到 id |
 | 2026-09-23 | §9 全面重写（数据库章节），并同步 §15 相关说明 | `AGENTS.md` | — |
+| 2026-09-23 | ✅ 基线在目标库执行验证通过（0 错误 / 12 表，含主键·外键·索引全部生效） | `docs/sql/README.md` | 复核查询已入库 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
