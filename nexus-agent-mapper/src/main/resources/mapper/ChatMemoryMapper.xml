@@ -27,14 +27,25 @@
         delete from chat_memory where session_id=#{sessionId}::uuid
 
     </delete>
+    <!--
+      注意：这里**必须显式列出列名**，不能用 select *。
+      原因：resultMap 的列顺序是 create_at 在前、session_id 在后，
+      而表的物理顺序是 session_id 在前、create_at 在后。
+      用 select * 时 MyBatis 会按位置套用 resultMap，
+      导致用 Timestamp 处理器去读 uuid 列，报
+      "Bad value for type timestamp/date/time: <uuid>"。
+      显式列出并保持与 resultMap 一致，可彻底避免这个问题。
+    -->
     <select id="getAllByMemoryId" resultMap="BaseResultMap">
-        select * from chat_memory where session_id=#{sessionId}::uuid
+        select id,user_id,content,type,create_at,session_id
+        from chat_memory where session_id=#{sessionId}::uuid
         order by create_at
     </select>
 
     <!-- 对外读取历史：同时限定 user_id，防止越权读取他人会话 -->
     <select id="getAllByMemoryIdAndUserId" resultMap="BaseResultMap">
-        select * from chat_memory
+        select id,user_id,content,type,create_at,session_id
+        from chat_memory
         where session_id=#{sessionId}::uuid
           and user_id=#{userId}
         order by create_at
