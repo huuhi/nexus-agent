@@ -9,7 +9,8 @@
             <result property="fileId" column="file_id" jdbcType="BIGINT"/>
             <result property="status" column="status" jdbcType="OTHER"/>
             <result property="failReason" column="fail_reason" jdbcType="VARCHAR"/>
-            <result property="fileName" column="fail_name" jdbcType="VARCHAR"/>
+            <!-- 修正：原为 column="fail_name"，与实体字段 fileName（列 file_name）不匹配 -->
+            <result property="fileName" column="file_name" jdbcType="VARCHAR"/>
     </resultMap>
 
 
