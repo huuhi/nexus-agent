@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.tools;
 
 import com.huzhijian.nexusagentweb.dto.UploadFileDTO;
 import com.huzhijian.nexusagentweb.handler.SafeExecuteToolHandler;
+import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -20,7 +21,18 @@ import java.util.Map;
  */
 @Component
 @Slf4j
-public class BoxTool {
+public class BoxTool implements AgentToolSet {
+
+    @Override
+    public String key() {
+        return "box";
+    }
+
+    @Override
+    public String description() {
+        return "沙盒：创建/删除沙盒、读写与列举文件、执行代码与 Linux 命令";
+    }
+
     private final HttpUtils httpUtils;
     private final SafeExecuteToolHandler safeExecuteToolHandler;
 

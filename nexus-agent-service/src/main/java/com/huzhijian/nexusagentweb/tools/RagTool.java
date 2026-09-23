@@ -1,5 +1,7 @@
 package com.huzhijian.nexusagentweb.tools;
 
+import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
+import com.huzhijian.nexusagentweb.tools.registry.ToolSelection;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.data.segment.TextSegment;
@@ -17,11 +19,30 @@ import java.util.function.Function;
  * @author 胡志坚
  * @version 1.0
  * 创造日期 2026/4/1
- * 说明:
+ * 说明: 知识库检索工具。
+ * <p>
+ * 本工具集是**按需启用**的：只有请求里 {@code enableRag=true} 时才注册给模型，
+ * 由 {@link #enabled(ToolSelection)} 声明。启用条件不再写在 ChatContextFactory 里。
  */
 @Component
 @Slf4j
-public class RagTool {
+public class RagTool implements AgentToolSet {
+
+    @Override
+    public String key() {
+        return "rag";
+    }
+
+    @Override
+    public String description() {
+        return "知识库检索：按需开启，用于回答专业问题";
+    }
+
+    @Override
+    public boolean enabled(ToolSelection selection) {
+        return selection.ragEnabled();
+    }
+
     private final EmbeddingModel embeddingModel;
     private final PgVectorEmbeddingStore pgVectorEmbeddingStore;
 

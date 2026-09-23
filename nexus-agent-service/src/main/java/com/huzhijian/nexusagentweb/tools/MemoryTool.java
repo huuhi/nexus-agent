@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.tools;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.UserMemory;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
+import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -22,7 +23,18 @@ import java.util.List;
  */
 @Component
 @Slf4j
-public class MemoryTool {
+public class MemoryTool implements AgentToolSet {
+
+    @Override
+    public String key() {
+        return "memory";
+    }
+
+    @Override
+    public String description() {
+        return "用户长期记忆：检索用户画像、保存用户偏好";
+    }
+
     private final UserMemoryService memoryService;
     private final String SAVE_USER_MEMORY= """
             用于主动保存用户的长期记忆。

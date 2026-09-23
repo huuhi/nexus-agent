@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.tools;
 
 import com.huzhijian.nexusagentweb.domain.SystemLog;
 import com.huzhijian.nexusagentweb.service.SystemLogService;
+import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
@@ -12,7 +13,18 @@ import org.springframework.stereotype.Component;
  * 说明:
  */
 @Component
-public class LogTool {
+public class LogTool implements AgentToolSet {
+
+    @Override
+    public String key() {
+        return "log";
+    }
+
+    @Override
+    public String description() {
+        return "系统日志：让 AI 记录缺失的工具或系统不足";
+    }
+
     private final SystemLogService systemLogService;
 
     public LogTool(SystemLogService systemLogService) {
