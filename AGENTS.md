@@ -236,6 +236,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | SSE 输出格式 | `nexus-agent-service/.../converter/SseResponseConverter.java` |
 | 用户消息 → LangChain4j Content | `nexus-agent-service/.../converter/ChatMessageConverter.java` |
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
+| 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
 | 沙盒工具 | `nexus-agent-service/.../tools/BoxTool.java` |
 | 记忆 / RAG 工具 | `tools/MemoryTool.java`（⚠️`RagTool.java` 是未注册的死代码） |
 | 沙盒服务端 | `nexus_agent_box/app/routers/{box,file,execute,mcp}.py` |
@@ -305,26 +306,48 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 
 > 当前是**各厂商参数猜测式下发**（把 thinking 相关字段全塞进去）。多厂商适配是重构项之一。
 
-### 6.4 如何新增一个 Tool
+### 6.4 如何新增一个 Tool（声明式，**不用改工厂**）
+
+工具由各工具类**自我声明**，注册表统一收集。新增一个工具只需两步：
+
+**第 1 步：写一个类，实现 `AgentToolSet` 并加 `@Component`**
 
 ```java
 @Component
 @Slf4j
-public class XxxTool {
-    // 构造函数注入（项目用构造注入，不要 @Autowired 字段注入）
+public class XxxTool implements AgentToolSet {
+
+    @Override
+    public String key() { return "xxx"; }                    // 唯一标识，用于日志与后续能力清单
+    @Override
+    public String description() { return "一句话说明这个工具集能做什么"; }
+    // 可选：按需启用，默认恒启用
+    // @Override public boolean enabled(ToolSelection s) { return s.ragEnabled(); }
+
+    private final SafeExecuteToolHandler safeExecuteToolHandler;   // 构造注入
+
     @Tool(name = "tool_name", value = "给模型看的中文说明，说明越清楚模型调用越准")
     public Map<String,Object> doSomething(@P("参数说明") String arg) {
         return safeExecuteToolHandler.mapTool(() -> httpUtils.get("/xxx").block());  // 必须包 SafeExecute
     }
 }
 ```
-然后在 `ChatContextFactory.create()` 里注册：
-- 无条件可用 → `.tools(boxTool, logTool, xxxTool)`
-- 条件可用 → 先 `AiServices.builder(...)`，再 `if (条件) builder.tools(xxxTool);`
-- `AiServices` 的 `builder` 是**可变**的，条件分支写法照抄现有代码即可。
+
+**第 2 步：没有了。** 不需要改 `ChatContextFactory`、不需要改任何配置
+（Spring 会把所有 `AgentToolSet` 实现注入 `ToolRegistry`）。
+
+**机制说明**：
+- `ToolRegistry.resolve(ToolSelection)` 遍历所有工具集，调用各自的 `enabled()` 过滤，返回工具对象列表
+- `ToolSelection`（当前含 `ragEnabled`，由 `ChatDTO` 推导）是唯一加开关的地方 ——
+  要加「按用户/场景启停工具」只需给 `ToolSelection` 加字段，**各工具类无需改动**
+- `ToolRegistry.keys()` / `describeAll()` 可用于排查「某工具为什么没生效」，也是未来「能力清单」接口的数据源
+- 启动时 `ToolRegistry` 的 debug 日志会逐个打印 `工具集 [key] 启用/跳过`，排查很方便
+
+**注意：MCP 不走这套机制** —— 它是外部 `toolProvider`（见 §6.7），仍在 `ChatContextFactory` 里单独处理。
 
 **新增 Tool 的检查清单**：① 返回类型必须是可序列化的（`Map`/`String`/`List<Map>`）；② 必须用 `SafeExecuteToolHandler` 兜底；
-③ 提示词里如果涉及"失败禁止重试"要在 `ModelSystemContent.CHAT_PROMPT` 补充；④ 考虑外部调用超时。
+③ 提示词里如果涉及"失败禁止重试"要在 `ModelSystemContent.CHAT_PROMPT` 补充；④ 考虑外部调用超时；
+⑤ **工具名（`@Tool(name=...)`）一旦上线不要改**，模型侧提示词与前端都可能依赖它。
 
 ### 6.5 Skill 系统（未接通，重点重构项）
 
@@ -507,6 +530,7 @@ public class XxxTool {
 | 2026-09-23 | **端到端实测通过**并修 2 个运行期 bug（`select *` 位置错配、无效 token 被放行） | `ChatMemoryMapper.xml`、`LoginCheckInterceptor.java` | 应用真实启动 + 对话 + 会话读写 + 401 鉴权全部验证；详见 §12.0 与递归计划 M1 |
 | 2026-09-23 | **P1-1 + P1-2 完成**：新增 `RunContext` 取代跨线程 ThreadLocal，解除聊天记录的 Redis 依赖，顺带修掉对话读记忆的越权 | `RunContext.java`(新)、`PgChatMemoryStore`、`ChatMessageConverter`、`ChatContextFactory`、`ChatServiceImpl`、`ChatMemoryService`；删除 `MessageMetadataContext` | 3 轮对话实测：附件元数据完整保留、未串轮、全程不依赖 Redis session key |
 | 2026-09-23 | **沙盒链路实测通过**（M1#3 验收完成）；并修正 §6.2 的 SSE 事件名（文档原来写错） | `AGENTS.md` | AI 成功调用 `create_box` → `execute_cmd` → 拿到真实 stdout；工具事件名实为全大写 |
+| 2026-09-23 | **P1-4 完成**：引入 `ToolRegistry`，工具注册改为声明式；`ChatContextFactory` 不再认识任何具体工具 | 新增 `tools/registry/`3 个类；4 个工具类实现 `AgentToolSet`；`AGENTS.md §6.4` 重写 | 实测：`enableRag` 开关由 `RagTool.enabled()` 决定，日志逐项打印启用/跳过 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
