@@ -59,3 +59,32 @@ spring:
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
+
+# ============================================================================
+#  nexus-agent 运行时参数（全部有代码默认值，不写这段也能启动）
+# 对应类：com.huzhijian.nexusagentweb.properties.AgentProperties
+# ============================================================================
+nexus:
+  agent:
+    sse:
+      # SSE 连接超时。必须大于最慢一次模型调用的耗时，否则复杂任务会被提前掐断
+      timeout: 120s
+    memory:
+      # 对话记忆窗口的 token 上限（只影响送给模型的上下文，不影响已入库的消息）
+      max-tokens: 100000
+      # token 估算器使用的模型名。注意它只用于本地估算，不产生 API 调用；
+      # 与真实使用的模型不一致会导致窗口裁剪不准，换主力模型时建议同步改
+      token-estimator-model: gpt-4o
+    sandbox:
+      # 是否按会话复用沙盒。开启后同一会话内多次工具调用复用同一个沙盒（E2B 按量计费）
+      reuse-per-session: true
+      # 沙盒空闲多久后被后台任务主动销毁。
+      # ⚠️ 必须小于沙盒服务里的 set_timeout(600)，否则还没轮到我们回收就被 E2B 收走了
+      idle-timeout: 8m
+      # 回收任务的执行间隔（毫秒，或 ISO-8601 时长）
+      sweep-interval: 60000
+    mcp:
+      # MCP 客户端健康检查超时
+      health-timeout: 5s
+      # 是否缓存复用 MCP 客户端（关闭会导致每轮对话新建连接，必然泄漏）
+      cache-clients: true

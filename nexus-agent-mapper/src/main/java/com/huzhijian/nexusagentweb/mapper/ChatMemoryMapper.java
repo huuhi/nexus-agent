@@ -26,6 +26,29 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
     List<ChatHistory> getAllByMemoryIdAndUserId(@Param("sessionId") Object sessionId,
                                                 @Param("userId") Long userId);
 
+    /**
+     * 取会话最后一条消息的原始 JSON，供「锚点式增量写入」定位新增部分。
+     * <p>
+     * 之所以需要锚点：记忆窗口（TokenWindowChatMemory）会在超限时**淘汰旧消息**，
+     * 此时「传入条数」不再单调增长，靠条数比较会永远判定为「没有新增」，
+     * 导致长会话的新消息永远写不进库。
+     *
+     * @return 最后一条消息的 JSON 文本；会话不存在时返回 null
+     */
+    String getLastContentByMemoryId(@Param("sessionId") Object sessionId,
+                                    @Param("userId") Long userId);
+
+    /**
+     * 取会话最近 {@code limit} 条消息的原始 JSON（时间正序）。
+     * <p>
+     * 用于锚点失配时的兜底：按内容去重，只插入库里还没有的消息。
+     *
+     * @see #getLastContentByMemoryId
+     */
+    List<String> getRecentContents(@Param("sessionId") Object sessionId,
+                                   @Param("userId") Long userId,
+                                   @Param("limit") int limit);
+
     void delAllByMemoryId(Object sessionId);
 
     boolean insertBatch(List<ChatHistory> list,Long userId);

@@ -12,6 +12,7 @@ import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
@@ -42,6 +43,7 @@ public class ChatServiceImpl implements ChatService {
     private final ChatContextFactory chatContextFactory;
     private final ChatHistoryListService chatHistoryListService;
     private final ChatMessageConverter converter;
+    private final AgentProperties agentProperties;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -50,7 +52,8 @@ public class ChatServiceImpl implements ChatService {
         if (userId==null){
             throw new UnauthorizedException("用户未登录!");
         }
-        SseEmitter sseEmitter = new SseEmitter(120000L);
+//        超时由 nexus.agent.sse.timeout 配置（默认 120 秒），必须大于最慢一次模型调用的耗时
+        SseEmitter sseEmitter = new SseEmitter(agentProperties.getSse().getTimeout().toMillis());
 
         List<ChatUserMessage> messages = chatDTO.messages();
 

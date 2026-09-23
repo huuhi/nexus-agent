@@ -10,6 +10,7 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.em.ModelType;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
@@ -53,6 +54,7 @@ public class ChatContextFactory {
     private final ToolRegistry toolRegistry;
     private final McpInformationService mcpInformationService;
     private final UserConfigService  userConfigService;
+    private final AgentProperties agentProperties;
 
 
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
@@ -75,7 +77,10 @@ public class ChatContextFactory {
                 .tools(tools)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
-                        .maxTokens(100000,new OpenAiTokenCountEstimator("gpt-4o"))
+//                        窗口与 token 估算器由 nexus.agent.memory.* 配置。
+//                        原实现写死 100000 + gpt-4o，而 gpt-4o 与真实使用的模型无关，裁剪不准。
+                        .maxTokens(agentProperties.getMemory().getMaxTokens(),
+                                new OpenAiTokenCountEstimator(agentProperties.getMemory().getTokenEstimatorModel()))
                         .chatMemoryStore(memoryStore)
                         .id(sessionId)
                         .build());

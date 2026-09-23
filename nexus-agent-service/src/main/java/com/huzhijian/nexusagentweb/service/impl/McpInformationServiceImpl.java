@@ -13,20 +13,18 @@ import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.McpInformationMapper;
+import com.huzhijian.nexusagentweb.mcp.McpClientRegistry;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
 import com.huzhijian.nexusagentweb.vo.McpDetailVO;
 import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
 import dev.langchain4j.mcp.McpToolProvider;
-import dev.langchain4j.mcp.client.DefaultMcpClient;
 import dev.langchain4j.mcp.client.McpClient;
-import dev.langchain4j.mcp.client.transport.http.StreamableHttpMcpTransport;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -44,41 +42,50 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
     private final HttpUtils  httpUtils;
     private final McpInformationMapper mcpInformationMapper;
     private final UserConfigService userConfigService;
+    private final McpClientRegistry mcpClientRegistry;
 
-    public McpInformationServiceImpl(HttpUtils httpUtils, McpInformationMapper mcpInformationMapper, UserConfigService userConfigService) {
+    public McpInformationServiceImpl(HttpUtils httpUtils, McpInformationMapper mcpInformationMapper,
+                                     UserConfigService userConfigService, McpClientRegistry mcpClientRegistry) {
         this.httpUtils = httpUtils;
         this.mcpInformationMapper = mcpInformationMapper;
         this.userConfigService = userConfigService;
+        this.mcpClientRegistry = mcpClientRegistry;
     }
 
+    /**
+     * 为本次对话构建 MCP 工具提供者。
+     * <p>
+     * 客户端由 {@link McpClientRegistry} 缓存复用 —— 原实现每次对话都新建且不关闭，
+     * 是明确的连接泄漏。连不上的服务会立即关闭连接并标记 available=false。
+     * 全部服务都不可用时返回 null（调用方即按「无 MCP」处理）。
+     */
     @Override
-    public McpToolProvider getMcp(List<Long> MCPIds,Long userId) {
-        if (MCPIds==null|| MCPIds.isEmpty()){
+    public McpToolProvider getMcp(List<Long> MCPIds, Long userId) {
+        if (MCPIds == null || MCPIds.isEmpty()) {
             return null;
         }
         List<McpInformation> list = query().eq("user_id", userId)
                 .in("id", MCPIds)
-                .eq("available",true)
+                .eq("available", true)
                 .list();
-        List<McpClient> mcpClients = list.stream().map(m -> {
-            StreamableHttpMcpTransport mcpTransport = StreamableHttpMcpTransport.builder()
-                    .url(m.getUrl()).timeout(Duration.ofSeconds(5))
-                    .build();
-            McpClient mcpClient = DefaultMcpClient.builder()
-                    .transport(mcpTransport).build();
-            try {
-                mcpClient.checkHealth();
-            } catch (Exception e) {
-                try {
-                    mcpClient.close();
-                } catch (Exception ex) {
-                    update().set("available",false).eq("id",m.getId()).update();
-                }
+        if (list.isEmpty()) {
+            return null;
+        }
+        List<McpClient> mcpClients = new ArrayList<>();
+        for (McpInformation info : list) {
+            McpClient client = mcpClientRegistry.getOrCreate(info);
+            if (client == null) {
+                // 连不上：标记为不可用，避免每次对话都白白尝试
+                update().set("available", false).eq("id", info.getId()).update();
+            } else {
+                mcpClients.add(client);
             }
-            return mcpClient;
-        }).toList();
-        return McpToolProvider.builder().mcpClients(mcpClients)
-//                .toolNameMapper((client,toolSep)->  +"_"+toolSep.name())
+        }
+        if (mcpClients.isEmpty()) {
+            return null;
+        }
+        return McpToolProvider.builder()
+                .mcpClients(mcpClients)
                 .build();
     }
 
@@ -146,7 +153,11 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
             }
         }
         if (!updateList.isEmpty()) {
-            updateList.forEach(mcpInformationMapper::updateMCP);
+            // 更新的配置可能与已建连接不符，逐个作废缓存
+            updateList.forEach(mcp -> {
+                mcpInformationMapper.updateMCP(mcp);
+                mcpClientRegistry.evict(mcp.getId());
+            });
         }
         if (!list.isEmpty()) {
             mcpInformationMapper.saveBatch(list);
@@ -174,6 +185,8 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (!removed) {
             throw new NotFoundException("MCP 不存在或无权限操作");
         }
+        // 配置没了，缓存的连接也要一并关掉
+        mcpClientRegistry.evict(id);
     }
 
     @Override
@@ -188,6 +201,8 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (updated == 0) {
             throw new NotFoundException("MCP 不存在或无权限操作");
         }
+        // URL/header 可能已变，旧连接作废
+        mcpClientRegistry.evict(mcPs.id());
     }
 
     @Override

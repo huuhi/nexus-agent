@@ -1,6 +1,10 @@
 package com.huzhijian.nexusagentweb.config;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
@@ -8,6 +12,7 @@ import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageDeserializer;
 import dev.langchain4j.data.message.ChatMessageSerializer;
+import dev.langchain4j.data.message.ChatMessageType;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
@@ -15,7 +20,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * @author 胡志坚
@@ -43,6 +51,12 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class PgChatMemoryStore {
+
+    /** 仅用于「按 JSON 树」比较消息是否同一条，见 {@link #canonical} */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 锚点失配时，拿库中最近多少条做内容去重 */
+    private static final int RECENT_DEDUP_LIMIT = 50;
 
     private final ChatMemoryService chatMemoryService;
 
@@ -107,7 +121,12 @@ public class PgChatMemoryStore {
     /**
      * 持久化消息（只写增量）。
      * <p>
-     * 增量方式：与库中已有的条数比较，只插入尾部新增的部分。
+     * 增量定位方式：**锚点法** —— 取库中最后一条消息，在传入列表里找到它的位置，
+     * 其后的就是新增部分。
+     * <p>
+     * 为什么不用「比较条数」（原实现）：记忆窗口在 token 超限时会**淘汰旧消息**，
+     * 传入列表不再单调增长，条数比较会永远判定为「没有新增」，
+     * 结果长会话的新消息永远写不进库。锚点法不受淘汰影响，也不会丢历史。
      */
     public void updateMessages(RunContext runContext, Object sessionId, List<ChatMessage> list) {
         if (sessionId == null) {
@@ -119,29 +138,130 @@ public class PgChatMemoryStore {
             throw new UnauthorizedException("会话缺少用户归属，拒绝写入聊天记录");
         }
 
-        ArrayList<ChatHistory> insertList = new ArrayList<>();
-
-        // 只添加增量数据
-        int count = chatMemoryService.getCountBySessionID(sessionId.toString());
-        log.debug("sessionId={}, 库中消息数={}, 传入消息数={}", sessionId, count, list.size());
-
-        if (list.size() > count) {
-            List<ChatMessage> needAdd = list.subList(count, list.size());
-            for (ChatMessage chatMessage : needAdd) {
-                // 附件元数据直接来自 RunContext，不再依赖 ThreadLocal
-                if (chatMessage instanceof UserMessage userMessage && runContext.hasMessageMetadata()) {
-                    userMessage.attributes().putAll(runContext.messageMetadata());
-                }
-                String jsonString = ChatMessageSerializer.messageToJson(chatMessage);
-                ChatHistory chatHistory = ChatHistory.builder()
-                        .sessionId(sessionId)
-                        .type(chatMessage.type().name())
-                        .content(jsonString)
-                        .build();
-                insertList.add(chatHistory);
+        // 系统消息不入库：它由 @SystemMessage 每轮重新提供，存下来纯属冗余。
+        // （LangChain4j 的 TokenWindowChatMemory 会一直保留系统消息，
+        //   窗口很小时它甚至会挤掉所有对话消息，这里先把它们剔掉再算增量。）
+        List<ChatMessage> persistable = new ArrayList<>();
+        for (ChatMessage message : list) {
+            if (message != null && message.type() != ChatMessageType.SYSTEM) {
+                persistable.add(message);
             }
         }
+
+        int startIndex = resolveInsertStartIndex(runContext, sessionId, persistable);
+        if (startIndex >= persistable.size()) {
+            return;
+        }
+
+        ArrayList<ChatHistory> insertList = new ArrayList<>();
+        for (ChatMessage chatMessage : persistable.subList(startIndex, persistable.size())) {
+            // 附件元数据直接来自 RunContext，不再依赖 ThreadLocal
+            if (chatMessage instanceof UserMessage userMessage && runContext.hasMessageMetadata()) {
+                userMessage.attributes().putAll(runContext.messageMetadata());
+            }
+            String jsonString = ChatMessageSerializer.messageToJson(chatMessage);
+            ChatHistory chatHistory = ChatHistory.builder()
+                    .sessionId(sessionId)
+                    .type(chatMessage.type().name())
+                    .content(jsonString)
+                    .build();
+            insertList.add(chatHistory);
+        }
         chatMemoryService.insertBatch(insertList, userId);
+    }
+
+    /**
+     * 算出「传入列表里从第几条开始是新增的」。
+     * <p>
+     * 优先用锚点（库中最后一条消息）定位；锚点失配时按内容与库中最近若干条去重。
+     * 两条路都不依赖「条数单调增长」，因此记忆窗口淘汰旧消息后依然正确。
+     */
+    private int resolveInsertStartIndex(RunContext runContext, Object sessionId, List<ChatMessage> persistable) {
+        if (persistable.isEmpty()) {
+            return 0;
+        }
+        String anchorJson = chatMemoryService.getLastMessageJson(sessionId, runContext.userId());
+        if (anchorJson == null) {
+            log.debug("sessionId={} 库中无历史，全量写入 {} 条", sessionId, persistable.size());
+            return 0;
+        }
+        // 从后往前找：正常情况下锚点就在倒数第二、三条附近，能快速命中
+        String anchor = canonical(anchorJson);
+        if (anchor != null) {
+            for (int i = persistable.size() - 1; i >= 0; i--) {
+                if (anchor.equals(canonical(ChatMessageSerializer.messageToJson(persistable.get(i))))) {
+                    log.debug("sessionId={} 锚点命中于第 {} 条（共 {} 条）", sessionId, i, persistable.size());
+                    return i + 1;
+                }
+            }
+        }
+        return dedupStartIndex(runContext, sessionId, persistable);
+    }
+
+    /**
+     * 锚点失配时的兜底：把传入消息与「库中最近 N 条」按内容比对，
+     * 只保留库里没有的**尾部**消息。
+     * <p>
+     * 什么时候会走到这里：记忆窗口很小（例如小于系统提示词长度）时，
+     * 窗口里的消息可能已被整体替换，锚点不在传入列表中。
+     * 完全靠条数比较在这种场景下会「永远判定没有新增」，导致新消息写不进库。
+     */
+    private int dedupStartIndex(RunContext runContext, Object sessionId, List<ChatMessage> persistable) {
+        List<String> recent = chatMemoryService.getRecentMessageJson(sessionId, runContext.userId(), RECENT_DEDUP_LIMIT);
+        Set<String> stored = new HashSet<>();
+        for (String json : recent) {
+            String canon = canonical(json);
+            if (canon != null) {
+                stored.add(canon);
+            }
+        }
+        int start = persistable.size();
+        for (int i = persistable.size() - 1; i >= 0; i--) {
+            String canon = canonical(ChatMessageSerializer.messageToJson(persistable.get(i)));
+            if (canon != null && stored.contains(canon)) {
+                break; // 命中已存过的消息，说明它之前都是旧的
+            }
+            start = i;
+        }
+        log.warn("sessionId={} 锚点失配（库中最近 {} 条 / 传入 {} 条），按内容去重后从第 {} 条开始写入",
+                sessionId, recent.size(), persistable.size(), start);
+        return start;
+    }
+
+    /**
+     * 把消息 JSON 规范化成「键序无关」的字符串，用于内容比较。
+     * <p>
+     * ⚠️ 不能直接比字符串：`content` 是 jsonb 列，PostgreSQL 会规范化键序与空白，
+     * 回读文本与 Java 序列化结果不会逐字节相同。必须递归排序对象键后再比较。
+     */
+    private static String canonical(String json) {
+        if (json == null) {
+            return null;
+        }
+        try {
+            return canonicalize(MAPPER.readTree(json)).toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static JsonNode canonicalize(JsonNode node) {
+        if (node instanceof ObjectNode objectNode) {
+            ObjectNode sorted = MAPPER.createObjectNode();
+            List<String> names = new ArrayList<>();
+            objectNode.fieldNames().forEachRemaining(names::add);
+            Collections.sort(names);
+            for (String name : names) {
+                sorted.set(name, canonicalize(objectNode.get(name)));
+            }
+            return sorted;
+        }
+        if (node.isArray()) {
+            ArrayNode array = MAPPER.createArrayNode();
+            node.forEach(child -> array.add(canonicalize(child)));
+            return array;
+        }
+        return node;
     }
 
     public void deleteMessages(Object sessionId) {

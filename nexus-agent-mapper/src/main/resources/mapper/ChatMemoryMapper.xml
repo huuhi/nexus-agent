@@ -50,4 +50,36 @@
           and user_id=#{userId}
         order by create_at
     </select>
+
+    <!--
+      取某个会话**最后一条**消息的原始 JSON，用作增量写入的「锚点」。
+      排序说明：同一批 insertBatch 的多行共享同一个 create_at（默认值 now() 在一条语句里相同），
+      所以必须再用 id 兜底。chat_memory 的行全部由 insertBatch 写入（identity 自增），
+      因此 id 与时间同向递增，排序结果确定。
+    -->
+    <select id="getLastContentByMemoryId" resultType="java.lang.String">
+        select content::text
+        from chat_memory
+        where session_id=#{sessionId}::uuid
+          and user_id=#{userId}
+        order by create_at desc, id desc
+        limit 1
+    </select>
+
+    <!--
+      取会话最近 N 条消息的原始 JSON，用于「锚点失配」时的兜底去重。
+      返回按时间正序，便于调用方比对。
+    -->
+    <select id="getRecentContents" resultType="java.lang.String">
+        select t.content::text
+        from (
+            select content, create_at, id
+            from chat_memory
+            where session_id=#{sessionId}::uuid
+              and user_id=#{userId}
+            order by create_at desc, id desc
+            limit #{limit}
+        ) t
+        order by t.create_at, t.id
+    </select>
 </mapper>

@@ -62,6 +62,16 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     }
 
     @Override
+    public String getLastMessageJson(Object sessionId, Long userId) {
+        return mapper.getLastContentByMemoryId(sessionId, userId);
+    }
+
+    @Override
+    public List<String> getRecentMessageJson(Object sessionId, Long userId, int limit) {
+        return mapper.getRecentContents(sessionId, userId, limit);
+    }
+
+    @Override
     public void delByMemoryId(Object memoryId) {
         mapper.delAllByMemoryId(memoryId);
     }
