@@ -345,6 +345,29 @@ public class XxxTool implements AgentToolSet {
 
 **注意：MCP 不走这套机制** —— 它是外部 `toolProvider`（见 §6.7），仍在 `ChatContextFactory` 里单独处理。
 
+### 6.5 工具失败的返回契约（渲染给模型看）
+
+所有走外部服务的工具都必须用 `SafeExecuteToolHandler` 包装，失败时返回**扁平结构**：
+
+```json
+{ "success": false, "errorCode": "SERVICE_UNREACHABLE", "message": "简洁原因", "hint": "给模型的自纠建议" }
+```
+
+错误码共 7 类：`SERVICE_UNREACHABLE`（服务不可达）/ `TIMEOUT` / `BAD_REQUEST`（4xx）/
+`UPSTREAM_ERROR`（5xx）/ `BAD_PARAMETER` / `EMPTY_RESPONSE` / `UNKNOWN`。
+
+**为什么要这样设计**：模型看到 `{"error":"..."}` 只能盲试；带上错误码与 hint 之后它能自纠。
+实测有效：沙盒被 E2B 回收后再执行命令，工具返回 hint 提示重新建沙盒，
+模型随即自主调用 `create_box` 重建并完成了原任务。
+
+**实现注意事项**（改动时别踩）：
+- ❗不要用 `Map.of(...)` 构造错误结果 —— 它**不接受 null 值**，而异常可能没有 message，
+  会导致「错误处理自身抛 NPE」，把工具失败升级成请求失败（这是原始缺陷，已有回归测试）
+- 错误码由**异常类型**判定，并**沿 cause 链查找根因**（WebClient 会把 `ConnectException`
+  包一层，只看最外层会误判成 `UNKNOWN`）
+- 异常文案要截断（当前 300 字），避免长堆栈塞进模型上下文
+- 失败必须打 WARN 日志，否则运维侧完全看不到工具失败
+
 **新增 Tool 的检查清单**：① 返回类型必须是可序列化的（`Map`/`String`/`List<Map>`）；② 必须用 `SafeExecuteToolHandler` 兜底；
 ③ 提示词里如果涉及"失败禁止重试"要在 `ModelSystemContent.CHAT_PROMPT` 补充；④ 考虑外部调用超时；
 ⑤ **工具名（`@Tool(name=...)`）一旦上线不要改**，模型侧提示词与前端都可能依赖它。
@@ -531,6 +554,7 @@ public class XxxTool implements AgentToolSet {
 | 2026-09-23 | **P1-1 + P1-2 完成**：新增 `RunContext` 取代跨线程 ThreadLocal，解除聊天记录的 Redis 依赖，顺带修掉对话读记忆的越权 | `RunContext.java`(新)、`PgChatMemoryStore`、`ChatMessageConverter`、`ChatContextFactory`、`ChatServiceImpl`、`ChatMemoryService`；删除 `MessageMetadataContext` | 3 轮对话实测：附件元数据完整保留、未串轮、全程不依赖 Redis session key |
 | 2026-09-23 | **沙盒链路实测通过**（M1#3 验收完成）；并修正 §6.2 的 SSE 事件名（文档原来写错） | `AGENTS.md` | AI 成功调用 `create_box` → `execute_cmd` → 拿到真实 stdout；工具事件名实为全大写 |
 | 2026-09-23 | **P1-4 完成**：引入 `ToolRegistry`，工具注册改为声明式；`ChatContextFactory` 不再认识任何具体工具 | 新增 `tools/registry/`3 个类；4 个工具类实现 `AgentToolSet`；`AGENTS.md §6.4` 重写 | 实测：`enableRag` 开关由 `RagTool.enabled()` 决定，日志逐项打印启用/跳过 |
+| 2026-09-23 | **P1 批次完成**：P1-6/7/8/9/11/13 六项一次性做完 | 新增 `sandbox/`、`mcp/`、`properties/AgentProperties`、3 个单测类；重写 `SafeExecuteToolHandler`、`PgChatMemoryStore`、`BoxTool`；6 个旧测试改为人工测试 | 详见 §6.5（工具错误契约）与 §15（运行时配置）；实测 4 组端到端验证通过 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -717,6 +741,28 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | P2-10、P2-11，以及是否会推翻 D1 的 E2B 选择。**详见 §15** |
 
 > D2 建议**等 P1 结束再决定**：先把后端契约（SSE 事件、能力清单）稳定下来，前端做出来才有意义。
+
+---
+
+## 15. 运行时配置（`nexus.agent.*`）
+
+对应类 `properties/AgentProperties`。**所有字段都有代码默认值**，因此 yml 里不写也能启动
+（本地 `application-dev.yml` 是 gitignore 的，不能指望它一定包含这些键）。
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `nexus.agent.sse.timeout` | `120s` | SSE 连接超时。**必须大于最慢一次模型调用**，否则复杂任务被掐断 |
+| `nexus.agent.memory.max-tokens` | `100000` | 对话记忆窗口。只影响送给模型的上下文，**不影响已入库的消息** |
+| `nexus.agent.memory.token-estimator-model` | `gpt-4o` | token 估算器用的模型名。只做本地估算、不产生 API 调用；与实际模型不一致会导致窗口裁剪不准 |
+| `nexus.agent.sandbox.reuse-per-session` | `true` | 同一会话复用同一沙盒（E2B 按量计费，关闭会导致反复创建） |
+| `nexus.agent.sandbox.idle-timeout` | `8m` | 空闲多久后主动销毁沙盒。**必须小于沙盒服务的 `set_timeout(600)`** |
+| `nexus.agent.sandbox.sweep-interval` | `60000` | 回收任务间隔（毫秒或 ISO-8601） |
+| `nexus.agent.mcp.health-timeout` | `5s` | MCP 客户端健康检查超时 |
+| `nexus.agent.mcp.cache-clients` | `true` | 是否缓存复用 MCP 客户端。关闭会导致每轮对话新建连接（泄漏） |
+
+> ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
+> `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，
+> 表现为模型「失忆」并只回一句寒暄。实测 60 会出问题，≥600 正常。
 
 ---
 
