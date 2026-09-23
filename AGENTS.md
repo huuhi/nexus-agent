@@ -283,11 +283,17 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 
 | event name | data | 说明 |
 |---|---|---|
-| `message` | `MessageVO{type: THINK\|CONTENT, thinking?, content?}` | 思考 / 正文增量 |
-| `tool_execution` | `MessageVO{type: TOOL_EXECUTION, toolRequestList:[{id,toolName,arguments}]}` | 工具调用请求（arguments 为**流式片段**） |
-| `tool_execution_result` | `MessageVO{type: TOOL_EXECUTION_RESULT, toolResultVO:{id,toolName,result,isError}}` | 工具结果 |
-| `session_id` | `sessionId` | 仅新会话 |
-| `finish` | `DONE` | 结束 |
+| `message` | `MessageVO{type: THINK\|CONTENT, thinking?, content?}` | 思考 / 正文增量（小写） |
+| **`TOOL_EXECUTION`** | `MessageVO{type: TOOL_EXECUTION, toolRequestList:[{id,toolName,arguments}]}` | 工具调用请求（**注意是全大写**；arguments 为**流式片段**，会被拆成很多个事件） |
+| **`TOOL_EXECUTION_RESULT`** | `MessageVO{type: TOOL_EXECUTION_RESULT, toolResultVO:{id,toolName,result,isError}}` | 工具结果（**全大写**） |
+| `session_id` | `sessionId` | 仅新会话（小写） |
+| `finish` | `DONE` | 结束（小写） |
+
+> ⚠️ **事件名大小写不统一，前端容易踩坑。** 实测确认：`message` / `session_id` / `finish` 是
+> 代码里写的小写字面量，而两个工具事件用的是 `MessageType` 枚举值（**全大写**）。
+> 按 `event: tool_execution` 监听会永远收不到工具事件。
+> 成因见 `SseResponseConverter`：前者写死 `"message"`，后者写 `MessageType.X.getValue()`。
+> 统一大小写属于接口契约变更，已列入 **P2-5（SSE 契约版本化）**，本轮只把文档改成真实值。
 
 ### 6.3 模型选择逻辑
 
@@ -500,6 +506,7 @@ public class XxxTool {
 | 2026-09-23 | **P1-12 完成**：补根 `README.md` 快速开始 + 配置模板 `application-dev.yml.example` / `nexus_agent_box/.env.example`，并填充空白的 `nexus_agent_box/README.md` | `README.md`、`nexus_agent_box/README.md`、两个 `.example` | 修复根因 R2「没有开箱路径」：dev 配置被 gitignore 导致新环境必然起不来 |
 | 2026-09-23 | **端到端实测通过**并修 2 个运行期 bug（`select *` 位置错配、无效 token 被放行） | `ChatMemoryMapper.xml`、`LoginCheckInterceptor.java` | 应用真实启动 + 对话 + 会话读写 + 401 鉴权全部验证；详见 §12.0 与递归计划 M1 |
 | 2026-09-23 | **P1-1 + P1-2 完成**：新增 `RunContext` 取代跨线程 ThreadLocal，解除聊天记录的 Redis 依赖，顺带修掉对话读记忆的越权 | `RunContext.java`(新)、`PgChatMemoryStore`、`ChatMessageConverter`、`ChatContextFactory`、`ChatServiceImpl`、`ChatMemoryService`；删除 `MessageMetadataContext` | 3 轮对话实测：附件元数据完整保留、未串轮、全程不依赖 Redis session key |
+| 2026-09-23 | **沙盒链路实测通过**（M1#3 验收完成）；并修正 §6.2 的 SSE 事件名（文档原来写错） | `AGENTS.md` | AI 成功调用 `create_box` → `execute_cmd` → 拿到真实 stdout；工具事件名实为全大写 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -559,6 +566,8 @@ public class XxxTool {
 | **`sys_file` 表在库中不存在** | ✅ 已修 | 该表曾丢失，导致文件上传必报 `relation does not exist`。依据 `SysFile` 实体 + `FileMapper.xml` 的 resultMap 推导出 DDL 并建表 |
 | **`knowledge_base_file` 缺 `file_name` 列** | ✅ 已修 | `insertKnowledge` 会写入它、`resultMap` 也映射它，缺列导致**知识库入库与详情查询双双报错**。基线已含该列 |
 | **`KnowledgeBaseFileMapper.xml` 把 `fileName` 映射到 `fail_name`** | ✅ 已修 | 笔误，改为 `file_name` |
+| **SSE 事件名大小写不统一** | 📝 记录 | `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写）。按 `event: tool_execution` 监听会收不到工具事件。属接口契约变更，列入 P2-5 统一。详见 §6.2 |
+| **知识库入库强制要求用户自带 embedding 配置** | 📝 记录 | `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索时用的是**系统默认** EmbeddingModel。两者口径不一致 → 没配过 API Key 的用户建知识库必然失败，尽管系统已配好向量模型。建议 P1-8/P2-7 一起统一为「用户配置优先、系统默认兜底」 |
 | **`User` 实体缺 `@TableId`** | ✅ 已修 | 补 `@TableId(type = IdType.AUTO)`。原先 `getById`/`updateById` 会失败，且 `save()` 后取不到 id（`register` 要用它签 JWT） |
 | **`skill_mcp_information` 表在库中不存在** | ✅ 已建表 | 按实体补表，使该代码路径不至于是坏的。但功能本身仍未接通（§6.5），且 D3 定为本地目录扫描，P2-1 可能再调整 |
 | **库中有表但代码无用**：`skill_information`、`user_skill` | ✅ 已删 | Skill 功能的历史设计残留（`开发日志.md` 4.20），代码中已无任何实体或 Mapper 使用 |
