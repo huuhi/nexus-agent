@@ -13,6 +13,15 @@ import java.util.List;
 */
 public interface ChatMemoryService extends IService<ChatHistory> {
     List<ChatHistory> getByMemoryId(Object memory);
+
+    /**
+     * 按会话 ID + 用户 ID 读取历史。
+     * <p>
+     * 对话链路读记忆必须用这个：sessionId 由客户端传入，只按 sessionId 查
+     * 等于「知道别人的 sessionId 就能读到别人的聊天记录」。
+     */
+    List<ChatHistory> getByMemoryIdAndUserId(Object memory, Long userId);
+
     void delByMemoryId(Object memoryId);
     void insertBatch(List<ChatHistory> list,Long userId);
 

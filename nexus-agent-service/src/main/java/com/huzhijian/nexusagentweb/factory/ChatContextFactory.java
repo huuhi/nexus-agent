@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.factory;
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.config.PgChatMemoryStore;
 import com.huzhijian.nexusagentweb.context.ChatContext;
+import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.domain.Model;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
@@ -23,6 +24,7 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.map.HashedMap;
@@ -30,7 +32,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * @author 胡志坚
@@ -55,13 +56,16 @@ public class ChatContextFactory {
     private final UserConfigService  userConfigService;
 
 
-    public ChatContext create(ChatDTO chatDTO,Long userId){
+    public ChatContext create(ChatDTO chatDTO, RunContext runContext){
+        Long userId = runContext.userId();
+        String sessionId = runContext.sessionId();
         StreamingChatModel  model=createModel(chatDTO.model(),userId);
-        String temp=chatDTO.sessionId();
-//        是否为新的对话，如果是，创建新的会话ID，并且
-        boolean isNewSession=temp==null||temp.isEmpty();
-        String sessionId =isNewSession? UUID.randomUUID().toString():temp;
         McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
+//        记忆存储绑定本次运行的上下文，必须这样做：
+//        LangChain4j 在**流式回调线程**上调用 ChatMemoryStore.updateMessages，
+//        那时请求线程的 ThreadLocal 已经取不到值——历史上附件元数据就是这样丢的，
+//        userId 也只能靠 Redis 缓存兜底（而那个 key 仅 5 分钟）。
+        ChatMemoryStore memoryStore = chatMemoryStore.forRun(runContext);
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
 //                常驻工具：沙盒、系统日志、用户长期记忆
@@ -70,7 +74,7 @@ public class ChatContextFactory {
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
                         .maxTokens(100000,new OpenAiTokenCountEstimator("gpt-4o"))
-                        .chatMemoryStore(chatMemoryStore)
+                        .chatMemoryStore(memoryStore)
                         .id(sessionId)
                         .build());
 
@@ -84,7 +88,7 @@ public class ChatContextFactory {
         ChatAssistant chatAssistant = builder.build();
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
-                .isNewSession(isNewSession)
+                .isNewSession(runContext.newSession())
                 .build();
     }
 

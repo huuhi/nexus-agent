@@ -56,6 +56,12 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     }
 
     @Override
+    public List<ChatHistory> getByMemoryIdAndUserId(Object memory, Long userId) {
+//        对话链路读记忆专用：必须带 user_id，否则会读到别人的会话
+        return mapper.getAllByMemoryIdAndUserId(memory, userId);
+    }
+
+    @Override
     public void delByMemoryId(Object memoryId) {
         mapper.delAllByMemoryId(memoryId);
     }

@@ -1,7 +1,6 @@
 package com.huzhijian.nexusagentweb.converter;
 
 import com.aliyuncs.exceptions.ClientException;
-import com.huzhijian.nexusagentweb.context.MessageMetadataContext;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.em.UserMessageType;
@@ -23,7 +22,11 @@ import static com.huzhijian.nexusagentweb.content.MetadataKeyContent.*;
  * @author 胡志坚
  * @version 1.0
  * 创造日期 2026/4/26
- * 说明:
+ * 说明: 把前端传来的用户消息转换成 LangChain4j 的 Content 列表。
+ * <p>
+ * 附件元数据（文件名、URL 等）不再写进 ThreadLocal，而是随返回值一起交给调用方，
+ * 由调用方放进 {@code RunContext} 显式传递到流式回调线程。
+ * 原因见 {@link com.huzhijian.nexusagentweb.context.RunContext}。
  */
 @Component
 @Slf4j
@@ -33,7 +36,18 @@ public class ChatMessageConverter {
     public ChatMessageConverter(FileUtils fileUtils) {
         this.fileUtils = fileUtils;
     }
-    public List<Content> toContents(List<ChatUserMessage> messages) throws ClientException, IOException {
+
+    /**
+     * 转换结果。
+     *
+     * @param contents 给模型的 Content 列表
+     * @param metadata 需要持久化到用户消息 attributes 的元数据（当前只有附件列表）。
+     *                 即使没有附件也保留 {@code attached_files: []}，与历史行为一致。
+     */
+    public record ConvertedMessage(List<Content> contents, Map<String, Object> metadata) {
+    }
+
+    public ConvertedMessage toContents(List<ChatUserMessage> messages) throws ClientException, IOException {
         List<Content> contents=new ArrayList<>();
         List<Map<String, Object>> attachedFiles=new ArrayList<>();
         for (ChatUserMessage message : messages) {
@@ -66,8 +80,7 @@ public class ChatMessageConverter {
                 }
             }
         }
-        MessageMetadataContext.set(Map.of(ATTACHED_FILES, attachedFiles));
-        return contents;
+        return new ConvertedMessage(contents, Map.of(ATTACHED_FILES, attachedFiles));
     }
     public String extractFirstText(List<ChatUserMessage> messages){
         //  理论上，用户消息都没有的话，应该在前面就处理了（抛出错误）

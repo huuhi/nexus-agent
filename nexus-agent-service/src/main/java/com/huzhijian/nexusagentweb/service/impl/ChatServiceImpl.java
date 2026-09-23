@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.service.impl;
 
 import com.aliyuncs.exceptions.ClientException;
 import com.huzhijian.nexusagentweb.context.ChatContext;
+import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
@@ -14,9 +15,7 @@ import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
-import com.huzhijian.nexusagentweb.utils.RedisUtils;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
-import dev.langchain4j.data.message.Content;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.model.catalog.ModelDescription;
 import dev.langchain4j.model.openai.OpenAiModelCatalog;
@@ -28,8 +27,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.List;
-
-import static com.huzhijian.nexusagentweb.content.RedisContent.SESSION_KEY;
+import java.util.UUID;
 
 /**
  * @author 胡志坚
@@ -44,7 +42,7 @@ public class ChatServiceImpl implements ChatService {
     private final ChatContextFactory chatContextFactory;
     private final ChatHistoryListService chatHistoryListService;
     private final ChatMessageConverter converter;
-    private final RedisUtils redisUtils;
+
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
 
@@ -54,25 +52,30 @@ public class ChatServiceImpl implements ChatService {
         }
         SseEmitter sseEmitter = new SseEmitter(120000L);
 
-        ChatContext chatContext = chatContextFactory.create(chatDTO, userId);
-        ChatAssistant chatAssistant = chatContext.getChatAssistant();
-        String sessionId = chatContext.getSessionId();
-//        将用户ID缓存起来
-        redisUtils.set(SESSION_KEY+sessionId, String.valueOf(userId), 5L);
-
-        boolean isNewSession = chatContext.isNewSession();
         List<ChatUserMessage> messages = chatDTO.messages();
 
-        List<Content> contents;
+//        1) 先转换用户消息：附件元数据由返回值带回，不再写 ThreadLocal
+        ChatMessageConverter.ConvertedMessage converted;
         try {
-            contents = converter.toContents(messages);
+            converted = converter.toContents(messages);
         } catch (ClientException e) {
             throw new ValidationException("参数错误!");
         } catch (IOException e) {
             throw new ParserFileException("解析文件失败!");
         }
 
-        TokenStream tokenStream =chatAssistant.chat(contents,sessionId);
+//        2) 组装本次运行上下文。后续流式回调运行在线程池里，
+//        用户ID 与附件元数据只能通过这个对象带过去（ThreadLocal 在那里取不到值）
+        String incomingSessionId = chatDTO.sessionId();
+        boolean isNewSession = incomingSessionId == null || incomingSessionId.isEmpty();
+        String sessionId = isNewSession ? UUID.randomUUID().toString() : incomingSessionId;
+        RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata());
+
+//        3) 构建对话上下文（内部会把 runContext 绑定到记忆存储上）
+        ChatContext chatContext = chatContextFactory.create(chatDTO, runContext);
+        ChatAssistant chatAssistant = chatContext.getChatAssistant();
+
+        TokenStream tokenStream =chatAssistant.chat(converted.contents(),sessionId);
 
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)
