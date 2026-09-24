@@ -68,6 +68,16 @@ public class User implements Serializable {
     @NotNull(message="[API限制，每个用户只能使用100次]不能为空")
     private Integer apiQuota;
     /**
+     * token 配额上限（累计）。**null 或 &lt;= 0 表示不限制**（默认放行，老用户行为不变）。
+     * <p>
+     * 对应 {@code docs/sql/003_add_user_token_quota.sql}；P2-8 新增。
+     */
+    private Long tokenQuota;
+    /**
+     * 已累计消耗的 token 总量，由对话结束时累加，**单调递增、不清零**。
+     */
+    private Long tokenUsed;
+    /**
     * githubID
     */
     @Size(max= 255,message="编码长度不能超过255")

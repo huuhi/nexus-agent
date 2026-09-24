@@ -47,6 +47,16 @@ public class GlobalExceptionHandler {
         return Result.error(ex.getMessage());
     }
 
+    /**
+     * 配额超限（P2-8）。与其它业务异常一致：HTTP 200 + {@code Result{code=1}}，前端按 code 判断。
+     * <p>
+     * 这里**不重复打日志** —— 拒绝原因与用量已在 {@code QuotaServiceImpl} 里打过 WARN。
+     */
+    @ExceptionHandler(QuotaExceededException.class)
+    public Result handleQuotaExceeded(QuotaExceededException ex) {
+        return Result.error(ex.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public Result handleMethodArgumentNotValid(MethodArgumentNotValidException ex) {
         String message = ex.getBindingResult().getFieldError() == null

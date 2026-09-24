@@ -144,3 +144,10 @@ nexus:
       #     thinking: true
       #     search: true
       providers: {}
+    quota:
+      # 是否启用 token 配额校验（P2-8）。关闭后不再拦截超支用户，但用量仍会照常累加
+      enabled: true
+      # 新注册用户的默认 token 配额；<=0 表示不限制（默认）。
+      # 存量用户不受影响（users.token_quota 为 NULL 同样视为不限制）；
+      # 要限制谁就在库里给 users.token_quota 设值。见 docs/sql/003_add_user_token_quota.sql
+      default-quota: 0

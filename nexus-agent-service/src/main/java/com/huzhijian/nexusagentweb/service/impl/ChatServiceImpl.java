@@ -18,11 +18,14 @@ import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
+import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.model.catalog.ModelDescription;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiModelCatalog;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.TokenStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -49,6 +52,7 @@ public class ChatServiceImpl implements ChatService {
     private final AgentProperties agentProperties;
     private final SkillLoader skillLoader;
     private final RunMetricsReporter runMetricsReporter;
+    private final QuotaService quotaService;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -57,6 +61,8 @@ public class ChatServiceImpl implements ChatService {
         if (userId==null){
             throw new UnauthorizedException("用户未登录!");
         }
+//        配额校验放在最前面（P2-8）：超支时直接拒绝，省掉一次完整的模型调用（也不必白建沙盒）
+        quotaService.assertWithinQuota(userId);
 //        超时由 nexus.agent.sse.timeout 配置（默认 120 秒），必须大于最慢一次模型调用的耗时
         SseEmitter sseEmitter = new SseEmitter(agentProperties.getSse().getTimeout().toMillis());
 
@@ -120,6 +126,8 @@ public class ChatServiceImpl implements ChatService {
 //                    token 用量与真实模型名只有在这里拿得到（流式响应的最后一次回调）
                     metrics.recordResponse(response);
                     runMetricsReporter.report(metrics);
+//                    配额记账：把本次实际用量累加进 users.token_used（失败会被吞掉，不影响对话）
+                    quotaService.recordUsage(userId, totalTokens(response));
                     writer.finish();
                 })
                 .onError(error -> {
@@ -131,9 +139,30 @@ public class ChatServiceImpl implements ChatService {
         return sseEmitter;
     }
 
+    /**
+     * 取本次响应的总 token 数（P2-8 记账用）。
+     * <p>
+     * 有些厂商只返回 in/out 而不给 total，所以 total 为 null 时自己相加；
+     * 三项都拿不到则返回 null —— 记账时跳过，**不写 0**（免得统计上把"未知"当成"没消耗"）。
+     */
+    private static Integer totalTokens(ChatResponse response) {
+        TokenUsage usage = response == null ? null : response.tokenUsage();
+        if (usage == null) {
+            return null;
+        }
+        if (usage.totalTokenCount() != null) {
+            return usage.totalTokenCount();
+        }
+        Integer input = usage.inputTokenCount();
+        Integer output = usage.outputTokenCount();
+        if (input == null && output == null) {
+            return null;
+        }
+        return (input == null ? 0 : input) + (output == null ? 0 : output);
+    }
+
     @Override
-    public List<String> getModelList(String baseUrl, String token) {
-        List<ModelDescription> listModels = OpenAiModelCatalog
+    public List<String> getModelList(String baseUrl, String token) {        List<ModelDescription> listModels = OpenAiModelCatalog
                 .builder()
                 .apiKey(token)
                 .baseUrl(baseUrl)

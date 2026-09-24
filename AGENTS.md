@@ -596,6 +596,43 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 `RunMetricsReporter` 已把「算」（`estimateFee` 纯函数）与「写」分开，
 将来要接统计面板时加一个落库实现即可，不必改动本类。
 
+### 6.13 token 配额（P2-8）
+
+**解决什么**：模型/工具一旦跑飞（死循环、超长上下文），一次对话就能烧掉可观费用。
+`ChatContextFactory` 里一直挂着 `TODO 判断余额是否足够`，本轮把它做掉。
+与 §6.12 配套：那边负责**算出**这次花了多少 token，这边负责**记账 + 拦住超支**。
+
+**两段式（粗粒度）**：
+
+| 时机 | 动作 | 为什么在这里 |
+|---|---|---|
+| 对话**开始前** | `QuotaService.assertWithinQuota(userId)` → 超限抛 `QuotaExceededException` | 早失败：省掉一次完整的模型调用，也不必白建沙盒 |
+| 对话**结束后** | `QuotaService.recordUsage(userId, totalTokens)` → 原子累加 `users.token_used` | token 用量只有 `onCompleteResponse` 才拿得到 |
+
+> ⚠️ **允许最后一次小幅超额**：检查时并不知道本次会用多少，所以是"用完 → 下次才被拒"。
+> 要精确卡住必须在调用前估算 token，而估算本身不可靠（上下文长度随工具调用次数变化），故不做。
+> 这是刻意的取舍，不是遗漏。
+
+**数据与实现要点**：
+
+- 列在 `users.token_quota`（bigint，NULL/`<=0` = **不限制**）与 `users.token_used`（bigint，单调递增），
+  见 `docs/sql/003_add_user_token_quota.sql`。**存量用户默认不限制**，行为不变。
+- 累加用**一条原子 UPDATE**（`token_used = COALESCE(token_used,0) + ?`，见 `UserMapper.xml`），
+  而不是「查出来 → 加 → 写回」—— 后者在并发对话下会丢更新。
+- **记账失败被吞掉**（只打 WARN）：它是统计口径问题，不该让一次已经成功的对话变成失败。
+- 用量为 `null` / `<=0` 时**跳过记账**，不写 0 —— 免得把"厂商没返回用量"记成"没消耗"。
+- `total` 缺失时用 `in + out` 兜底（部分厂商只返回这两项）。
+- 配额判定抽成**纯函数** `QuotaServiceImpl.evaluate(quota, used)`，不依赖数据库，便于单测边界。
+- `users.api_quota`（历史字段，smallint 默认 100）**至今没有任何代码读写**，本次不动它：
+  删列属破坏性变更，保留可避免与既有数据/导出脚本产生差异。
+
+**已知局限**（要做得更细再看这里）：
+
+1. **不是周期配额**：`token_used` 只增不减，没有"每日/每月重置"。做周期制需额外记录周期起点，
+   并处理跨周期边界的记账。
+2. **没有管理接口**：调整某人配额目前要直接改库（`UPDATE users SET token_quota = ... WHERE id = ...`）。
+3. 只统计 **token**，不按金额（金额随厂商价格变动，见 §6.12 的 `model-prices`）。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -740,6 +777,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-4 完成**：工具治理（重复调用拦截 + HTTP 响应超时） | 新增 `tools/ToolCallGuard.java`、`ToolCallGuardTest.java`（11 个单测）；13 个 `@Tool` 方法接入治理（其中 4 个补了 `@ToolMemoryId` 参数）；`WebClientConfig` 加 `responseTimeout`；`AgentProperties` 加 `Tools`；两个 yml 补 `tools` 段；`§6.4` 修正过时示例并加「新增工具检查清单」 | 新增 §6.11；`tools.http-timeout` 默认 100s（< SSE 120s）；`duplicate-threshold` 默认 2（第 3 次起拦） |
 | 2026-09-24 | **P2-6 完成**：可观测性（每次 Run 一行结构化验算日志）+ **SSE 新增 `error` 事件带 trace_id** | 新增 `observability/RunMetrics.java`、`RunMetricsReporter.java`、`RunMetricsTest.java`（11 个单测）；`ChatServiceImpl` 生成 runId 并挂 `onToolExecuted`/`onCompleteResponse`/`onError`；`SseResponseConverter` 加 runId 与 error 事件；`MessageType` 加 `ERROR`；`AgentProperties` 加 `Observability`；两个 yml 补 `observability` 段 | 新增 §6.12；§6.2 契约表加 `error` 行（补齐 P1-9 遗留的「SSE 错误事件带 trace_id」）；费用只在配了单价时显示 |
 | 2026-09-24 | **P2-3 完成**：模型能力矩阵 —— 额外参数改为**按服务商下发** | 新增 `model/ModelCapabilityResolver.java`、`ModelCapabilityResolverTest.java`（8 个单测）；`ChatContextFactory` 抽出 `buildExtraBody` 并按能力过滤；`AgentProperties` 加 `Model`/`ProviderCapability`；两个 yml 补 `model.providers` 段 | §6.3 重写（含能力表与「未知即不下发」的取舍说明）；⚠️ **行为变更**：未命中服务商的额外参数不再下发（此前无条件全塞）；默认模型的参数仍在 yml 的 `custom-parameters`（已去掉 DeepSeek 不认的 `enable_search`） |
+| 2026-09-24 | **P2-8 完成**：token 配额（事前拦截 + 事后原子记账） | 新增 `docs/sql/003_add_user_token_quota.sql`、`service/QuotaService` + `QuotaServiceImpl`、`exception/QuotaExceededException`、`QuotaServiceTest`（13 个单测）；`User` 加 `tokenQuota`/`tokenUsed`；`UserMapper.java`/`.xml` 加原子累加语句；`ChatServiceImpl` 接入；`UserServiceImpl.register` 写默认配额；`GlobalExceptionHandler` 加映射；两个 yml 补 `quota` 段 | 新增 §6.13；⚠️ **需先执行 `003` 才能启动**（实体已含新列，`Base_Column_List` 已引用）；存量用户 `token_quota` 为 NULL = 不限制，行为不变 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -956,6 +994,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.observability.enabled` | `true` | 是否输出每次 Run 的汇总日志（见 §6.12） |
 | `nexus.agent.observability.model-prices.<模型名或前缀>.input/.output` | 无 | 每 100 万 token 的单价（元）。**故意无默认值**：价格会变，写死必然过时；未配置的模型显示 `fee=unpriced` |
 | `nexus.agent.model.providers.<baseUrl 片段>.thinking/.search` | 内置 2 条 | 服务商能力表（见 §6.3）。未命中者一律不下发额外参数；同名项覆盖内置 |
+| `nexus.agent.quota.enabled` | `true` | 是否启用 token 配额校验（见 §6.13）。关闭后不再拦截，但**用量仍会累加** |
+| `nexus.agent.quota.default-quota` | `0` | 新注册用户的默认 token 配额；`<=0` 表示不限制（存量用户不受影响，见 §6.13） |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

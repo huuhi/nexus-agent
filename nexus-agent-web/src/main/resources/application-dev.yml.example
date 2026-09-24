@@ -159,6 +159,11 @@ nexus:
       #     thinking: true
       #     search: true
       providers: {}
+    quota:
+      # 是否启用 token 配额校验（P2-8）。关闭后不再拦截超支用户，但用量仍会照常累加
+      enabled: true
+      # 新注册用户的默认 token 配额；<=0 表示不限制（默认）
+      default-quota: 0
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

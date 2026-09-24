@@ -36,6 +36,7 @@ public class AgentProperties {
     private Tools tools = new Tools();
     private Observability observability = new Observability();
     private Model model = new Model();
+    private Quota quota = new Quota();
 
     @Data
     public static class Sse {
@@ -246,5 +247,23 @@ public class AgentProperties {
          * 默认 {@code false}；目前只有阿里云百炼（DashScope）系的 OpenAI 兼容接口认这个参数。
          */
         private boolean search = false;
+    }
+
+    @Data
+    public static class Quota {
+        /**
+         * 是否启用 token 配额校验（P2-8）。
+         * <p>
+         * 关闭后不再拦截超支用户，但**用量仍会照常累加**（不影响可观测性与后续统计）。
+         */
+        private boolean enabled = true;
+
+        /**
+         * 新注册用户的默认 token 配额。{@code <= 0} 表示不限制（默认）。
+         * <p>
+         * 存量用户不受影响 —— 他们的 {@code users.token_quota} 为 NULL，同样视为不限制；
+         * 要限谁就在库里给谁设值（或用管理接口，当前没有）。
+         */
+        private long defaultQuota = 0;
     }
 }

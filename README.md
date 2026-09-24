@@ -26,12 +26,19 @@ MCP 工具接入、E2B 云沙盒执行代码、RAG 知识库、用户长期记�
 # 建库（pgvector 扩展由基线脚本创建，但要确保服务端已安装该扩展）
 createdb -h <PG_HOST> -U postgres nexus_agent
 
-# 执行基线（12 张表 + 2 枚举 + 4 外键 + 9 索引）
+# 1) 执行基线（12 张表 + 2 枚举 + 4 外键 + 9 索引）
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/001_baseline.sql
+
+# 2) 按序号执行后续增量（顺序不能颠倒）
+psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/002_drop_skill_mcp_information.sql
+psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/003_add_user_token_quota.sql
 ```
 
-> 也可以用 Navicat：右键库 → 运行 SQL 文件 → 选 `docs/sql/001_baseline.sql`。
-> ⚠️ 该脚本会先 DROP 再重建，**只能在空库或允许清空的环境执行**。
+> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 的顺序**各跑一次。
+> ⚠️ 基线脚本会先 DROP 再重建，**只能在空库或允许清空的环境执行**；
+> 增量脚本都是幂等的（可重复执行）。
+> ⚠️ **增量脚本必须执行**：实体已经包含新增的列，库里缺列会导致登录/查用户直接报
+> `column "token_quota" does not exist`。
 > 表结构与设计理由见 [docs/sql/README.md](./docs/sql/README.md)。
 
 ### 2. 生成配置文件
@@ -147,6 +154,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | `nexus.agent.skill.root-dir` | `skills` | 技能目录位置。**相对应用工作目录解析**，换启动方式后技能「消失」时改成绝对路径 |
 | `nexus.agent.security.enabled` | `true` | 本地调试不想带 token 时设为 `false`（关闭时启动会打 WARN）。**生产必须为 true** |
 | `nexus.agent.startup.fail-fast` | `true` | 启动自检发现必需配置缺失时是否阻止启动；只想临时带病启动再设 `false` |
+| `nexus.agent.quota.enabled` / `.default-quota` | `true` / `0` | token 配额校验；`default-quota` 是新用户默认额度（`<=0` 不限）。**给某人限额改库**：`UPDATE users SET token_quota = N WHERE id = ?`（需先执行 `docs/sql/003`） |
 
 ---
 

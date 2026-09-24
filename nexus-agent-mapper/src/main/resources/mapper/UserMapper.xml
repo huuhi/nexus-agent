@@ -12,12 +12,25 @@
             <result property="avatarImg" column="avatar_img" jdbcType="VARCHAR"/>
             <result property="registerTime" column="register_time" jdbcType="TIMESTAMP"/>
             <result property="apiQuota" column="api_quota" jdbcType="SMALLINT"/>
+            <result property="tokenQuota" column="token_quota" jdbcType="BIGINT"/>
+            <result property="tokenUsed" column="token_used" jdbcType="BIGINT"/>
             <result property="githubId" column="github_id" jdbcType="VARCHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id,email,username,
         password,avatar_img,register_time,
-        api_quota,github_id
+        api_quota,token_quota,token_used,github_id
     </sql>
+
+    <!--
+      P2-8：累加 token 用量。
+      用一条原子 UPDATE（token_used = token_used + ?）而不是「查出来 → 加 → 写回」，
+      后者在并发对话下会丢更新。
+    -->
+    <update id="addTokenUsage">
+        UPDATE "public"."users"
+        SET token_used = COALESCE(token_used, 0) + #{delta}
+        WHERE id = #{userId}
+    </update>
 </mapper>

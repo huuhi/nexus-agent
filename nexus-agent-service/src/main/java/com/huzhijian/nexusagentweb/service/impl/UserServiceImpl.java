@@ -10,6 +10,7 @@ import com.huzhijian.nexusagentweb.em.LoginType;
 import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.UserService;
 import com.huzhijian.nexusagentweb.utils.JwtUtil;
 import com.huzhijian.nexusagentweb.utils.RedisUtils;
@@ -32,10 +33,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     implements UserService{
     private final BCryptPasswordEncoder encoder=new BCryptPasswordEncoder();
     private final RedisUtils redisUtils;
+    private final AgentProperties agentProperties;
     private final List<String> imageList=List.of("");
 
-    public UserServiceImpl(RedisUtils redisUtils) {
+    public UserServiceImpl(RedisUtils redisUtils, AgentProperties agentProperties) {
         this.redisUtils = redisUtils;
+        this.agentProperties = agentProperties;
     }
 
     @Override
@@ -112,10 +115,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
         User user = User.builder().email(email)
                 .username(username)
                 .avatarImg(url)
+//                P2-8：新用户默认 token 配额（未配置则存 null = 不限制，避免库里出现 0 这种歧义值）
+                .tokenQuota(defaultTokenQuota())
+                .tokenUsed(0L)
                 .build();
         save(user);
 
         return JwtUtil.createJWT(Map.of("user_id",user.getId(),"image_url",user.getAvatarImg(),"user_name",user.getUsername()));
+    }
+
+    /**
+     * 新注册用户的默认 token 配额。
+     * <p>
+     * {@code <=0} 时返回 null（= 不限制）。刻意不写 0：库里 0 与 NULL 虽然判定结果一样，
+     * 但 NULL 明确表示"从未设过配额"，0 看起来像"配额是 0 却还能用"，排查时容易绕。
+     */
+    private Long defaultTokenQuota() {
+        long quota = agentProperties.getQuota().getDefaultQuota();
+        return quota > 0 ? quota : null;
     }
 
 
