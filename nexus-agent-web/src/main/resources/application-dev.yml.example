@@ -127,6 +127,16 @@ nexus:
       # true（默认）：fail-fast，启动日志会一次性列出缺哪些、各自什么后果
       # false：降级为 WARN 继续启动，仅建议临时排查问题时用
       fail-fast: true
+    tools:
+      # 工具发起的 HTTP 调用（沙盒服务）响应超时。
+      # ⚠️ 刻意小于 sse.timeout(120s)：这样超时先由工具层抛出，
+      #    变成结构化的 TIMEOUT 结果回给模型，而不是把整条 SSE 流掐断。
+      #    长任务（沙盒里装依赖、跑大数据量脚本）可调大，但别超过 sse.timeout。
+      http-timeout: 100s
+      # 重复调用治理：同一会话内「同一工具 + 完全相同的参数」在窗口内超过阈值即拦截。
+      # 设为 0 关闭该治理。
+      duplicate-window: 60s
+      duplicate-threshold: 2
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

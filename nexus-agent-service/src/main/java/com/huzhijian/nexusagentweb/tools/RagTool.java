@@ -4,6 +4,7 @@ import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.tools.registry.ToolSelection;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolMemoryId;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
@@ -45,10 +46,13 @@ public class RagTool implements AgentToolSet {
 
     private final EmbeddingModel embeddingModel;
     private final PgVectorEmbeddingStore pgVectorEmbeddingStore;
+    private final ToolCallGuard toolCallGuard;
 
-    public RagTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore) {
+    public RagTool(EmbeddingModel embeddingModel, PgVectorEmbeddingStore pgVectorEmbeddingStore,
+                   ToolCallGuard toolCallGuard) {
         this.embeddingModel = embeddingModel;
         this.pgVectorEmbeddingStore = pgVectorEmbeddingStore;
+        this.toolCallGuard = toolCallGuard;
     }
 
     /**
@@ -56,7 +60,13 @@ public class RagTool implements AgentToolSet {
      * 那会让已上线的提示词/前端匹配失效）。
      */
     @Tool(name = "rag_search", value = "检索知识库以回答专业问题")
-    public String ragSearch(@P("查询语句,提取关键词查询") String query) {
+    public String ragSearch(@ToolMemoryId Object memoryId, @P("查询语句,提取关键词查询") String query) {
+        // 同一会话用同一关键词反复检索没有意义（结果一致），且每次都要花 embedding 调用
+        String blocked = toolCallGuard.interceptText(memoryId, "rag_search",
+                ToolCallGuard.fingerprint(query));
+        if (blocked != null) {
+            return blocked;
+        }
         try {
             EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                     .query(query)

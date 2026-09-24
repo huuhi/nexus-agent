@@ -31,6 +31,7 @@ public class AgentProperties {
     private Security security = new Security();
     private Skill skill = new Skill();
     private Startup startup = new Startup();
+    private Tools tools = new Tools();
 
     @Data
     public static class Sse {
@@ -146,5 +147,33 @@ public class AgentProperties {
          * 对应能力不可用，启动日志会有 WARN 提示。
          */
         private boolean failFast = true;
+    }
+
+    @Data
+    public static class Tools {
+        /**
+         * 工具发起的 HTTP 调用（沙盒服务等）的响应超时。
+         * <p>
+         * 默认 {@code 100s}：**刻意小于 {@code nexus.agent.sse.timeout}（120s）** ——
+         * 这样超时先由工具层抛出、变成结构化的 {@code TIMEOUT} 结果回给模型，
+         * 而不是把整条 SSE 流掐断（后者用户只看到断流，什么线索都没有）。
+         * <p>
+         * 长任务（沙盒里装依赖、跑大数据量脚本）可调大，但注意别超过 SSE 超时。
+         */
+        private Duration httpTimeout = Duration.ofSeconds(100);
+
+        /**
+         * 重复调用判定窗口。与 {@link #duplicateThreshold} 配合使用。
+         */
+        private Duration duplicateWindow = Duration.ofSeconds(60);
+
+        /**
+         * 窗口内允许「同一会话 + 同一工具 + 完全相同的参数」出现的最大次数，
+         * 超过即拦截并回灌提示。设为 {@code 0} 或负数关闭该治理。
+         * <p>
+         * 默认 {@code 2}：即前两次放行、第三次起拦截。设为 1 会更激进（第二次就拦），
+         * 但会误伤「失败后按相同参数重试一次」的合理场景。
+         */
+        private int duplicateThreshold = 2;
     }
 }

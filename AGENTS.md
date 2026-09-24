@@ -326,13 +326,28 @@ public class XxxTool implements AgentToolSet {
     // @Override public boolean enabled(ToolSelection s) { return s.ragEnabled(); }
 
     private final SafeExecuteToolHandler safeExecuteToolHandler;   // 构造注入
+    private final ToolCallGuard toolCallGuard;                     // 构造注入（P2-4）
 
     @Tool(name = "tool_name", value = "给模型看的中文说明，说明越清楚模型调用越准")
-    public Map<String,Object> doSomething(@P("参数说明") String arg) {
-        return safeExecuteToolHandler.mapTool(() -> httpUtils.get("/xxx").block());  // 必须包 SafeExecute
+    public Map<String,Object> doSomething(@ToolMemoryId Object memoryId,   // 不暴露给模型，用来做会话隔离
+                                          @P("参数说明") String arg) {
+        // ① 先治理重复调用（P2-4）：同会话 + 同工具 + 同参数刷屏 → 拦截并回灌提示
+        Map<String,Object> blocked = toolCallGuard.intercept(memoryId, "tool_name",
+                ToolCallGuard.fingerprint(arg));                        // 返回 String 的工具用 interceptText
+        if (blocked != null) { return blocked; }
+        // ② 再用 SafeExecute 包住外部调用：失败转结构化结果，模型可自纠
+        return safeExecuteToolHandler.mapTool("tool_name", () -> httpUtils.get("/xxx").block());
     }
 }
 ```
+
+> **新增工具检查清单**（缺一项都算没做完）：
+> 1. 实现 `AgentToolSet` + `@Component`（不要改工厂）；
+> 2. 用 `@ToolMemoryId` 拿会话 ID（该参数**不会**出现在给模型的签名里）；
+> 3. 方法第一行接 `ToolCallGuard`，指纹只传「能区分是不是同一次调用」的关键参数；
+> 4. 所有外部调用包 `SafeExecuteToolHandler`，`toolName` 与 `@Tool(name=)` 保持一致；
+> 5. 失败要让模型能理解与自纠（结构化 `errorCode` + `hint`，见 §6.5）；
+> 6. 高成本/有副作用的工具**必须**考虑超时（HTTP 层统一超时见 §15 `tools.http-timeout`）。
 
 **第 2 步：没有了。** 不需要改 `ChatContextFactory`、不需要改任何配置
 （Spring 会把所有 `AgentToolSet` 实现注入 `ToolRegistry`）。
@@ -483,6 +498,33 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 **顺带修掉**：`ChatContextFactory.createModel` 的三处「静默回退系统默认模型」现在都会打日志
 （说明是"用户没配"还是"模型名不在配置里"）——原来用户会误以为在用自己填的 Key。
 
+### 6.11 工具治理：重复调用拦截与超时（P2-4）
+
+**问题**：模型陷入循环时会反复调用同一个工具、传**完全一样的参数**（典型：`execute_cmd`
+同一条命令连跑、`create_box` 反复建）。提示词里那句「工具调用失败尝试最多两次」是**软约束**，
+模型不一定听；而每次调用都是真实的时间、token，E2B 沙盒还按量计费。
+
+**两层治理**：
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| 重复调用拦截 | `tools/ToolCallGuard`（工具方法第一行调用） | 以 `(会话ID, 工具名, 参数指纹)` 为键，在 `tools.duplicate-window`（默认 60s）内计数，超过 `tools.duplicate-threshold`（默认 2，即第 3 次起）就拦截，返回 `{success:false, errorCode:"DUPLICATE_CALL", message, hint}` + 自纠提示 |
+| 调用超时 | `WebClientConfig` 的 `responseTimeout`（= `tools.http-timeout`，默认 100s） | 原先**没有响应超时**，沙盒挂起/网络黑洞时工具无限等待、整条 SSE 卡死（用户只看到「一直不出字」）。刻意设得比 `sse.timeout`(120s) 小，以便先返回结构化 `TIMEOUT` 而不是掐断整条流 |
+
+**设计要点**：
+
+- **滑动窗口计数**而不是「只记上一次」：模型连续刷同一条命令时，窗口内会持续处于被拦状态，
+  不会因为间隔刚好跨过判定而漏拦。
+- **只拦完全相同的调用**：参数有一处不同就放行 —— 避免误伤「换参数重试」这种正当行为
+  （`rag_search` 的提示语就是让模型「修改关键词再次尝试」，改了就放行）。
+- 键带**会话 ID**，不同会话互不影响；`@ToolMemoryId` 为 null 时落到匿名桶（不 NPE、不放开校验）。
+- 参数指纹用 **SHA-256 前 16 字节**而不是 `String.hashCode()`：后者 32 位，在高频调用下碰撞会**误拦**。
+- 被拦时**不登记新时间戳**，窗口内保持拦截；`@Scheduled` 定期 `sweep()` 清理过期键防内存增长。
+- 拦截**不抛异常**：工具方法拿到非 null 就直接 return，与 `SafeExecuteToolHandler`
+  的失败结果**形状一致**，模型不需要学两套。
+
+**配置**：`nexus.agent.tools.*`（见 §15）。设 `duplicate-threshold: 0` 即关闭该治理。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -624,6 +666,7 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 | 2026-09-24 | **P2-1 + P2-2 完成**：Skill 系统落地（本地目录扫描），`ChatDTO.skills` 真实生效；旧 DB 注册表方案整体删除 | 新增 `skills/SkillLoader.java`、`skills/README.md`、`SkillLoaderTest.java`（11 个单测）；删除 `SkillMcpInformation` 实体/Mapper/XML/Service/Impl；改造 `ChatContextFactory`（与 MCP 合并 `toolProviders`）、`ChatAssistant`（注入 `{{availableSkills}}`）、`ChatServiceImpl`、`ModelSystemContent`；新增 `docs/sql/002_drop_skill_mcp_information.sql` | 新增 §6.9；实测发现库**刻意排除 `scripts/`** 目录，已写入文档与回归测试；顺带把鉴权改为 `nexus.agent.security.enabled` 开关 + 启动 WARN 提示 |
 | 2026-09-24 | `AGENTS.md` 结构修复：消除两组重号章节（两个 §6.5、两个 §15） | `AGENTS.md` | Skill 系统改为 §6.9；「文件与产物能力」改为 §16（原与「运行时配置」重号）；同步全部交叉引用 |
 | 2026-09-24 | **P1-10 完成**：启动配置自检（一次性列出缺失项而非"一次报一个"）+ 消除模型静默回退 | 新增 `config/StartupConfigValidator.java`、`StartupConfigValidatorTest.java`（8 个单测）；`ChatContextFactory` 三处回退加日志；`AgentProperties` 加 `Startup.failFast`；两个 yml 补 `startup` 段 | 新增 §6.10；必需项（datasource/对话模型 Key/API_KEY_SECRET）默认 fail-fast，建议项只 WARN 并写明"哪项能力不可用"；README 排查表同步 |
+| 2026-09-24 | **P2-4 完成**：工具治理（重复调用拦截 + HTTP 响应超时） | 新增 `tools/ToolCallGuard.java`、`ToolCallGuardTest.java`（11 个单测）；13 个 `@Tool` 方法接入治理（其中 4 个补了 `@ToolMemoryId` 参数）；`WebClientConfig` 加 `responseTimeout`；`AgentProperties` 加 `Tools`；两个 yml 补 `tools` 段；`§6.4` 修正过时示例并加「新增工具检查清单」 | 新增 §6.11；`tools.http-timeout` 默认 100s（< SSE 120s）；`duplicate-threshold` 默认 2（第 3 次起拦） |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -834,6 +877,9 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.skill.refresh-interval` | `60s` | 目录扫描缓存时长。新增技能最多延迟这段时间生效，**无需重启**；设 `0s` 每次请求重扫 |
 | `nexus.agent.security.enabled` | `true` | **是否启用登录鉴权**（拦截器 + 配置类共用此开关）。关闭时启动打 WARN、所有接口免 token。**只能本地开发用，生产必须 true** |
 | `nexus.agent.startup.fail-fast` | `true` | 启动配置自检发现必需配置缺失时是否阻止启动。`false` 只建议临时排查用（见 §6.10） |
+| `nexus.agent.tools.http-timeout` | `100s` | 工具 HTTP 调用的响应超时。**刻意小于 `sse.timeout`**，以便先返回结构化 `TIMEOUT` 而不是掐断整条流（见 §6.11） |
+| `nexus.agent.tools.duplicate-window` | `60s` | 重复调用判定窗口（见 §6.11） |
+| `nexus.agent.tools.duplicate-threshold` | `2` | 窗口内允许的相同调用次数，超过即拦截并回灌提示；设 `0` 关闭治理 |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

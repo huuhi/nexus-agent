@@ -3,7 +3,9 @@ package com.huzhijian.nexusagentweb.tools;
 import com.huzhijian.nexusagentweb.domain.SystemLog;
 import com.huzhijian.nexusagentweb.service.SystemLogService;
 import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolMemoryId;
 import org.springframework.stereotype.Component;
 
 /**
@@ -26,13 +28,21 @@ public class LogTool implements AgentToolSet {
     }
 
     private final SystemLogService systemLogService;
+    private final ToolCallGuard toolCallGuard;
 
-    public LogTool(SystemLogService systemLogService) {
+    public LogTool(SystemLogService systemLogService, ToolCallGuard toolCallGuard) {
         this.systemLogService = systemLogService;
+        this.toolCallGuard = toolCallGuard;
     }
 
     @Tool(name = "record_log",value = "将具体反馈信息写清楚，内容不超过1000个字")
-    public String recordLog(String message) {
+    public String recordLog(@ToolMemoryId Object memoryId,
+                            @P("反馈信息，不超过 1000 字") String message) {
+        String blocked = toolCallGuard.interceptText(memoryId, "record_log",
+                ToolCallGuard.fingerprint(message));
+        if (blocked != null) {
+            return blocked;
+        }
         SystemLog log = SystemLog.builder()
                 .aiMessage(message)
                 .type("AI")

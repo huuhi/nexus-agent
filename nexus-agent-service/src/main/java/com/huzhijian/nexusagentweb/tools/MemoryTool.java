@@ -7,6 +7,7 @@ import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -36,6 +37,7 @@ public class MemoryTool implements AgentToolSet {
     }
 
     private final UserMemoryService memoryService;
+    private final ToolCallGuard toolCallGuard;
     private final String SAVE_USER_MEMORY= """
             用于主动保存用户的长期记忆。
             
@@ -54,12 +56,18 @@ public class MemoryTool implements AgentToolSet {
             
             如果执行失败，禁止重复尝试！
             """;
-    public MemoryTool(UserMemoryService memoryService) {
+    public MemoryTool(UserMemoryService memoryService, ToolCallGuard toolCallGuard) {
         this.memoryService = memoryService;
+        this.toolCallGuard = toolCallGuard;
     }
 
     @Tool(name = "search_user_memory",value = "检索用户画像")
-    public String searchUserMemory(@P("关键字") String query){
+    public String searchUserMemory(@ToolMemoryId Object memoryId, @P("关键字") String query){
+        String blocked = toolCallGuard.interceptText(memoryId, "search_user_memory",
+                ToolCallGuard.fingerprint(query));
+        if (blocked != null) {
+            return blocked;
+        }
         try {
             List<UserMemoryVO> memory = memoryService.getMemory(query);
             StringBuilder builder = new StringBuilder();
@@ -74,7 +82,15 @@ public class MemoryTool implements AgentToolSet {
     }
 
     @Tool(name = "save_user_data",value = SAVE_USER_MEMORY)
-    public String saveLongMemory(@P("记忆内容，需要符合核心要求") String content,@P(value = "会话ID",required = false) String sessionId){
+    public String saveLongMemory(@ToolMemoryId Object memoryId,
+                                 @P("记忆内容，需要符合核心要求") String content,
+                                 @P(value = "会话ID",required = false) String sessionId){
+        // 重复写入会产生重复记忆数据（污染后续检索），所以这里也要拦
+        String blocked = toolCallGuard.interceptText(memoryId, "save_user_data",
+                ToolCallGuard.fingerprint(content));
+        if (blocked != null) {
+            return blocked;
+        }
         Long userId = UserContextHolder.getUserId();
         log.info("用户ID：{}",userId);
         UserMemory userLongMemory =  UserMemory.builder().content(content).userId(userId).source(sessionId).build();

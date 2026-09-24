@@ -49,13 +49,16 @@ public class BoxTool implements AgentToolSet {
     private final SandboxClient sandboxClient;
     private final SandboxSessionRegistry sandboxSessions;
     private final SafeExecuteToolHandler safeExecuteToolHandler;
+    private final ToolCallGuard toolCallGuard;
 
     public BoxTool(SandboxClient sandboxClient,
                    SandboxSessionRegistry sandboxSessions,
-                   SafeExecuteToolHandler safeExecuteToolHandler) {
+                   SafeExecuteToolHandler safeExecuteToolHandler,
+                   ToolCallGuard toolCallGuard) {
         this.sandboxClient = sandboxClient;
         this.sandboxSessions = sandboxSessions;
         this.safeExecuteToolHandler = safeExecuteToolHandler;
+        this.toolCallGuard = toolCallGuard;
     }
 
     /**
@@ -65,6 +68,11 @@ public class BoxTool implements AgentToolSet {
      */
     @Tool(name = "create_box", value = "创建或复用沙盒，返回沙盒ID。同一会话内重复调用会复用已有沙盒。")
     public Map<String, Object> createBox(@ToolMemoryId Object memoryId) {
+        // 无参数工具：同一会话内反复调用即视为重复（复用逻辑本身很轻，但模型死循环会白烧 token）
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "create_box", ToolCallGuard.fingerprint());
+        if (blocked != null) {
+            return blocked;
+        }
         String sessionKey = sessionKey(memoryId);
         Map<String, Object> result = safeExecuteToolHandler.mapTool("create_box",
                 () -> sandboxSessions.acquire(sessionKey));
@@ -84,6 +92,11 @@ public class BoxTool implements AgentToolSet {
     @Tool(name = "delete_box", value = "销毁沙盒。不传 boxId 时销毁当前会话的沙盒；任务完成后建议调用以停止计费。")
     public Map<String, Object> deleteBox(@ToolMemoryId Object memoryId,
                                         @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "delete_box",
+                ToolCallGuard.fingerprint(boxId));
+        if (blocked != null) {
+            return blocked;
+        }
         String sessionKey = sessionKey(memoryId);
         if (isBlank(boxId)) {
             return safeExecuteToolHandler.mapTool("delete_box", () -> sandboxSessions.release(sessionKey));
@@ -97,6 +110,12 @@ public class BoxTool implements AgentToolSet {
     @Tool(name = "upload_file", value = "把网络文件下载到沙盒中。file_url 为网络文件地址，file_path 为沙盒内目标路径（如 /tmp/a.md）。")
     public Map<String, Object> uploadFile(@ToolMemoryId Object memoryId,
                                          @P("上传文件请求体") UploadFileDTO uploadFile) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "upload_file",
+                ToolCallGuard.fingerprint(uploadFile == null ? null : uploadFile.file_url(),
+                        uploadFile == null ? null : uploadFile.file_path()));
+        if (blocked != null) {
+            return blocked;
+        }
         String boxId = resolveBoxId(memoryId, uploadFile == null ? null : uploadFile.box_id());
         if (boxId == null) {
             return noSandbox("upload_file");
@@ -113,6 +132,11 @@ public class BoxTool implements AgentToolSet {
     public Map<String, Object> download(@ToolMemoryId Object memoryId,
                                        @P("沙盒内文件路径") String path,
                                        @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "download_file",
+                ToolCallGuard.fingerprint(path));
+        if (blocked != null) {
+            return blocked;
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return noSandbox("download_file");
@@ -127,6 +151,11 @@ public class BoxTool implements AgentToolSet {
     public List<Map<String, Object>> listDir(@ToolMemoryId Object memoryId,
                                             @P("目录路径") String dirPath,
                                             @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "list_dir",
+                ToolCallGuard.fingerprint(dirPath));
+        if (blocked != null) {
+            return List.of(blocked);
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return List.of(noSandbox("list_dir"));
@@ -141,6 +170,11 @@ public class BoxTool implements AgentToolSet {
     public Map<String, Object> existFile(@ToolMemoryId Object memoryId,
                                         @P("沙盒内路径") String path,
                                         @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "check_file_exist",
+                ToolCallGuard.fingerprint(path));
+        if (blocked != null) {
+            return blocked;
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return noSandbox("check_file_exist");
@@ -156,6 +190,11 @@ public class BoxTool implements AgentToolSet {
                                                   @P("文件路径，比如 /home/abc.py") String path,
                                                   @P("内容") String content,
                                                   @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "create_write_file",
+                ToolCallGuard.fingerprint(path, content));
+        if (blocked != null) {
+            return blocked;
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return noSandbox("create_write_file");
@@ -171,6 +210,11 @@ public class BoxTool implements AgentToolSet {
     public Map<String, Object> executeCode(@ToolMemoryId Object memoryId,
                                           @P("代码") String code,
                                           @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "execute_code",
+                ToolCallGuard.fingerprint(code));
+        if (blocked != null) {
+            return blocked;
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return noSandbox("execute_code");
@@ -186,6 +230,11 @@ public class BoxTool implements AgentToolSet {
     public Map<String, Object> executeCmd(@ToolMemoryId Object memoryId,
                                          @P("命令") String cmd,
                                          @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "execute_cmd",
+                ToolCallGuard.fingerprint(cmd));
+        if (blocked != null) {
+            return blocked;
+        }
         String resolved = resolveBoxId(memoryId, boxId);
         if (resolved == null) {
             return noSandbox("execute_cmd");
