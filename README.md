@@ -130,6 +130,26 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 ---
 
+## 运行时可调参数（`nexus.agent.*`）
+
+**全部有代码默认值，不写也能启动**；改完重启生效。完整清单见 [AGENTS.md §15](./AGENTS.md)。
+
+| 参数 | 默认 | 什么时候需要改它 |
+|---|---|---|
+| `nexus.agent.sse.timeout` | `120s` | 复杂任务被提前掐断时调大（要大于最慢一次模型调用） |
+| `nexus.agent.memory.max-tokens` | `100000` | 上下文太长想省 token 时调小。⚠️ **别小于 600**，否则模型会「失忆」只回寒暄 |
+| `nexus.agent.sandbox.idle-timeout` | `8m` | 沙盒空闲回收时间。**必须小于沙盒服务的 600s**，否则还没轮到我们回收就被 E2B 收走 |
+| `nexus.agent.tools.http-timeout` | `100s` | 沙盒里跑长任务（装依赖、跑大脚本）超时时调大；**别超过 `sse.timeout`** |
+| `nexus.agent.tools.duplicate-threshold` | `2` | 模型反复用**完全相同的参数**刷同一工具会被拦截（第 3 次起）。误伤时调大，设 `0` 关闭 |
+| `nexus.agent.observability.enabled` | `true` | 每次对话结束会输出一行 `RUN runId=... tokens=... fee=... tools=...` 汇总日志；不想看到就设 `false` |
+| `nexus.agent.observability.model-prices` | 无 | **想让汇总里显示花了多少钱就配它**（每 100 万 token 单价）；不配显示 `fee=unpriced` |
+| `nexus.agent.model.providers` | 内置 2 条 | 中转/自建网关的「支持哪些额外参数」需自行声明，否则一律不下发（避免 400）。见 [§6.3](./AGENTS.md) |
+| `nexus.agent.skill.root-dir` | `skills` | 技能目录位置。**相对应用工作目录解析**，换启动方式后技能「消失」时改成绝对路径 |
+| `nexus.agent.security.enabled` | `true` | 本地调试不想带 token 时设为 `false`（关闭时启动会打 WARN）。**生产必须为 true** |
+| `nexus.agent.startup.fail-fast` | `true` | 启动自检发现必需配置缺失时是否阻止启动；只想临时带病启动再设 `false` |
+
+---
+
 ## 目录结构
 
 ```
@@ -151,7 +171,8 @@ nexus-agent (parent pom)
 
 | 文档 | 内容 |
 |---|---|
-| [AGENTS.md](./AGENTS.md) | **开发入口**：依赖版本、文件地图、接口一览、核心机制、技术债清单、开发规范 |
+| [AGENTS.md](./AGENTS.md) | **开发入口**：依赖版本、文件地图、接口一览、核心机制、技术栈、技术债清单、开发规范 |
 | [重构计划.md](./重构计划.md) | 分阶段重构计划、任务表、验收标准、里程碑 |
+| [skills/README.md](./skills/README.md) | 技能（Skill）目录约定、SKILL.md 写法、`scripts/` 与文档资源的区别 |
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
 | [开发日志.md](./开发日志.md) | 项目演进历史记录 |
