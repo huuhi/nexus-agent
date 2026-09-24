@@ -660,6 +660,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | POST/GET | `/api/user/mcp-config` | `UserController` | 增改 / 查 MCP Token |
 | GET/DELETE | `/api/user/user-memory[/{id}]` | `UserController` | 长期记忆 查 / 删 |
 | POST | `/api/file` | `FileController` | 上传文件（`files[]`+`bizType`） |
+| GET | `/api/artifact?sessionId=` | `ArtifactController` | 列出某会话里 AI 交付的产物（P2-10，供前端"本会话文件"面板） |
+| DELETE | `/api/artifact/{id}` | `ArtifactController` | 删除产物：**先删记录、再尽力删 OSS 对象**（P2-10） |
 | POST | `/api/file/image` | `FileController` | 上传图片 |
 | GET | `/api/file` | `FileController` | 当前用户文件列表 |
 | POST | `/api/knowledge` | `KnowledgeController` | 建知识库 |
@@ -787,7 +789,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-3 完成**：模型能力矩阵 —— 额外参数改为**按服务商下发** | 新增 `model/ModelCapabilityResolver.java`、`ModelCapabilityResolverTest.java`（8 个单测）；`ChatContextFactory` 抽出 `buildExtraBody` 并按能力过滤；`AgentProperties` 加 `Model`/`ProviderCapability`；两个 yml 补 `model.providers` 段 | §6.3 重写（含能力表与「未知即不下发」的取舍说明）；⚠️ **行为变更**：未命中服务商的额外参数不再下发（此前无条件全塞）；默认模型的参数仍在 yml 的 `custom-parameters`（已去掉 DeepSeek 不认的 `enable_search`） |
 | 2026-09-24 | **P2-8 完成**：token 配额（事前拦截 + 事后原子记账） | 新增 `docs/sql/003_add_user_token_quota.sql`、`service/QuotaService` + `QuotaServiceImpl`、`exception/QuotaExceededException`、`QuotaServiceTest`（14 个单测）；`User` 加 `tokenQuota`/`tokenUsed`；`UserMapper.java`/`.xml` 加原子累加语句；`ChatServiceImpl` 接入；`UserServiceImpl.register` 写默认配额；`GlobalExceptionHandler` 加映射；两个 yml 补 `quota` 段 | 新增 §6.13；⚠️ **需先执行 `003` 才能启动**（实体已含新列，`Base_Column_List` 已引用）；存量用户 `token_quota` 为 NULL = 不限制，行为不变 |
 | 2026-09-24 | **P2-9 完成**：MCP 不可用时明确告知模型（不再静默丢弃） | `McpInformationService.getMcp` 返回 `McpResolution{provider, unavailableNames}`；`ChatContext` 加 `mcpUnavailable`；`ChatContextFactory`/`ChatServiceImpl` 适配；新增 `ChatServiceImpl.composeCapabilities`（+ `RuntimeCapabilitiesTest` 5 个单测）；提示词变量 `{{availableSkills}}` → **`{{runtimeCapabilities}}`**（同时承载技能清单与 MCP 状态），`ModelSystemContent` 加「不可用则如实告知、不要重试」的指引 | §6.7 重写（顺带修正「每次新建客户端且不关闭」这条已过时的描述，P1-6 已修）；§6.9 同步变量名 |
-| 2026-09-24 | **P2-10 部分完成**：产物交付链路打通（**决策 D5 已定为 (c) 虚拟工作区**） | 新增 `tools/BoxTool.publishArtifact`（工具）+ `service/ArtifactService`/`Impl` + `docs/sql/004_add_sys_file_session_id.sql`；`MessageType.ARTIFACT` + `MessageVO.artifact` + `SseResponseConverter.writeArtifact`；`ChatServiceImpl` 在 `onToolExecuted` 里识别并落库/推事件（+ `ArtifactExtractionTest` 5 个单测）；Python 侧 `oss_utils.object_prefix()` 与 `/file` 路由带 `user_id`；提示词加「产出文件必须用 publish_artifact 交付」 | §16.2 补实施结果表；§6.2 契约表加 `artifact` 行；⚠️ **需先执行 `004`**（实体已加 `sessionId`）。⬜ 虚拟工作区的「会话文件列表/删除」接口未做；⬜ E2B 模板预装 Office 库需用户在 E2B 侧执行 |
+| 2026-09-24 | **P2-10 部分完成**：产物交付链路打通（**决策 D5 已定为 (c) 虚拟工作区**） | 新增 `tools/BoxTool.publishArtifact`（工具）+ `service/ArtifactService`/`Impl` + `docs/sql/004_add_sys_file_session_id.sql`；`MessageType.ARTIFACT` + `MessageVO.artifact` + `SseResponseConverter.writeArtifact`；`ChatServiceImpl` 在 `onToolExecuted` 里识别并落库/推事件（+ `ArtifactExtractionTest` 5 个单测）；Python 侧 `oss_utils.object_prefix()` 与 `/file` 路由带 `user_id`；提示词加「产出文件必须用 publish_artifact 交付」 | §16.2 补实施结果表；§6.2 契约表加 `artifact` 行；⚠️ **需先执行 `004`**（实体已加 `sessionId`）。⬜ E2B 模板预装 Office 库需用户在 E2B 侧执行 |
+| 2026-09-24 | **P2-10 收尾**：虚拟工作区的会话文件列表/删除接口 | 新增 `controller/ArtifactController` + `ArtifactService.listBySession/delete` + `AliOssUtil.deleteObject/objectNameOf`（+ `OssObjectNameTest` 6 个单测）+ `docs/sql/005_add_sys_file_session_index.sql` | ⚠️ **需执行 `005`**（列表查询的索引）；所有查询/删除都带 `user_id` 过滤（越权防护）；删除顺序为先删记录再尽力删对象；§7 API 一览已登记；§16.2 实施结果表加 ⑤ |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -969,8 +972,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 
 ### 14.2 仍待定（**详细简报见 `重构计划.md §七`**）
 
-> 2026-09-24：P2 里"不依赖决策"的任务已全部完成，**这三个决策是当前唯一的瓶颈**
-> （`P2-5` / `P2-7` / `P2-10` / `P2-11` 与整个 P3 都在等它们）。
+> 2026-09-24：P2 里"不依赖决策"的任务已全部完成；**D5 已定 (c) 并落地 P2-10**。
+> 剩下的 `P2-5` / `P2-7` / `P2-11` 与整个 P3 仍在等决策（`P2-10` 已不阻塞）。
 > 每项的选项对比、代价、推荐与"选定后立刻要做的事"已整理在 `重构计划.md §七`，
 > 本表只留索引，避免两处维护。
 
@@ -1061,7 +1064,7 @@ AI 在 E2B 沙盒里写文件
 
 **要点**：产物交付本质上是"**给 AI 一个 `publish_artifact` 工具 + 给前端一个 `artifact` 事件**"，不需要动 Agent 核心。这是投入产出比最高的一条能力线。
 
-**实施结果（2026-09-24，P2-10：①②③ 已完成，④ 需你在 E2B 侧执行）**：
+**实施结果（2026-09-24，P2-10：①②③⑤ 已完成，④ 需你在 E2B 侧执行）**：
 
 | 缺口 | 状态 | 实现 |
 |---|---|---|
@@ -1069,6 +1072,7 @@ AI 在 E2B 沙盒里写文件
 | ② 产物落库 | ✅ | 新增 `ArtifactService` → 写 `sys_file`（`biz_type=ARTIFACT` + `session_id`）；`004` 加 `session_id` 列 |
 | ③ OSS 路径规范 | ✅ | `oss_utils.object_prefix()` → `user/{userId}/artifact/{date}/`（原来是写死的 `test/`）；顺带修掉**中文文件名未做 URL 编码**的隐患（`quote(safe='/')`）；Java 侧 `SandboxClient.downloadFile` 带上 `user_id` |
 | ④ E2B 预装 Office 库 | ⬜ **需你在 E2B 侧执行** | 见下 |
+| ⑤ 会话级文件列表 / 删除（虚拟工作区） | ✅ | `ArtifactController`：`GET /api/artifact?sessionId=`、`DELETE /api/artifact/{id}`；删除顺序是**先删记录、再尽力删 OSS 对象**；`AliOssUtil.objectNameOf` 从 URL 反解对象名（须处理 percent-encoding）；`005` 补 `(session_id, user_id)` 索引 |
 
 **为什么"落库 + 发事件"不放在工具类里**：工具只有 `@ToolMemoryId`（会话 ID），
 而落库要 userId、推事件要 SSE writer —— 只有 `ChatServiceImpl.onToolExecuted` 同时握有这三样。

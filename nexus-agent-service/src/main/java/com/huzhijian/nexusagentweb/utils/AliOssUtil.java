@@ -15,6 +15,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
@@ -121,6 +123,79 @@ public class AliOssUtil {
         return endpoint.split("//")[0] + "//" + bucketName + "." + endpoint.split("//")[1] + "/" + objectName;
     }
     
+    /**
+     * 删除 OSS 对象（P2-10 产物删除）。
+     * <p>
+     * 只负责删对象，**不管数据库记录** —— 顺序由调用方决定：
+     * 先删记录、再尽力删对象。理由：用户点"删除"的语义以记录为准，
+     * 对象残留只是存储成本，不该让删除操作失败。
+     * <p>
+     * 对象不存在时 OSS 的 deleteObject 也是幂等成功的，不会抛异常。
+     */
+    public void deleteObject(String objectName) throws ClientException {
+        if (objectName == null || objectName.isBlank()) {
+            return;
+        }
+        String endpoint = aliOssProperties.getEndpoint();
+        String bucketName = aliOssProperties.getBucketName();
+        String region = aliOssProperties.getRegion();
+        EnvironmentVariableCredentialsProvider credentialsProvider =
+                CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+
+        ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
+        clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
+        OSS ossClient = OSSClientBuilder.create()
+                .endpoint(endpoint)
+                .credentialsProvider(credentialsProvider)
+                .clientConfiguration(clientBuilderConfiguration)
+                .region(region)
+                .build();
+        try {
+            ossClient.deleteObject(bucketName, objectName);
+            log.debug("已删除 OSS 对象：{}", objectName);
+        } finally {
+            ossClient.shutdown();
+        }
+    }
+
+    /**
+     * 从 OSS 访问 URL 反推 objectName（删除产物时需要）。
+     * <p>
+     * URL 形如 {@code https://{bucket}.{host}/{objectName}}。
+     * ⚠️ objectName 里的中文/空格在**上传时被 percent-encoding 过**（见 Python 侧
+     * {@code oss_utils.str_upload_file}），所以这里必须解码，否则拿到的对象名对不上、
+     * 删不掉对象。
+     *
+     * @return objectName；URL 不含路径时返回 null
+     */
+    public static String objectNameOf(String fileUrl) {
+        if (fileUrl == null || fileUrl.isBlank()) {
+            return null;
+        }
+        int schemeEnd = fileUrl.indexOf("://");
+        int hostStart = schemeEnd < 0 ? 0 : schemeEnd + 3;
+        int pathStart = fileUrl.indexOf('/', hostStart);
+        if (pathStart < 0 || pathStart == fileUrl.length() - 1) {
+            return null;
+        }
+        String encoded = fileUrl.substring(pathStart + 1);
+        // 去掉可能存在的 query / fragment，只留对象路径
+        int cut = encoded.indexOf('?');
+        if (cut >= 0) {
+            encoded = encoded.substring(0, cut);
+        }
+        cut = encoded.indexOf('#');
+        if (cut >= 0) {
+            encoded = encoded.substring(0, cut);
+        }
+        try {
+            return URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            // 解码失败就用原串：多半也删不掉，但至少不让调用方抛异常
+            return encoded;
+        }
+    }
+
     /**
      * 从OSS下载文件内容
      *

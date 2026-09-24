@@ -1,15 +1,18 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
 import com.huzhijian.nexusagentweb.service.ArtifactService;
+import com.huzhijian.nexusagentweb.utils.AliOssUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -27,6 +30,58 @@ import java.util.Map;
 public class ArtifactServiceImpl implements ArtifactService {
 
     private final FileMapper fileMapper;
+    private final AliOssUtil aliOssUtil;
+
+    @Override
+    public List<SysFile> listBySession(String sessionId, Long userId) {
+        if (sessionId == null || sessionId.isBlank() || userId == null) {
+            return List.of();
+        }
+        return fileMapper.selectList(Wrappers.<SysFile>lambdaQuery()
+                // ⚠️ user_id 条件是越权防护的核心，不能删（sessionId 来自客户端）
+                .eq(SysFile::getUserId, userId)
+                .eq(SysFile::getSessionId, sessionId)
+                .eq(SysFile::getBizType, BizType.ARTIFACT)
+                .orderByDesc(SysFile::getCreateTime));
+    }
+
+    @Override
+    public boolean delete(Long id, Long userId) {
+        if (id == null || userId == null) {
+            return false;
+        }
+        // 先按 id + user_id 查：既校验归属，又拿到 URL 用于删 OSS 对象
+        SysFile file = fileMapper.selectOne(Wrappers.<SysFile>lambdaQuery()
+                .eq(SysFile::getId, id)
+                .eq(SysFile::getUserId, userId)
+                .eq(SysFile::getBizType, BizType.ARTIFACT));
+        if (file == null) {
+            // 不存在 / 不属于该用户：统一返回 false，不通过返回值泄露他人产物的存在性
+            return false;
+        }
+        fileMapper.deleteById(id);
+        deleteOssObject(file.getFileUrl());
+        return true;
+    }
+
+    /**
+     * 尽力删除 OSS 对象。
+     * <p>
+     * 失败只记 WARN：记录已经删了，对象残留只是存储成本；报错反而会让用户以为没删掉。
+     */
+    private void deleteOssObject(String fileUrl) {
+        String objectName = AliOssUtil.objectNameOf(fileUrl);
+        if (objectName == null) {
+            log.warn("无法从 URL 解析出 OSS 对象名，跳过对象删除：url={}", fileUrl);
+            return;
+        }
+        try {
+            aliOssUtil.deleteObject(objectName);
+        } catch (Exception e) {
+            log.warn("删除 OSS 对象失败（已忽略，数据库记录已删除）：object={} 原因={}",
+                    objectName, e.getMessage());
+        }
+    }
 
     @Override
     public SysFile save(Map<String, Object> artifact, Long userId, String sessionId) {

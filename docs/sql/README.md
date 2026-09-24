@@ -16,9 +16,12 @@
 | `002_drop_skill_mcp_information.sql` | 删除 `skill_mcp_information`（P2-1 落地本地目录扫描方案后，Skill 注册表废弃）。幂等可重放 |
 | `003_add_user_token_quota.sql` | `users` 新增 `token_quota` / `token_used` 两列（P2-8 token 配额）。幂等可重放，无破坏性 |
 | `004_add_sys_file_session_id.sql` | `sys_file` 新增 `session_id` 列（P2-10 产物按会话归属）。幂等可重放，无破坏性 |
+| `005_add_sys_file_session_index.sql` | `sys_file` 增加 `(session_id, user_id)` 索引（P2-10 产物列表查询）。幂等可重放，无破坏性 |
 
-> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004`（最终 11 张表）。
+> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005`（最终 11 张表）。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
+> 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
+> 这是本目录「无真实查询就不加索引」约定的一次完整实践。
 
 ### 命名与维护约定
 

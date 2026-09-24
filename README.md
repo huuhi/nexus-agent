@@ -33,9 +33,10 @@ psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/001_baseline.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/002_drop_skill_mcp_information.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/003_add_user_token_quota.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/004_add_sys_file_session_id.sql
+psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/005_add_sys_file_session_index.sql
 ```
 
-> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 → 004 的顺序**各跑一次。
+> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 → 004 → 005 的顺序**各跑一次。
 > ⚠️ 基线脚本会先 DROP 再重建，**只能在空库或允许清空的环境执行**；
 > 增量脚本都是幂等的（可重复执行）。
 > ⚠️ **增量脚本必须执行**：实体已经包含新增的列，库里缺列会导致登录/查用户直接报
