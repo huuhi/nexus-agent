@@ -964,15 +964,21 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 > （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{runtimeCapabilities}}`）。
 > 旧 DB 注册表方案与 `SkillMcpInformation*` 已一并删除，未留装饰。落地方案与实现要点见 **§6.9**。
 
-### 14.2 仍待定
+### 14.2 仍待定（**详细简报见 `重构计划.md §七`**）
+
+> 2026-09-24：P2 里"不依赖决策"的任务已全部完成，**这三个决策是当前唯一的瓶颈**
+> （`P2-5` / `P2-7` / `P2-10` / `P2-11` 与整个 P3 都在等它们）。
+> 每项的选项对比、代价、推荐与"选定后立刻要做的事"已整理在 `重构计划.md §七`，
+> 本表只留索引，避免两处维护。
 
 | # | 问题 | 选项 | 影响范围 |
 |---|---|---|---|
-| D2 | 前端是否要做？ | 做（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐）/ 只做 API + SDK 不碰 UI | 整个 P3 阶段 |
-| D4 | 长期记忆要不要恢复向量检索 | 恢复 pgvector / 保持 SQL LIKE / 换成全文检索 | `UserMemoryServiceImpl`、`user_memory` 表 |
-| D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | P2-10、P2-11，以及是否会推翻 D1 的 E2B 选择。**详见 §16** |
+| D2 | 前端是否要做？ | 做（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐）/ 只做 API + SDK 不碰 UI | 整个 P3 阶段；也决定 `P2-5`（SSE 契约）何时能一次定死 |
+| D4 | 长期记忆要不要恢复向量检索 | 恢复 pgvector / 保持 SQL LIKE / **pg_trgm 全文检索** | `UserMemoryServiceImpl`、`user_memory` 表。⚠️ **PG 的 `tsvector` 对中文分词很差**，要改善中文检索应选 `pg_trgm` |
+| D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | `P2-10`、`P2-11`，以及是否会推翻 D1 的 E2B 选择。**详见 §16**；先回答"是产出文件拿走，还是直接改本机文件"（§16.4） |
 
-> D2 建议**等 P1 结束再决定**：先把后端契约（SSE 事件、能力清单）稳定下来，前端做出来才有意义。
+> ❗**D1 的后果要在 D5 里一次性想清楚**：E2B 是云端沙盒，**AI 读不到你本机磁盘**。
+> 若核心诉求是"让 AI 直接改我本机项目文件"，答案不是优化 E2B，而是 (b) 或 (d)。
 
 ---
 
