@@ -41,9 +41,16 @@ public class SseResponseConverter {
     private final String message;
     /** 本次运行的 trace_id，用于把前端错误与后端日志对上 */
     private final String runId;
+    /**
+     * 增量缓冲（P2-12）：把逐 token 的增量合并成批次再发，避免"上千个 SSE 帧"。
+     * 详见 {@link SseChunkBuffer} 的类注释。
+     */
+    private final SseChunkBuffer chunkBuffer;
 
     @Builder
-    public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService, String sessionId, Long userId, String message, String runId) {
+    public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService,
+                                String sessionId, Long userId, String message, String runId,
+                                Integer flushMaxChars, Long flushIntervalMillis) {
         this.emitter = sseEmitter;
         this.isNewSession = isNewSession;
         this.isFinished = new AtomicBoolean(false);
@@ -53,34 +60,49 @@ public class SseResponseConverter {
         this.userId = userId;
         this.message = message;
         this.runId = runId;
+        this.chunkBuffer = new SseChunkBuffer(
+                flushMaxChars == null ? 200 : flushMaxChars,
+                flushIntervalMillis == null ? 60L : flushIntervalMillis);
     }
 
     public void writeThinking(PartialThinking thinking) {
         if (isFinished.get()) return;
+        emit(chunkBuffer.append(MessageType.THINK.name(), thinking.text()));
+    }
+
+    public void writeContent(String token) {
+        if (isFinished.get()) return;
+        // 完整正文仍逐块累积：历史落库与标题生成要用完整的，只把"发送"改成批量
+        answer.append(token);
+        emit(chunkBuffer.append(MessageType.CONTENT.name(), token));
+    }
+
+    /** 发送一批缓冲内容；批次为空或已结束时什么都不做 */
+    private void emit(SseChunkBuffer.Batch batch) {
+        if (batch == null || isFinished.get()) {
+            return;
+        }
+        MessageType type = MessageType.valueOf(batch.type());
+        MessageVO chunk = MessageType.THINK == type
+                ? MessageVO.builder().type(type).thinking(batch.text()).build()
+                : MessageVO.builder().type(type).content(batch.text()).build();
         try {
-            MessageVO chunk = MessageVO.builder()
-                    .type(MessageType.THINK)
-                    .thinking(thinking.text())
-                    .build();
             emitter.send(SseEmitter.event().name("message").data(chunk));
         } catch (IOException e) {
             completeWithError(e);
         }
     }
 
-    public void writeContent(String token) {
-        if (isFinished.get()) return;
-        answer.append(token);
-        try {
-            MessageVO chunk = MessageVO.builder()
-                    .type(MessageType.CONTENT)
-                    .content(token)
-                    .build();
-            emitter.send(SseEmitter.event().name("message").data(chunk));
-        } catch (IOException e) {
-            completeWithError(e);
-        }
+    /**
+     * 把缓冲里的剩余内容发出去。
+     * <p>
+     * ⚠️ **必须在这些时机调用**：发送工具事件前、推送产物事件前、结束、报错 ——
+     * 否则前端收到的顺序会错乱（正文插到工具结果后面），或者干脆丢掉尾部内容。
+     */
+    private void flushPending() {
+        emit(chunkBuffer.drain());
     }
+
     public void writeToolRequestWithStream(PartialToolCall toolcall, PartialToolCallContext contexts) {
         String name = toolcall.name();
         String id = toolcall.id();
@@ -92,6 +114,8 @@ public class SseResponseConverter {
 
     private void sendRequest(String name, String arguments, String id) {
         if (isFinished.get()) return;
+        // 工具事件之前先把正文缓冲发掉，否则前端会先看到工具卡片、后看到该卡片前的正文
+        flushPending();
         MessageVO.ToolRequestVO vo = MessageVO.ToolRequestVO.builder()
                 .toolName(name)
                 .arguments(arguments)
@@ -116,6 +140,7 @@ public class SseResponseConverter {
 
     public void writeToolResult(ToolExecutionRequest request, boolean isError, String result) {
         if (isFinished.get()) return;
+        flushPending();
         MessageVO.ToolResultVO vo = MessageVO.ToolResultVO.builder()
                 .id(request.id())
                 .isError(isError)
@@ -147,6 +172,7 @@ public class SseResponseConverter {
         if (isFinished.get()) {
             return;
         }
+        flushPending();
         MessageVO msg = MessageVO.builder()
                 .type(MessageType.ARTIFACT)
                 .artifact(artifact)
@@ -175,6 +201,8 @@ public class SseResponseConverter {
         if (isFinished.get()) {
             return;
         }
+        // 报错前把已生成的正文发出去：这些内容是有效的，不该因为是"错误结尾"就吞掉
+        flushPending();
         String reason = error == null || error.getMessage() == null
                 ? (error == null ? "未知错误" : error.getClass().getSimpleName())
                 : error.getMessage().strip().replaceAll("\\s+", " ");
@@ -200,6 +228,8 @@ public class SseResponseConverter {
     public void finish() {
         if (isFinished.get()) return;
         try {
+            // 结束前把缓冲里剩下的正文发出去，否则回复的尾部会丢
+            flushPending();
             // 新会话时生成标题并且返回新的会话ID
             if (isNewSession) {
                 emitter.send(SseEmitter.event().name("session_id").data(sessionId));

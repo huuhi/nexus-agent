@@ -283,6 +283,10 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 
 ### 6.2 SSE 事件契约（前端按此对接）
 
+> 📌 **P2-12 起，`message` 事件是"批量增量"**：不再逐 token 推送，而是攒够 200 字符或 60ms 才推一帧
+> （见 §6.14）。**契约没变**（仍是增量、append 语义），只是**帧数更少、单帧更长**。
+> 前端对接细节（含渲染最佳实践）见 **`docs/frontend-guide.md`**。
+
 | event name | data | 说明 |
 |---|---|---|
 | `message` | `MessageVO{type: THINK\|CONTENT, thinking?, content?}` | 思考 / 正文增量（小写） |
@@ -641,6 +645,43 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 2. **没有管理接口**：调整某人配额目前要直接改库（`UPDATE users SET token_quota = ... WHERE id = ...`）。
 3. 只统计 **token**，不按金额（金额随厂商价格变动，见 §6.12 的 `model-prices`）。
 
+### 6.14 流式增量合并：让输出不"卡"（P2-12）
+
+**问题**：模型是逐 token（更准确说逐 chunk，几个字符）返回的，原实现**每来一块就 `emitter.send()` 一次**。
+一次千字回复 = **上千个 SSE 帧**，前后端都被高频小包拖慢：
+
+- 后端：每帧都要序列化 + 写 socket，Tomcat 侧伴随大量小 flush
+- 前端：EventSource 每帧触发一次回调 → 每次都可能触发一次状态更新与重渲染
+
+用户感受就是"**字一个一个蹦、还卡卡的**"。
+
+**方案**：`converter/SseChunkBuffer` 把增量合并成批次，满足任一条件才推一帧（先到先发）：
+
+| 条件 | 配置 | 作用 |
+|---|---|---|
+| 缓冲 ≥ 200 字符 | `nexus.agent.sse.flush-max-chars` | 大段内容及时吐出 |
+| 距上次推送 ≥ 60ms | `nexus.agent.sse.flush-interval` | 兜住低速内容（一次只吐一两个字时不被憋住） |
+
+帧数降低一个数量级。**60ms ≈ 屏幕刷新间隔**，人眼已看不出拼接痕迹。
+
+> ⚠️ **关键时序：这些时机必须强制冲刷（`flushPending`）**，否则前端会看到顺序错乱或丢内容：
+> 推送工具事件前、推送产物事件前、`finish()` 前、报错前。
+> 判断逻辑都写在 `SseChunkBuffer` 里并单测覆盖（该 flush 时不 flush 是最容易犯的错）。
+
+**设计要点**：
+
+- **类型切换（思考 ↔ 正文）必须先冲刷**：两者是交错到达的，不冲刷就会把思考内容插到正文后面
+- **完整正文仍逐块累积**：`answer` 继续拼完整内容（历史落库、标题生成要用），只把"发送"改成批量
+- **把判断逻辑抽成独立的 `SseChunkBuffer`**：`SseResponseConverter` 依赖 `SseEmitter` 很难单测，
+  抽出来后"何时该发"可以用纯单测覆盖，发送本身只剩一行 `emitter.send`
+- 缓冲操作 `synchronized`（流式回调可能来自不同线程）；配置成 0/负数会兜到安全值（否则等于没优化）
+- **不改 SSE 契约**：事件名、data 结构都没变，只是**帧数变少、单帧变长**。
+  所以前端唯一要注意的是**保持 append 语义**（详见 `docs/frontend-guide.md §5.2`）
+
+**前端配套**：后端只减少了帧数，前端若"每个事件都重渲染整棵消息列表"照样卡 ——
+渲染侧的做法（按 `requestAnimationFrame` 批量提交、思考区/正文分开累积、Markdown 延后整体渲染、
+自动滚动节流）已写进 **`docs/frontend-guide.md`**，可直接交给前端同学。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -791,6 +832,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-9 完成**：MCP 不可用时明确告知模型（不再静默丢弃） | `McpInformationService.getMcp` 返回 `McpResolution{provider, unavailableNames}`；`ChatContext` 加 `mcpUnavailable`；`ChatContextFactory`/`ChatServiceImpl` 适配；新增 `ChatServiceImpl.composeCapabilities`（+ `RuntimeCapabilitiesTest` 5 个单测）；提示词变量 `{{availableSkills}}` → **`{{runtimeCapabilities}}`**（同时承载技能清单与 MCP 状态），`ModelSystemContent` 加「不可用则如实告知、不要重试」的指引 | §6.7 重写（顺带修正「每次新建客户端且不关闭」这条已过时的描述，P1-6 已修）；§6.9 同步变量名 |
 | 2026-09-24 | **P2-10 部分完成**：产物交付链路打通（**决策 D5 已定为 (c) 虚拟工作区**） | 新增 `tools/BoxTool.publishArtifact`（工具）+ `service/ArtifactService`/`Impl` + `docs/sql/004_add_sys_file_session_id.sql`；`MessageType.ARTIFACT` + `MessageVO.artifact` + `SseResponseConverter.writeArtifact`；`ChatServiceImpl` 在 `onToolExecuted` 里识别并落库/推事件（+ `ArtifactExtractionTest` 5 个单测）；Python 侧 `oss_utils.object_prefix()` 与 `/file` 路由带 `user_id`；提示词加「产出文件必须用 publish_artifact 交付」 | §16.2 补实施结果表；§6.2 契约表加 `artifact` 行；⚠️ **需先执行 `004`**（实体已加 `sessionId`）。⬜ E2B 模板预装 Office 库需用户在 E2B 侧执行 |
 | 2026-09-24 | **P2-10 收尾**：虚拟工作区的会话文件列表/删除接口 | 新增 `controller/ArtifactController` + `ArtifactService.listBySession/delete` + `AliOssUtil.deleteObject/objectNameOf`（+ `OssObjectNameTest` 6 个单测）+ `docs/sql/005_add_sys_file_session_index.sql` | ⚠️ **需执行 `005`**（列表查询的索引）；所有查询/删除都带 `user_id` 过滤（越权防护）；删除顺序为先删记录再尽力删对象；§7 API 一览已登记；§16.2 实施结果表加 ⑤ |
+| 2026-09-24 | **P2-12 完成**：SSE 增量合并（修"输出卡顿"）+ **新增前端对接文档** | 新增 `converter/SseChunkBuffer.java`（+ `SseChunkBufferTest` 9 个单测）；`SseResponseConverter` 改为批量推送并在工具/产物/结束/报错前强制冲刷；`AgentProperties.Sse` 加 `flushMaxChars`/`flushInterval`；两个 yml 补 `sse` 配置；**新增 `docs/frontend-guide.md`** | 新增 §6.14；§6.2 加"批量增量"提示；§15 补 2 行配置。根因：原来每个 token 推一帧（千字回复=上千帧）→ 前后端被高频小包拖慢；现攒 200 字符/60ms 推一帧 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -996,6 +1038,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `nexus.agent.sse.timeout` | `120s` | SSE 连接超时。**必须大于最慢一次模型调用**，否则复杂任务被掐断 |
+| `nexus.agent.sse.flush-max-chars` | `200` | 流式增量合并：攒够这么多字符就推一帧（P2-12，见 §6.14）。调大→帧更少更省但到达略慢 |
+| `nexus.agent.sse.flush-interval` | `60ms` | 流式增量合并的兜底时间阈值（≈16 帧/秒，与屏幕刷新率相当） |
 | `nexus.agent.memory.max-tokens` | `100000` | 对话记忆窗口。只影响送给模型的上下文，**不影响已入库的消息** |
 | `nexus.agent.memory.token-estimator-model` | `gpt-4o` | token 估算器用的模型名。只做本地估算、不产生 API 调用；与实际模型不一致会导致窗口裁剪不准 |
 | `nexus.agent.sandbox.reuse-per-session` | `true` | 同一会话复用同一沙盒（E2B 按量计费，关闭会导致反复创建） |

@@ -92,6 +92,9 @@ nexus:
     sse:
       # SSE 连接超时。必须大于最慢一次模型调用的耗时，否则复杂任务会被提前掐断
       timeout: 120s
+      # 流式增量合并（P2-12）：攒够这么多字符或超过 flush-interval 就推一帧
+      flush-max-chars: 200
+      flush-interval: 60ms
     memory:
       # 对话记忆窗口的 token 上限（只影响送给模型的上下文，不影响已入库的消息）
       max-tokens: 100000

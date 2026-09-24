@@ -114,6 +114,9 @@ public class ChatServiceImpl implements ChatService {
                 .sessionId(sessionId)
                 .isNewSession(isNewSession)
                 .runId(runId)
+//                流式增量合并（P2-12）：把逐 token 的推送合成批次，避免上千个 SSE 帧拖垮前后端
+                .flushMaxChars(agentProperties.getSse().getFlushMaxChars())
+                .flushIntervalMillis(agentProperties.getSse().getFlushInterval().toMillis())
                 .message(converter.extractFirstText(messages)).userId(userId)
                 .sseEmitter(sseEmitter)
                 .build();

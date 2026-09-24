@@ -45,6 +45,23 @@ public class AgentProperties {
          * 默认 120 秒。
          */
         private Duration timeout = Duration.ofSeconds(120);
+
+        /**
+         * 流式增量的**合并阈值（字符数）**：缓冲攒够这么多字符就立即推送（P2-12）。
+         * <p>
+         * 调大 → SSE 帧数更少、网络与渲染更省，但首字延迟略增；
+         * 调小 → 更"实时"，但帧数变多、前端渲染压力上升（卡顿的来源）。
+         * 默认 200。
+         */
+        private int flushMaxChars = 200;
+
+        /**
+         * 流式增量的**合并时间阈值**：距上次推送超过这么久就立即推送，兜住低速内容
+         * （比如模型一次只吐一两个字时，不该被 {@code flushMaxChars} 一直憋着）。
+         * <p>
+         * 默认 60ms —— 约等于"每秒最多约 16 次推送"，恰好一帧的间隔，人眼已看不出拼接感。
+         */
+        private Duration flushInterval = Duration.ofMillis(60);
     }
 
     @Data

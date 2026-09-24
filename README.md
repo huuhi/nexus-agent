@@ -182,6 +182,7 @@ nexus-agent (parent pom)
 | 文档 | 内容 |
 |---|---|
 | [AGENTS.md](./AGENTS.md) | **开发入口**：依赖版本、文件地图、接口一览、核心机制、技术栈、技术债清单、开发规范 |
+| [docs/frontend-guide.md](./docs/frontend-guide.md) | **前端对接指南**：认证、SSE 事件契约、流式渲染最佳实践、本次变更对前端的影响、已知坑与调试 |
 | [重构计划.md](./重构计划.md) | 分阶段重构计划、任务表、验收标准、里程碑 |
 | [skills/README.md](./skills/README.md) | 技能（Skill）目录约定、SKILL.md 写法、`scripts/` 与文档资源的区别 |
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
