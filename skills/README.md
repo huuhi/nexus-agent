@@ -47,7 +47,7 @@ description: 一句话说明「什么时候」该用这个技能（模型靠它�
 ## 运行机制（对模型暴露的两个工具）
 
 1. 启动后 `SkillLoader` 扫描根目录，缓存结果（默认 60s，`refresh-interval` 可配）；
-2. 每次对话，可用技能清单注入系统提示词的 `{{availableSkills}}` 占位符；
+2. 每次对话，可用技能清单注入系统提示词的 `{{runtimeCapabilities}}` 占位符；
 3. 模型按需调用 `activate_skill(skillName)` 取得技能正文，严格按步骤执行；
 4. 技能引用的资源文件用 `read_resource(skillName, relativePath)` 读取。
 

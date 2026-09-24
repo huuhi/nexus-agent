@@ -431,8 +431,15 @@ public class XxxTool implements AgentToolSet {
 - 只支持 `streamable_http`（`StreamableHttpMcpTransport`）
 - MCP 列表来源于 **ModelScope openapi**，由 FastAPI `/mcp` 转发（`app/routers/mcp.py`）
 - Java 端 `McpInformationService`：`/api/mcp/service`（拉取）→ `/api/mcp`（落库）
-- 连不通时会把记录的 `available` 置 false
-- ⚠️ 每次对话都**新建** `DefaultMcpClient`，成功后从不 `close()` → 资源泄漏
+- 连不通时会把记录的 `available` 置 false（避免每次对话都白白尝试）
+- ✅ **客户端生命周期已收口（P1-6）**：`mcp/McpClientRegistry` 按 mcpId 缓存复用、
+  创建失败立即 `close`、配置变更 `evict`、`@PreDestroy` 统一关闭。
+  （原实现每次对话新建 `DefaultMcpClient` 且成功后从不关闭 → 每轮泄漏一批连接。）
+- ✅ **不可用会明确告知模型（P2-9）**：`getMcp` 返回 `McpResolution{provider, unavailableNames}`，
+  「选了但连不上」的服务名随 `ChatContext.mcpUnavailable` 注入系统提示词的
+  `{{runtimeCapabilities}}`。在此之前是**静默丢弃**：模型只会说"我没有这个能力"，
+  用户分不清是"没配"还是"配了但连不上"。
+  提示词里同时要求模型「不要尝试调用、也不要反复重试，如实说明不可用」。
 
 ### 6.8 沙盒（E2B）
 
@@ -479,7 +486,7 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 ```
 启动/缓存过期 → SkillLoader.scan()          （默认 60s TTL，refreshInterval 可配）
 每次对话      → SkillLoader.formatForPrompt(chatDTO.skills())
-                → 填充系统提示词 {{availableSkills}}
+                → 填充系统提示词 {{runtimeCapabilities}}
                 → ChatContextFactory 注册 Skills.toolProvider()（activate_skill / read_resource）
 模型按需      → activate_skill(name) 取技能正文 → 严格按步骤执行
 ```
@@ -491,7 +498,7 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 
 | 事项 | 说明 |
 |---|---|
-| 技能清单必须走 Mustache 变量 | `@SystemMessage` 是静态文本，而「有哪些技能」是运行期才知道的 → `ChatAssistant.chat(..., @V("availableSkills") String)` 显式传入。不注入模型就不知道能调 `activate_skill` |
+| 能力说明必须走 Mustache 变量 | `@SystemMessage` 是静态文本，而「有哪些技能 / 哪些 MCP 连不上」都是运行期才知道的 → `ChatAssistant.chat(..., @V("runtimeCapabilities") String)` 显式传入。不注入的话：模型不知道能调 `activate_skill`，也会把「配了但连不上」说成「我没有这个能力」。（该变量 P2-9 前叫 `availableSkills`，因同时承载 MCP 状态而改名） |
 | **Skill 与 MCP 必须合并注册** | 两者都是 `ToolProvider`，连续调 `builder.toolProvider(a)` / `toolProvider(b)` 会**互相覆盖**，只剩最后一个生效。必须收集为 `List` 后一次 `toolProviders(list)`（`ChatContextFactory` 已按此实现） |
 | 扫描失败不阻塞启动 | 目录不存在/读失败都降级为「无技能」并打日志，不让应用起不来 |
 | 缓存的代价 | 新增技能最多延迟 `refreshInterval` 生效；`SkillLoader.reload()` 可手动刷新；设 `0s` 则每次请求重扫 |
@@ -771,13 +778,14 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-23 | **沙盒链路实测通过**（M1#3 验收完成）；并修正 §6.2 的 SSE 事件名（文档原来写错） | `AGENTS.md` | AI 成功调用 `create_box` → `execute_cmd` → 拿到真实 stdout；工具事件名实为全大写 |
 | 2026-09-23 | **P1-4 完成**：引入 `ToolRegistry`，工具注册改为声明式；`ChatContextFactory` 不再认识任何具体工具 | 新增 `tools/registry/`3 个类；4 个工具类实现 `AgentToolSet`；`AGENTS.md §6.4` 重写 | 实测：`enableRag` 开关由 `RagTool.enabled()` 决定，日志逐项打印启用/跳过 |
 | 2026-09-23 | **P1 批次完成**：P1-6/7/8/9/11/13 六项一次性做完 | 新增 `sandbox/`、`mcp/`、`properties/AgentProperties`、3 个单测类；重写 `SafeExecuteToolHandler`、`PgChatMemoryStore`、`BoxTool`；6 个旧测试改为人工测试 | 详见 §6.5（工具错误契约）与 §15（运行时配置）；实测 4 组端到端验证通过 |
-| 2026-09-24 | **P2-1 + P2-2 完成**：Skill 系统落地（本地目录扫描），`ChatDTO.skills` 真实生效；旧 DB 注册表方案整体删除 | 新增 `skills/SkillLoader.java`、`skills/README.md`、`SkillLoaderTest.java`（11 个单测）；删除 `SkillMcpInformation` 实体/Mapper/XML/Service/Impl；改造 `ChatContextFactory`（与 MCP 合并 `toolProviders`）、`ChatAssistant`（注入 `{{availableSkills}}`）、`ChatServiceImpl`、`ModelSystemContent`；新增 `docs/sql/002_drop_skill_mcp_information.sql` | 新增 §6.9；实测发现库**刻意排除 `scripts/`** 目录，已写入文档与回归测试；顺带把鉴权改为 `nexus.agent.security.enabled` 开关 + 启动 WARN 提示 |
+| 2026-09-24 | **P2-1 + P2-2 完成**：Skill 系统落地（本地目录扫描），`ChatDTO.skills` 真实生效；旧 DB 注册表方案整体删除 | 新增 `skills/SkillLoader.java`、`skills/README.md`、`SkillLoaderTest.java`（11 个单测）；删除 `SkillMcpInformation` 实体/Mapper/XML/Service/Impl；改造 `ChatContextFactory`（与 MCP 合并 `toolProviders`）、`ChatAssistant`（注入 `{{runtimeCapabilities}}`）、`ChatServiceImpl`、`ModelSystemContent`；新增 `docs/sql/002_drop_skill_mcp_information.sql` | 新增 §6.9；实测发现库**刻意排除 `scripts/`** 目录，已写入文档与回归测试；顺带把鉴权改为 `nexus.agent.security.enabled` 开关 + 启动 WARN 提示 |
 | 2026-09-24 | `AGENTS.md` 结构修复：消除两组重号章节（两个 §6.5、两个 §15） | `AGENTS.md` | Skill 系统改为 §6.9；「文件与产物能力」改为 §16（原与「运行时配置」重号）；同步全部交叉引用 |
 | 2026-09-24 | **P1-10 完成**：启动配置自检（一次性列出缺失项而非"一次报一个"）+ 消除模型静默回退 | 新增 `config/StartupConfigValidator.java`、`StartupConfigValidatorTest.java`（8 个单测）；`ChatContextFactory` 三处回退加日志；`AgentProperties` 加 `Startup.failFast`；两个 yml 补 `startup` 段 | 新增 §6.10；必需项（datasource/对话模型 Key/API_KEY_SECRET）默认 fail-fast，建议项只 WARN 并写明"哪项能力不可用"；README 排查表同步 |
 | 2026-09-24 | **P2-4 完成**：工具治理（重复调用拦截 + HTTP 响应超时） | 新增 `tools/ToolCallGuard.java`、`ToolCallGuardTest.java`（11 个单测）；13 个 `@Tool` 方法接入治理（其中 4 个补了 `@ToolMemoryId` 参数）；`WebClientConfig` 加 `responseTimeout`；`AgentProperties` 加 `Tools`；两个 yml 补 `tools` 段；`§6.4` 修正过时示例并加「新增工具检查清单」 | 新增 §6.11；`tools.http-timeout` 默认 100s（< SSE 120s）；`duplicate-threshold` 默认 2（第 3 次起拦） |
 | 2026-09-24 | **P2-6 完成**：可观测性（每次 Run 一行结构化验算日志）+ **SSE 新增 `error` 事件带 trace_id** | 新增 `observability/RunMetrics.java`、`RunMetricsReporter.java`、`RunMetricsTest.java`（11 个单测）；`ChatServiceImpl` 生成 runId 并挂 `onToolExecuted`/`onCompleteResponse`/`onError`；`SseResponseConverter` 加 runId 与 error 事件；`MessageType` 加 `ERROR`；`AgentProperties` 加 `Observability`；两个 yml 补 `observability` 段 | 新增 §6.12；§6.2 契约表加 `error` 行（补齐 P1-9 遗留的「SSE 错误事件带 trace_id」）；费用只在配了单价时显示 |
 | 2026-09-24 | **P2-3 完成**：模型能力矩阵 —— 额外参数改为**按服务商下发** | 新增 `model/ModelCapabilityResolver.java`、`ModelCapabilityResolverTest.java`（8 个单测）；`ChatContextFactory` 抽出 `buildExtraBody` 并按能力过滤；`AgentProperties` 加 `Model`/`ProviderCapability`；两个 yml 补 `model.providers` 段 | §6.3 重写（含能力表与「未知即不下发」的取舍说明）；⚠️ **行为变更**：未命中服务商的额外参数不再下发（此前无条件全塞）；默认模型的参数仍在 yml 的 `custom-parameters`（已去掉 DeepSeek 不认的 `enable_search`） |
-| 2026-09-24 | **P2-8 完成**：token 配额（事前拦截 + 事后原子记账） | 新增 `docs/sql/003_add_user_token_quota.sql`、`service/QuotaService` + `QuotaServiceImpl`、`exception/QuotaExceededException`、`QuotaServiceTest`（13 个单测）；`User` 加 `tokenQuota`/`tokenUsed`；`UserMapper.java`/`.xml` 加原子累加语句；`ChatServiceImpl` 接入；`UserServiceImpl.register` 写默认配额；`GlobalExceptionHandler` 加映射；两个 yml 补 `quota` 段 | 新增 §6.13；⚠️ **需先执行 `003` 才能启动**（实体已含新列，`Base_Column_List` 已引用）；存量用户 `token_quota` 为 NULL = 不限制，行为不变 |
+| 2026-09-24 | **P2-8 完成**：token 配额（事前拦截 + 事后原子记账） | 新增 `docs/sql/003_add_user_token_quota.sql`、`service/QuotaService` + `QuotaServiceImpl`、`exception/QuotaExceededException`、`QuotaServiceTest`（14 个单测）；`User` 加 `tokenQuota`/`tokenUsed`；`UserMapper.java`/`.xml` 加原子累加语句；`ChatServiceImpl` 接入；`UserServiceImpl.register` 写默认配额；`GlobalExceptionHandler` 加映射；两个 yml 补 `quota` 段 | 新增 §6.13；⚠️ **需先执行 `003` 才能启动**（实体已含新列，`Base_Column_List` 已引用）；存量用户 `token_quota` 为 NULL = 不限制，行为不变 |
+| 2026-09-24 | **P2-9 完成**：MCP 不可用时明确告知模型（不再静默丢弃） | `McpInformationService.getMcp` 返回 `McpResolution{provider, unavailableNames}`；`ChatContext` 加 `mcpUnavailable`；`ChatContextFactory`/`ChatServiceImpl` 适配；新增 `ChatServiceImpl.composeCapabilities`（+ `RuntimeCapabilitiesTest` 5 个单测）；提示词变量 `{{availableSkills}}` → **`{{runtimeCapabilities}}`**（同时承载技能清单与 MCP 状态），`ModelSystemContent` 加「不可用则如实告知、不要重试」的指引 | §6.7 重写（顺带修正「每次新建客户端且不关闭」这条已过时的描述，P1-6 已修）；§6.9 同步变量名 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -953,7 +961,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | D3 | Skill 落地方案 | ✅ **本地目录扫描**（服务端内置 skill 目录，扫描 `SKILL.md` 注册） | 避开 B/S 下上传 zip 的解压落盘与路径穿越安全问题 |
 
 > ✅ **已兑现（P2-1，2026-09-23）**：`ChatDTO.skills` 已真正接进 `ChatContextFactory`
-> （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{availableSkills}}`）。
+> （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{runtimeCapabilities}}`）。
 > 旧 DB 注册表方案与 `SkillMcpInformation*` 已一并删除，未留装饰。落地方案与实现要点见 **§6.9**。
 
 ### 14.2 仍待定

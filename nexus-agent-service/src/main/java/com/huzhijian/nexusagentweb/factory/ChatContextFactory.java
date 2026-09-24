@@ -20,7 +20,6 @@ import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.tools.registry.ToolRegistry;
 import com.huzhijian.nexusagentweb.tools.registry.ToolSelection;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
-import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
@@ -68,7 +67,10 @@ public class ChatContextFactory {
         Long userId = runContext.userId();
         String sessionId = runContext.sessionId();
         StreamingChatModel  model=createModel(chatDTO.model(),userId);
-        McpToolProvider mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
+//        MCP：返回「可用的 provider」+「选了但连不上的服务名」（P2-9）。
+//        后者会随 ChatContext 传给提示词组装，让模型知道"有这些能力但现在用不了"，
+//        而不是只能回一句"我没有这个能力"。
+        McpInformationService.McpResolution mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
 //        记忆存储绑定本次运行的上下文，必须这样做：
 //        LangChain4j 在**流式回调线程**上调用 ChatMemoryStore.updateMessages，
 //        那时请求线程的 ThreadLocal 已经取不到值——历史上附件元数据就是这样丢的，
@@ -101,8 +103,8 @@ public class ChatContextFactory {
         if (skills != null) {
             toolProviders.add(skills.toolProvider());
         }
-        if (mcp != null) {
-            toolProviders.add(mcp);
+        if (mcp.provider() != null) {
+            toolProviders.add(mcp.provider());
         }
         if (!toolProviders.isEmpty()) {
             builder.toolProviders(toolProviders);
@@ -111,6 +113,7 @@ public class ChatContextFactory {
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
                 .isNewSession(runContext.newSession())
+                .mcpUnavailable(mcp.unavailableNames())
                 .build();
     }
 

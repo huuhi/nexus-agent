@@ -94,11 +94,13 @@ public class ChatServiceImpl implements ChatService {
         ChatContext chatContext = chatContextFactory.create(chatDTO, runContext);
         ChatAssistant chatAssistant = chatContext.getChatAssistant();
 
-//        技能清单必须在调用前注入系统提示词：@SystemMessage 是静态文本，
-//        而「有哪些技能」取决于 skills 目录与请求参数，只能通过 Mustache 变量传入
-        String availableSkills = skillLoader.formatForPrompt(chatDTO.skills());
-        log.debug("注入提示词的技能清单：{}", availableSkills);
-        TokenStream tokenStream = chatAssistant.chat(converted.contents(), sessionId, availableSkills);
+//        运行时能力说明必须在调用前注入系统提示词：@SystemMessage 是静态文本，
+//        而「有哪些技能 / 哪些 MCP 连不上」都是运行期才知道的，只能通过 Mustache 变量传入
+        String runtimeCapabilities = composeCapabilities(
+                skillLoader.formatForPrompt(chatDTO.skills()),
+                chatContext.getMcpUnavailable());
+        log.debug("注入提示词的运行时能力说明：{}", runtimeCapabilities);
+        TokenStream tokenStream = chatAssistant.chat(converted.contents(), sessionId, runtimeCapabilities);
 
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)
@@ -137,6 +139,32 @@ public class ChatServiceImpl implements ChatService {
                 })
                 .start();
         return sseEmitter;
+    }
+
+    /**
+     * 组装注入系统提示词的「运行时能力」文本（P2-9）。
+     * <p>
+     * 抽成静态纯函数是为了好测：这些是**给模型看的说明**，措辞会直接影响模型行为 ——
+     * 把"不可用"讲清楚，模型才不会反复重试、也不会把"配了但连不上"说成"我没有这个能力"。
+     *
+     * @param skillsText           技能清单文本（来自 {@code SkillLoader.formatForPrompt}）
+     * @param unavailableMcpNames  本次选了但连不上的 MCP 服务名；为空表示无需提示
+     */
+    public static String composeCapabilities(String skillsText, List<String> unavailableMcpNames) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("【可用技能】\n")
+                .append(skillsText == null || skillsText.isBlank()
+                        ? "当前没有可用的技能（skills）。"
+                        : skillsText);
+        if (unavailableMcpNames != null && !unavailableMcpNames.isEmpty()) {
+            sb.append("\n\n【MCP 能力状态】\n")
+                    .append("以下 MCP 服务本次连接失败、当前不可用：")
+                    .append(String.join("、", unavailableMcpNames))
+                    .append("\n它们本次没有被注册，请不要尝试调用；")
+                    .append("若用户的任务需要这些能力，如实说明该服务当前不可用，")
+                    .append("并建议检查服务地址/凭据或网络后重试。");
+        }
+        return sb.toString();
     }
 
     /**

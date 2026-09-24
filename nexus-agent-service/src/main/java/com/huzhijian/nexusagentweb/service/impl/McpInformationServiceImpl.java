@@ -60,33 +60,39 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
      * 全部服务都不可用时返回 null（调用方即按「无 MCP」处理）。
      */
     @Override
-    public McpToolProvider getMcp(List<Long> MCPIds, Long userId) {
-        if (MCPIds == null || MCPIds.isEmpty()) {
-            return null;
+    public McpResolution getMcp(List<Long> mcpIds, Long userId) {
+        if (mcpIds == null || mcpIds.isEmpty()) {
+            return McpResolution.none();
         }
         List<McpInformation> list = query().eq("user_id", userId)
-                .in("id", MCPIds)
+                .in("id", mcpIds)
                 .eq("available", true)
                 .list();
         if (list.isEmpty()) {
-            return null;
+            // 可能是：用户选的 id 都不属于他 / 之前已被标记为不可用 —— 都按"没有 MCP"处理
+            return McpResolution.none();
         }
         List<McpClient> mcpClients = new ArrayList<>();
+        List<String> unavailableNames = new ArrayList<>();
         for (McpInformation info : list) {
             McpClient client = mcpClientRegistry.getOrCreate(info);
             if (client == null) {
-                // 连不上：标记为不可用，避免每次对话都白白尝试
+                // 连不上：标记为不可用，避免每次对话都白白尝试；
+                // 同时记下服务名，稍后注入提示词 —— 让模型知道"有但暂时用不了"
                 update().set("available", false).eq("id", info.getId()).update();
+                unavailableNames.add(info.getName());
             } else {
                 mcpClients.add(client);
             }
         }
         if (mcpClients.isEmpty()) {
-            return null;
+            log.warn("本次请求的 {} 个 MCP 服务全部不可用：{}", unavailableNames.size(), unavailableNames);
+            return new McpResolution(null, List.copyOf(unavailableNames));
         }
-        return McpToolProvider.builder()
+        McpToolProvider provider = McpToolProvider.builder()
                 .mcpClients(mcpClients)
                 .build();
+        return new McpResolution(provider, List.copyOf(unavailableNames));
     }
 
     @Override
