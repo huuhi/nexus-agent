@@ -10,6 +10,7 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.em.ModelType;
+import com.huzhijian.nexusagentweb.model.ModelCapabilityResolver;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
@@ -60,6 +61,7 @@ public class ChatContextFactory {
     private final UserConfigService  userConfigService;
     private final AgentProperties agentProperties;
     private final SkillLoader skillLoader;
+    private final ModelCapabilityResolver modelCapabilityResolver;
 
 
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
@@ -156,18 +158,8 @@ public class ChatContextFactory {
 
             String secretApiKey = apiConfig.getAPIKey();
             String apiKey = EncryptorFactory.text(userConfig.getSalt()).decrypt(secretApiKey);
-            Map<String, Object> extraBody = new HashedMap<>();
-//          加个customParameters配置,控制是否开启思考
-            if (modelDTO.isThinking()){
-                log.debug("开启思考");
-                extraBody.put("thinking", Map.of("type", "enabled"));
-                extraBody.put("enable_thinking", true);
-            }else{
-                log.debug("不思考");
-                extraBody.put("thinking", Map.of("type", "disabled"));
-                extraBody.put("enable_thinking", false);
-            }
-            extraBody.put("enable_search", true);
+//          额外参数按「服务商能力」下发（P2-3）：只发该服务商认的字段，避免 400
+            Map<String, Object> extraBody = buildExtraBody(apiConfig.getBaseUrl(), modelDTO);
             return OpenAiStreamingChatModel.builder()
                     .apiKey(apiKey)
                     .baseUrl(apiConfig.getBaseUrl())
@@ -185,5 +177,36 @@ public class ChatContextFactory {
         return defaultModel;
     }
 
+    /**
+     * 按服务商能力组装「额外参数」（P2-3）。
+     * <p>
+     * 只下发该服务商支持的字段：不认某个字段的服务商可能直接 400，而少一个开关只是功能降级，
+     * 两者代价不对等。判定依据是 baseUrl（见 {@link ModelCapabilityResolver}）——
+     * 同一型号经不同服务商转发时支持的参数并不相同。
+     * <p>
+     * 用户勾了思考但服务商不支持时会打日志说明，不静默丢弃。
+     */
+    private Map<String, Object> buildExtraBody(String baseUrl, ModelDTO modelDTO) {
+        ModelCapabilityResolver.Capability capability = modelCapabilityResolver.resolve(baseUrl);
+        Map<String, Object> extraBody = new HashedMap<>();
+        if (capability.thinking()) {
+            if (modelDTO.isThinking()) {
+                log.debug("开启思考：model={}", modelDTO.modelName());
+                extraBody.put("thinking", Map.of("type", "enabled"));
+                extraBody.put("enable_thinking", true);
+            } else {
+                log.debug("关闭思考：model={}", modelDTO.modelName());
+                extraBody.put("thinking", Map.of("type", "disabled"));
+                extraBody.put("enable_thinking", false);
+            }
+        } else if (modelDTO.isThinking()) {
+            log.info("服务商不支持思考参数，本次已忽略 thinking 开关：baseUrl={} model={}",
+                    baseUrl, modelDTO.modelName());
+        }
+        if (capability.search()) {
+            extraBody.put("enable_search", true);
+        }
+        return extraBody;
+    }
 
 }

@@ -24,8 +24,11 @@ langchain4j:
     streaming-chat-model:
       model-name: deepseek-v4-flash
       base-url: https://api.deepseek.com
+      # ⚠️ 这里是**系统默认模型**的固定额外参数（由 langchain4j starter 直接下发，
+      #    不经过 nexus.agent.model.providers 能力表）。只放该服务商认的字段 ——
+      #    不认的字段可能让请求直接 400。下面按 DeepSeek 官方接口配置（无 enable_search）；
+      #    若换成阿里云百炼(qwen)等支持联网搜索的服务商，可自行加上 enable_search: true。
       custom-parameters:
-        enable_search: true
         enable_thinking: true
       api-key: <<DEEPSEEK_API_KEY>>
       return-thinking: true
@@ -147,6 +150,15 @@ nexus:
       #     input: 2.0
       #     output: 8.0
       model-prices: {}
+    model:
+      # 服务商能力表（P2-3）：key = baseUrl 中包含的片段，决定「给该服务商下发哪些额外参数」。
+      # 内置：dashscope.aliyuncs.com → thinking+search；deepseek.com → 都不支持。
+      # 未命中的服务商**不下发任何额外参数**（宁可少一个开关，也不要 400）。
+      # providers:
+      #   my-gateway.example.com:
+      #     thinking: true
+      #     search: true
+      providers: {}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

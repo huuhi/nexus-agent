@@ -302,11 +302,40 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 
 1. 读 `user_config.llm_api_token`（JSON 数组，加密后存库，Redis 缓存 3 天，key=`config:{userId}`）
 2. 按 `ModelDTO.id()` 匹配 `APIConfig`；`id` 为空则取 `isDefault=true` 的配置
-3. 校验 `APIConfig.model` 中存在 `type=CHAT && name=modelName`，否则**静默回退默认模型**
-4. `thinking` 开关 → 塞入 `customParameters`：`thinking.type` + `enable_thinking` + **固定 `enable_search=true`**
+3. 校验 `APIConfig.model` 中存在 `type=CHAT && name=modelName`，否则回退默认模型（**现在会打日志说明原因**）
+4. `thinking` 开关 → 按**服务商能力**组装 `customParameters`（P2-3，见下）
 5. 加解密：`EncryptorFactory.text(userConfig.salt).encrypt/decrypt`
 
-> 当前是**各厂商参数猜测式下发**（把 thinking 相关字段全塞进去）。多厂商适配是重构项之一。
+**额外参数按服务商能力下发（P2-3）**：
+
+判定依据是 **`APIConfig.baseUrl`** 而不是模型名 —— 同一型号经不同服务商转发时支持的参数并不相同
+（qwen 在百炼上认 `enable_search`，经某些中转站转发则不认）。
+
+| 服务商（baseUrl 含） | thinking 参数 | search 参数 |
+|---|---|---|
+| `dashscope.aliyuncs.com`（阿里云百炼） | ✅ `enable_thinking` + `thinking.type` | ✅ `enable_search` |
+| `deepseek.com`（DeepSeek 官方） | ❌（思考由具体型号决定，如 deepseek-reasoner） | ❌（无此参数） |
+| **未命中的服务商** | ❌ | ❌ |
+
+**默认策略是「未知即不下发」**，这是刻意取舍：不认某字段的服务商可能直接 **400**（整次对话失败），
+而少一个联网搜索/思考开关只是**功能降级**，两者代价不对等。
+命中不了内置表时日志会说明并提示如何声明，不会静默吞掉：
+
+```yaml
+nexus:
+  agent:
+    model:
+      providers:            # key = baseUrl 中包含的片段；同名覆盖内置，新片段即扩展
+        my-gateway.example.com:
+          thinking: true
+          search: true
+```
+
+匹配规则：忽略大小写，多个命中取**最长**片段。
+
+> ⚠️ **系统默认模型不经过这张表** —— 它由 langchain4j starter 直接构建，
+> 额外参数写在 yml 的 `langchain4j.open-ai.streaming-chat-model.custom-parameters` 里。
+> 换默认模型时记得同步改那段（不认的字段同样会 400），注释里有说明。
 
 ### 6.4 如何新增一个 Tool（声明式，**不用改工厂**）
 
@@ -710,6 +739,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P1-10 完成**：启动配置自检（一次性列出缺失项而非"一次报一个"）+ 消除模型静默回退 | 新增 `config/StartupConfigValidator.java`、`StartupConfigValidatorTest.java`（8 个单测）；`ChatContextFactory` 三处回退加日志；`AgentProperties` 加 `Startup.failFast`；两个 yml 补 `startup` 段 | 新增 §6.10；必需项（datasource/对话模型 Key/API_KEY_SECRET）默认 fail-fast，建议项只 WARN 并写明"哪项能力不可用"；README 排查表同步 |
 | 2026-09-24 | **P2-4 完成**：工具治理（重复调用拦截 + HTTP 响应超时） | 新增 `tools/ToolCallGuard.java`、`ToolCallGuardTest.java`（11 个单测）；13 个 `@Tool` 方法接入治理（其中 4 个补了 `@ToolMemoryId` 参数）；`WebClientConfig` 加 `responseTimeout`；`AgentProperties` 加 `Tools`；两个 yml 补 `tools` 段；`§6.4` 修正过时示例并加「新增工具检查清单」 | 新增 §6.11；`tools.http-timeout` 默认 100s（< SSE 120s）；`duplicate-threshold` 默认 2（第 3 次起拦） |
 | 2026-09-24 | **P2-6 完成**：可观测性（每次 Run 一行结构化验算日志）+ **SSE 新增 `error` 事件带 trace_id** | 新增 `observability/RunMetrics.java`、`RunMetricsReporter.java`、`RunMetricsTest.java`（11 个单测）；`ChatServiceImpl` 生成 runId 并挂 `onToolExecuted`/`onCompleteResponse`/`onError`；`SseResponseConverter` 加 runId 与 error 事件；`MessageType` 加 `ERROR`；`AgentProperties` 加 `Observability`；两个 yml 补 `observability` 段 | 新增 §6.12；§6.2 契约表加 `error` 行（补齐 P1-9 遗留的「SSE 错误事件带 trace_id」）；费用只在配了单价时显示 |
+| 2026-09-24 | **P2-3 完成**：模型能力矩阵 —— 额外参数改为**按服务商下发** | 新增 `model/ModelCapabilityResolver.java`、`ModelCapabilityResolverTest.java`（8 个单测）；`ChatContextFactory` 抽出 `buildExtraBody` 并按能力过滤；`AgentProperties` 加 `Model`/`ProviderCapability`；两个 yml 补 `model.providers` 段 | §6.3 重写（含能力表与「未知即不下发」的取舍说明）；⚠️ **行为变更**：未命中服务商的额外参数不再下发（此前无条件全塞）；默认模型的参数仍在 yml 的 `custom-parameters`（已去掉 DeepSeek 不认的 `enable_search`） |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -925,6 +955,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.tools.duplicate-threshold` | `2` | 窗口内允许的相同调用次数，超过即拦截并回灌提示；设 `0` 关闭治理 |
 | `nexus.agent.observability.enabled` | `true` | 是否输出每次 Run 的汇总日志（见 §6.12） |
 | `nexus.agent.observability.model-prices.<模型名或前缀>.input/.output` | 无 | 每 100 万 token 的单价（元）。**故意无默认值**：价格会变，写死必然过时；未配置的模型显示 `fee=unpriced` |
+| `nexus.agent.model.providers.<baseUrl 片段>.thinking/.search` | 内置 2 条 | 服务商能力表（见 §6.3）。未命中者一律不下发额外参数；同名项覆盖内置 |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

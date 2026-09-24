@@ -35,6 +35,7 @@ public class AgentProperties {
     private Startup startup = new Startup();
     private Tools tools = new Tools();
     private Observability observability = new Observability();
+    private Model model = new Model();
 
     @Data
     public static class Sse {
@@ -208,5 +209,42 @@ public class AgentProperties {
         private double input;
         /** 每 100 万输出 token 单价（元） */
         private double output;
+    }
+
+    @Data
+    public static class Model {
+        /**
+         * 服务商能力表：{@code key = baseUrl 中包含的片段 → 该服务商支持的参数}。
+         * <p>
+         * 用于解决「各厂商开思考/联网搜索的参数不一样，全局塞会 400」的问题（P2-3）：
+         * 调用前按 baseUrl 判定，**只下发该服务商支持的参数**。
+         * 内置了一份常见服务商的默认表（见 {@code ModelCapabilityResolver}），
+         * 这里配置的同名项会**覆盖**内置，新片段则用于内置表没覆盖的中转/代理服务。
+         * <p>
+         * 例：<pre>
+         * my-gateway.example.com:
+         *   thinking: true
+         *   search: true
+         * </pre>
+         * 匹配规则：baseUrl 包含 key（忽略大小写），多个命中取**最长**的 key。
+         */
+        private Map<String, ProviderCapability> providers = new LinkedHashMap<>();
+    }
+
+    @Data
+    public static class ProviderCapability {
+        /**
+         * 是否支持「开/关思考」参数（{@code enable_thinking} / {@code thinking}）。
+         * <p>
+         * 默认 {@code false} —— **未知服务商一律不下发**，宁可少一个功能也不要 400。
+         */
+        private boolean thinking = false;
+
+        /**
+         * 是否支持联网搜索参数（{@code enable_search}）。
+         * <p>
+         * 默认 {@code false}；目前只有阿里云百炼（DashScope）系的 OpenAI 兼容接口认这个参数。
+         */
+        private boolean search = false;
     }
 }
