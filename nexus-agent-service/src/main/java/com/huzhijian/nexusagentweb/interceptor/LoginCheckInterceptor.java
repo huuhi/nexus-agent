@@ -8,6 +8,7 @@ import com.huzhijian.nexusagentweb.vo.Result;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
@@ -15,6 +16,11 @@ import java.io.IOException;
 
 @Slf4j
 @Component
+// 与 WebInterceptorConfig 用同一个开关：关闭鉴权时两者一起不生效，避免只关一半
+@ConditionalOnProperty(
+        name = "nexus.agent.security.enabled",
+        havingValue = "true",
+        matchIfMissing = true)
 public class LoginCheckInterceptor implements HandlerInterceptor {
 
     //在请求处理之前调用，返回 true 表示继续处理，返回 false 表示中断处理。

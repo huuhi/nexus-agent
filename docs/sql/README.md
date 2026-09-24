@@ -13,7 +13,10 @@
 | 文件 | 说明 |
 |---|---|
 | `001_baseline.sql` | **全量基线（重新设计版 v2.0）**，12 张表 + 2 枚举 + 4 外键 + 9 索引 |
-| `002_xxx.sql` | 后续增量变更，序号递增 |
+| `002_drop_skill_mcp_information.sql` | 删除 `skill_mcp_information`（P2-1 落地本地目录扫描方案后，Skill 注册表废弃）。幂等可重放 |
+
+> 新环境从零建库：按序号依次执行 `001` → `002`（最终 11 张表）。
+> 已执行过 `001` 的环境：只需补跑 `002`。
 
 ### 命名与维护约定
 
@@ -106,7 +109,7 @@ from pg_attribute where attrelid='public.knowledge_embedding'::regclass
 | 9 个普通索引 | 每一条都对应代码里真实出现的查询条件（文件内逐条注明了出处），不做无依据的加索引 |
 | 只加 4 个外键 | `user_config`、`knowledge_base_file`×2、`skill_mcp_information`。**刻意不给** `chat_memory` / `chat_history_list` / `mcp_information` 加 —— 沿用原作者的设计决定（见 `开发日志.md` 4.20：存在「先插子行、父信息异步补」的写入顺序） |
 | 不建 `user_memory.embedding` 列 | 长期记忆当前走 SQL LIKE 检索，向量检索的代码被注释掉了。是否恢复取决于**决策 D4**，定了再加（`重构计划.md` P2-7） |
-| 删除 `skill_information`、`user_skill` | 历史死表，代码中已无任何实体或 Mapper 使用 |
+| 删除 `skill_information`、`user_skill` | 历史死表，代码中已无任何实体或 Mapper 使用（`skill_mcp_information` 的删除走 `002_*.sql`，不回改基线） |
 
 ## 索引清单（都对应真实查询）
 
@@ -138,7 +141,7 @@ from pg_attribute where attrelid='public.knowledge_embedding'::regclass
 | 问题 | 说明 | 归属 |
 |---|---|---|
 | `UserMemoryMapper.xml` 的 `search` 是坏的 | 它 SELECT 了 `user_memory` 中不存在的 `category` 和 `embedding` 两列。该方法是**死代码**（`searchMemory` 从未被调用，`MemoryTool` 走 LIKE），所以暂不报错，但一调用就失败 | P2-7（与 D4 一起处理） |
-| `skill_mcp_information` 表虽已补，但功能未接通 | `ChatContextFactory` 没有接入 Skills，`ChatDTO.skills` 被静默忽略；且 `SkillMcpInformationServiceImpl.getSkills` 的查询条件有 `AND`/`OR` 优先级问题 | P2-1 |
+| ~~`skill_mcp_information` 表虽已补，但功能未接通~~ ✅ 已处理（P2-1） | 旧方案（DB 注册表 + `SkillMcpInformationServiceImpl`）整体废弃：实体/Mapper/Service 已删除，表由 `002_drop_skill_mcp_information.sql` 删除。Skill 改为本地目录扫描（`skills/` 目录 + `SkillLoader`），`ChatDTO.skills` 已真实生效 |
 | `knowledge_base_file.file_name` 目前是冗余列 | 详情接口实际用 `fileService.queryFileByids(...)`（即 `sys_file`）取文件名 | 观察后决定是否删列 |
 
 ## 从 Navicat 重新导出时的注意事项

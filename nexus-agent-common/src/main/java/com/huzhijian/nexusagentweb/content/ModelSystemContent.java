@@ -18,6 +18,10 @@ public class ModelSystemContent {
             如果知识库无法检索到回答，说明不存在该知识，不允许重复检索x
             工具调用失败尝试最多两次！
             打招呼不允许太严肃也不允许过于夸张活泼。禁止使用emoji表情
+            【可用技能】
+            {{availableSkills}}
+            如果某个技能适用于当前任务，先调用 activate_skill 取得它的完整步骤，再严格按步骤执行；
+            技能里若提到资源文件，可用 read_resource 读取。
             当前会话ID:{{sessionId}}
             """;
     public static final String GET_MEMORY= """

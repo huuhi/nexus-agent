@@ -14,6 +14,7 @@ import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.skills.SkillLoader;
 import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import com.huzhijian.nexusagentweb.tools.registry.ToolRegistry;
 import com.huzhijian.nexusagentweb.tools.registry.ToolSelection;
@@ -24,12 +25,15 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.tool.ToolProvider;
+import dev.langchain4j.skills.Skills;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.map.HashedMap;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -55,6 +59,7 @@ public class ChatContextFactory {
     private final McpInformationService mcpInformationService;
     private final UserConfigService  userConfigService;
     private final AgentProperties agentProperties;
+    private final SkillLoader skillLoader;
 
 
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
@@ -85,8 +90,20 @@ public class ChatContextFactory {
                         .id(sessionId)
                         .build());
 
-        if (mcp!=null){
-            builder.toolProvider(mcp);
+//        工具提供者：Skill 与 MCP 都是 ToolProvider。
+//        ⚠️ 必须收集到一个集合里用 toolProviders(...) 注册一次 ——
+//        连续调用 toolProvider(...) 会相互覆盖，导致只剩最后一个生效。
+        List<ToolProvider> toolProviders = new ArrayList<>();
+//        Skill：扫描本地目录（见 SkillLoader），请求未指定名称时启用全部
+        Skills skills = skillLoader.resolve(chatDTO.skills());
+        if (skills != null) {
+            toolProviders.add(skills.toolProvider());
+        }
+        if (mcp != null) {
+            toolProviders.add(mcp);
+        }
+        if (!toolProviders.isEmpty()) {
+            builder.toolProviders(toolProviders);
         }
         ChatAssistant chatAssistant = builder.build();
         return ChatContext.builder().chatAssistant(chatAssistant)

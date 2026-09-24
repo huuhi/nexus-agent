@@ -16,6 +16,7 @@ import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
+import com.huzhijian.nexusagentweb.skills.SkillLoader;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.model.catalog.ModelDescription;
@@ -44,6 +45,7 @@ public class ChatServiceImpl implements ChatService {
     private final ChatHistoryListService chatHistoryListService;
     private final ChatMessageConverter converter;
     private final AgentProperties agentProperties;
+    private final SkillLoader skillLoader;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -78,7 +80,11 @@ public class ChatServiceImpl implements ChatService {
         ChatContext chatContext = chatContextFactory.create(chatDTO, runContext);
         ChatAssistant chatAssistant = chatContext.getChatAssistant();
 
-        TokenStream tokenStream =chatAssistant.chat(converted.contents(),sessionId);
+//        技能清单必须在调用前注入系统提示词：@SystemMessage 是静态文本，
+//        而「有哪些技能」取决于 skills 目录与请求参数，只能通过 Mustache 变量传入
+        String availableSkills = skillLoader.formatForPrompt(chatDTO.skills());
+        log.debug("注入提示词的技能清单：{}", availableSkills);
+        TokenStream tokenStream = chatAssistant.chat(converted.contents(), sessionId, availableSkills);
 
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)

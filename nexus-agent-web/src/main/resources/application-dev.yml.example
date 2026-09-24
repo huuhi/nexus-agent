@@ -108,6 +108,20 @@ nexus:
       health-timeout: 5s
       # 是否缓存复用 MCP 客户端（关闭会导致每轮对话新建连接，必然泄漏）
       cache-clients: true
+    security:
+      # 是否启用登录鉴权。默认 true（安全优先）。
+      # ⚠️ 本地调试若不想带 token，请在这里（自己不提交的 application-dev.yml）显式设为 false，
+      #    不要注释掉 WebInterceptorConfig 上的 @Configuration —— 那样没有任何痕迹、容易误提交。
+      #    关闭时启动日志会打 WARN 提醒。
+      enabled: true
+    skill:
+      # 是否启用技能（本地目录扫描）
+      enabled: true
+      # 技能根目录：每个子目录一个技能，内含 SKILL.md（frontmatter 提供 name/description）
+      # 目录约定与用法见 skills/README.md
+      root-dir: skills
+      # 目录扫描结果缓存时长。新增技能最多延迟这段时间生效，不需要重启
+      refresh-interval: 60s
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

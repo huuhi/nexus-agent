@@ -33,7 +33,7 @@
 | 沙盒执行代码（**E2B 云沙盒**，非本地 Docker） | ✅ 可用（有路由 bug） | `BoxTool` + `nexus_agent_box/` |
 | RAG 知识库（pgvector） | ⚠️ 可用但有数据写入 bug | `KnowledgeBaseFileServiceImpl` |
 | 长期记忆 | ⚠️ 已降级为 SQL LIKE 模糊搜索（向量检索被注释） | `UserMemoryServiceImpl` / `MemoryTool` |
-| Skill 系统（`langchain4j-skills`） | ❌ **半成品：类已写，但没接进对话链路** | `SkillMcpInformationServiceImpl`（未被调用） |
+| Skill 系统（`langchain4j-skills`） | ✅ 可用（本地目录扫描，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `skills/` 目录 |
 | JWT 登录 / 邮件验证码 / WS 推送 / OSS 上传 | ✅ 可用 | `LoginCheckInterceptor` 等 |
 | 前端 | ❌ 无（仅 `static/showHistory.html` 调试页） | — |
 
@@ -62,7 +62,8 @@
 
 **Spring Boot starters**：`web`、`webflux`（沙盒 HTTP 调用）、`websocket`、`mail`、`data-redis`、`validation`、`actuator`、`test`、`spring-security-crypto`（加密）
 
-> ⚠️ **注意**：`langchain4j-skills` 已引入但**尚未接入业务流程**（见 §6.5）。升级 LangChain4j 时它是破坏性变更的高风险点。
+> ⚠️ **注意**：`langchain4j-skills` 已接入业务流程（见 §6.9），且版本为 `1.12.1-beta21` ——
+> beta API 属破坏性变更高风险点，升级前必读 changelog 并回归 Skill 链路。
 
 ### 2.2 Python 沙盒侧（`nexus_agent_box/`）
 
@@ -372,15 +373,6 @@ public class XxxTool implements AgentToolSet {
 ③ 提示词里如果涉及"失败禁止重试"要在 `ModelSystemContent.CHAT_PROMPT` 补充；④ 考虑外部调用超时；
 ⑤ **工具名（`@Tool(name=...)`）一旦上线不要改**，模型侧提示词与前端都可能依赖它。
 
-### 6.5 Skill 系统（未接通，重点重构项）
-
-- 依赖 `langchain4j-skills` 已引入
-- `SkillMcpInformationServiceImpl.getSkills(List<String>)` 已实现：按 `skill_mcp_information` 表查路径 → `DefaultFileSystemSkill` → `Skills.from(...)`
-- **但是 `ChatContextFactory` 从未调用它**，`ChatDTO.skills()` 被完全忽略
-- 表 `skill_mcp_information` 设计与 `开发日志.md` 4.20 的 `skill_information` 不一致，字段为：
-  `id, name, is_mcp, source_path, user_id, is_public`
-- **结论**：Skill 是"看起来有、实际没有"的功能，这是"玩具感"的主要来源之一。
-
 ### 6.6 标题生成与 WebSocket
 
 `ChatHistoryListServiceImpl.createTitle()` 标注 `@Async`（启动类已 `@EnableAsync`）：
@@ -414,8 +406,56 @@ public class XxxTool implements AgentToolSet {
 | `/execute/cmd` | POST | 执行命令，body=**`{cmd, box_id}`** |
 | `/mcp` | GET | 代理 ModelScope MCP 列表 |
 
-> ⚠️ Java `BoxTool.executeCmd` **错误地打到了 `/execute/code` 并传 `code` 字段**，
-> 导致 shell 命令被当成 Python 代码执行。正确应为 `POST /execute/cmd` + `{cmd, box_id}`。见 §12.2。
+> ✅ **P0-2 已修**：`BoxTool.executeCmd` 曾错误地打到 `/execute/code` 并传 `code` 字段
+> （shell 命令被当 Python 代码执行）。现经 `sandbox/SandboxClient` 走 `POST /execute/cmd` + `{cmd, box_id}`，
+> 已于 2026-09-23 端到端实测通过（见 §12.0）。
+
+### 6.9 Skill 系统（本地目录扫描，已接通）
+
+**方案**：决策 D3 —— Skill 是服务端本地目录，扫描 `SKILL.md` 注册，**不入库、不支持上传**
+（避开 B/S 下解压落盘与路径穿越风险）。旧的 DB 注册表方案（实体/Mapper/Service/表）已整体删除。
+
+**目录约定**（由 `langchain4j-skills` 的 `FileSystemSkillLoader` 定义，完整说明见 `skills/README.md`）：
+
+```
+skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指定（默认 "skills"）
+└── my-skill/                ← 一个子目录 = 一个技能；无 SKILL.md 的子目录被静默跳过
+    ├── SKILL.md             ← 必需；YAML frontmatter 提供 name / description
+    ├── notes.txt            ← 文档资源：被索引 → 模型可 read_resource（加载时读入内存）
+    └── scripts/xxx.py       ← ⚠️ 库**刻意排除** scripts/ 目录，read_resource 读不到
+```
+
+> ⚠️ **`scripts/` 与文档资源的分工是实测出来的**（`SkillLoaderTest` 有回归测试）：
+> 库把 `scripts/` 视为「供执行的脚本」而非「供阅读的资源」，两者不能混放。
+> 文档资源会**全量读入内存**并随缓存刷新，单个文件不宜过大。
+
+**运行链路**：
+
+```
+启动/缓存过期 → SkillLoader.scan()          （默认 60s TTL，refreshInterval 可配）
+每次对话      → SkillLoader.formatForPrompt(chatDTO.skills())
+                → 填充系统提示词 {{availableSkills}}
+                → ChatContextFactory 注册 Skills.toolProvider()（activate_skill / read_resource）
+模型按需      → activate_skill(name) 取技能正文 → 严格按步骤执行
+```
+
+**请求侧语义（`ChatDTO.skills`）**：不传或空 → 启用**全部**；传名称列表 → 只启用指定的；
+名称不存在时**只 WARN 不报错**（技能可能刚被删，不该让整次对话失败）。
+
+**实现要点与陷阱**：
+
+| 事项 | 说明 |
+|---|---|
+| 技能清单必须走 Mustache 变量 | `@SystemMessage` 是静态文本，而「有哪些技能」是运行期才知道的 → `ChatAssistant.chat(..., @V("availableSkills") String)` 显式传入。不注入模型就不知道能调 `activate_skill` |
+| **Skill 与 MCP 必须合并注册** | 两者都是 `ToolProvider`，连续调 `builder.toolProvider(a)` / `toolProvider(b)` 会**互相覆盖**，只剩最后一个生效。必须收集为 `List` 后一次 `toolProviders(list)`（`ChatContextFactory` 已按此实现） |
+| 扫描失败不阻塞启动 | 目录不存在/读失败都降级为「无技能」并打日志，不让应用起不来 |
+| 缓存的代价 | 新增技能最多延迟 `refreshInterval` 生效；`SkillLoader.reload()` 可手动刷新；设 `0s` 则每次请求重扫 |
+| 路径穿越 | 库按**预索引资源清单**匹配名称，不做运行时拼路径 → 传 `../../etc/passwd` 只会匹配失败。详见 `skills/README.md` 的安全说明 |
+
+**配置**：`nexus.agent.skill.enabled` / `root-dir` / `refresh-interval`，见 §15。
+**冒烟**：仓库内置 `skills/verify-skill`（问「今天的暗号是什么」应回答含 `BANANA-7731`），
+用于快速验证「扫描 → 提示词注入 → activate_skill → 按步骤作答」整条链路。
+**将来支持用户自定义**：在 `SkillLoader.scan()` 里追加扫描 `<root>/users/<userId>` 即可，其余逻辑无需改动。
 
 ---
 
@@ -542,12 +582,12 @@ public class XxxTool implements AgentToolSet {
 | 2026-09-23 | 决策落定：D1 保持 E2B 沙盒、D3 Skill 用本地目录扫描 | §14 | D2/D4 仍待定 |
 | 2026-09-23 | **执行 P0 批次（15 项）**：删泄漏类、修 `execute_cmd` 路由、修向量写入错位、修越权、密钥出 URL、异常兜底、版本统一、加 Maven Wrapper、建 `docs/sql` | 见 §12.0 明细表 | 编译与测试编译均 BUILD SUCCESS |
 | 2026-09-23 | `CLAUDE.md` 停维护，改为指向本文件 + 列出原有错误说法 | `CLAUDE.md` | 避免两份文档互相打架 |
-| 2026-09-23 | 新增 §15 文件与产物能力设计；新增决策 D5 | §15、§14 | 回答产物交付与本地文件空间可行性 |
+| 2026-09-23 | 新增 §16 文件与产物能力设计；新增决策 D5 | §16、§14 | 回答产物交付与本地文件空间可行性 |
 | 2026-09-23 | **接口破坏性变更**：`GET /api/chat/model` → `POST /api/chat/model` | `ChatController`、`ModelListDTO` | 安全修复（密钥不再进 URL），前端需同步 |
 | 2026-09-23 | **数据库基线重新设计**（v2.0）：12 表补齐主键/4 外键/9 索引、`users.email` 唯一、`vector(1024)` + HNSW、重建 `sys_file`、删 2 张死表 | `docs/sql/001_baseline.sql`、`docs/sql/README.md` | 库曾被清空，旧数据确认可弃。详见 §9 |
 | 2026-09-23 | 修 `KnowledgeBaseFileMapper.xml` 的 `fail_name` 笔误 → `file_name` | `KnowledgeBaseFileMapper.xml` | 知识库入库/详情查询原本必报错 |
 | 2026-09-23 | `User` 实体补 `@TableId(type = IdType.AUTO)` | `domain/User.java` | 原先 `getById`/`updateById` 不可用、`save()` 后取不到 id |
-| 2026-09-23 | §9 全面重写（数据库章节），并同步 §15 相关说明 | `AGENTS.md` | — |
+| 2026-09-23 | §9 全面重写（数据库章节），并同步 §16 相关说明 | `AGENTS.md` | — |
 | 2026-09-23 | ✅ 基线在目标库执行验证通过（0 错误 / 12 表，含主键·外键·索引全部生效） | `docs/sql/README.md` | 复核查询已入库 |
 | 2026-09-23 | **P1-12 完成**：补根 `README.md` 快速开始 + 配置模板 `application-dev.yml.example` / `nexus_agent_box/.env.example`，并填充空白的 `nexus_agent_box/README.md` | `README.md`、`nexus_agent_box/README.md`、两个 `.example` | 修复根因 R2「没有开箱路径」：dev 配置被 gitignore 导致新环境必然起不来 |
 | 2026-09-23 | **端到端实测通过**并修 2 个运行期 bug（`select *` 位置错配、无效 token 被放行） | `ChatMemoryMapper.xml`、`LoginCheckInterceptor.java` | 应用真实启动 + 对话 + 会话读写 + 401 鉴权全部验证；详见 §12.0 与递归计划 M1 |
@@ -555,6 +595,8 @@ public class XxxTool implements AgentToolSet {
 | 2026-09-23 | **沙盒链路实测通过**（M1#3 验收完成）；并修正 §6.2 的 SSE 事件名（文档原来写错） | `AGENTS.md` | AI 成功调用 `create_box` → `execute_cmd` → 拿到真实 stdout；工具事件名实为全大写 |
 | 2026-09-23 | **P1-4 完成**：引入 `ToolRegistry`，工具注册改为声明式；`ChatContextFactory` 不再认识任何具体工具 | 新增 `tools/registry/`3 个类；4 个工具类实现 `AgentToolSet`；`AGENTS.md §6.4` 重写 | 实测：`enableRag` 开关由 `RagTool.enabled()` 决定，日志逐项打印启用/跳过 |
 | 2026-09-23 | **P1 批次完成**：P1-6/7/8/9/11/13 六项一次性做完 | 新增 `sandbox/`、`mcp/`、`properties/AgentProperties`、3 个单测类；重写 `SafeExecuteToolHandler`、`PgChatMemoryStore`、`BoxTool`；6 个旧测试改为人工测试 | 详见 §6.5（工具错误契约）与 §15（运行时配置）；实测 4 组端到端验证通过 |
+| 2026-09-24 | **P2-1 + P2-2 完成**：Skill 系统落地（本地目录扫描），`ChatDTO.skills` 真实生效；旧 DB 注册表方案整体删除 | 新增 `skills/SkillLoader.java`、`skills/README.md`、`SkillLoaderTest.java`（11 个单测）；删除 `SkillMcpInformation` 实体/Mapper/XML/Service/Impl；改造 `ChatContextFactory`（与 MCP 合并 `toolProviders`）、`ChatAssistant`（注入 `{{availableSkills}}`）、`ChatServiceImpl`、`ModelSystemContent`；新增 `docs/sql/002_drop_skill_mcp_information.sql` | 新增 §6.9；实测发现库**刻意排除 `scripts/`** 目录，已写入文档与回归测试；顺带把鉴权改为 `nexus.agent.security.enabled` 开关 + 启动 WARN 提示 |
+| 2026-09-24 | `AGENTS.md` 结构修复：消除两组重号章节（两个 §6.5、两个 §15） | `AGENTS.md` | Skill 系统改为 §6.9；「文件与产物能力」改为 §16（原与「运行时配置」重号）；同步全部交叉引用 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -617,7 +659,7 @@ public class XxxTool implements AgentToolSet {
 | **SSE 事件名大小写不统一** | 📝 记录 | `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写）。按 `event: tool_execution` 监听会收不到工具事件。属接口契约变更，列入 P2-5 统一。详见 §6.2 |
 | **知识库入库强制要求用户自带 embedding 配置** | 📝 记录 | `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索时用的是**系统默认** EmbeddingModel。两者口径不一致 → 没配过 API Key 的用户建知识库必然失败，尽管系统已配好向量模型。建议 P1-8/P2-7 一起统一为「用户配置优先、系统默认兜底」 |
 | **`User` 实体缺 `@TableId`** | ✅ 已修 | 补 `@TableId(type = IdType.AUTO)`。原先 `getById`/`updateById` 会失败，且 `save()` 后取不到 id（`register` 要用它签 JWT） |
-| **`skill_mcp_information` 表在库中不存在** | ✅ 已建表 | 按实体补表，使该代码路径不至于是坏的。但功能本身仍未接通（§6.5），且 D3 定为本地目录扫描，P2-1 可能再调整 |
+| **`skill_mcp_information` 表在库中不存在** | ✅ 已废弃（P2-1） | 原按实体补表使其路径不坏；D3 定为本地目录扫描后，实体/Mapper/Service **整体删除**，表由 `docs/sql/002_drop_skill_mcp_information.sql` 删除。Skill 改为 `skills/` 目录 + `SkillLoader`（§6.9） |
 | **库中有表但代码无用**：`skill_information`、`user_skill` | ✅ 已删 | Skill 功能的历史设计残留（`开发日志.md` 4.20），代码中已无任何实体或 Mapper 使用 |
 | `knowledge_embedding.embedding` 未限定维度 | ✅ 已修 | 原为无维度 `vector`，而 pgvector **无法在无维度列上建索引** → RAG 全表扫描。已改为 `vector(1024)` 并建 HNSW 索引 |
 | **`user_memory.source` 是 `char(32)` 装不下 UUID** | ✅ 已修 | `saveLongMemory` 会写入 36 字符的会话 ID，原 `char(32)` 插入即报 `value too long`。已改 `varchar(64)` |
@@ -689,7 +731,8 @@ public class XxxTool implements AgentToolSet {
 
 ### 12.5 半成品 / 死代码
 
-22. `SkillMcpInformationService` + 实体 + Mapper + 表：**全链路无人调用**（`ChatDTO.skills` 被忽略）。
+22. ~~`SkillMcpInformationService` + 实体 + Mapper + 表：全链路无人调用（`ChatDTO.skills` 被忽略）。~~
+    ✅ **已消除（P2-1）**：旧方案整体删除，改本地目录扫描并接进对话链路，`ChatDTO.skills` 已真实生效。
 23. `RagTool.java`：与 `MemoryTool.ragSearch` 重复，未注册。
 24. `nexus-agent-web/src/main/resources/static/showHistory.html`：调试遗留页。
 25. `application-prod.yml` 里 `enable_thinking: true` 全局开启思考，会显著增加延迟与成本。
@@ -728,9 +771,9 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | D1 | 沙盒方案 | ✅ **保持 E2B 云沙盒** | 改动最小。**代价：必须补 P1-7 `SandboxSession` 做自动回收**，否则沙盒泄漏会持续产生费用 |
 | D3 | Skill 落地方案 | ✅ **本地目录扫描**（服务端内置 skill 目录，扫描 `SKILL.md` 注册） | 避开 B/S 下上传 zip 的解压落盘与路径穿越安全问题 |
 
-> ⚠️ D3 定了之后：**`ChatDTO.skills` 必须被真正接进 `ChatContextFactory`**，
-> 不能再出现"接口有参数、链路不使用"的假能力。若最终不做，就把 `skills` 字段和
-> `SkillMcpInformation*` 一并删掉，不要留着当装饰。
+> ✅ **已兑现（P2-1，2026-09-23）**：`ChatDTO.skills` 已真正接进 `ChatContextFactory`
+> （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{availableSkills}}`）。
+> 旧 DB 注册表方案与 `SkillMcpInformation*` 已一并删除，未留装饰。落地方案与实现要点见 **§6.9**。
 
 ### 14.2 仍待定
 
@@ -738,7 +781,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 |---|---|---|---|
 | D2 | 前端是否要做？ | 做（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐）/ 只做 API + SDK 不碰 UI | 整个 P3 阶段 |
 | D4 | 长期记忆要不要恢复向量检索 | 恢复 pgvector / 保持 SQL LIKE / 换成全文检索 | `UserMemoryServiceImpl`、`user_memory` 表 |
-| D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | P2-10、P2-11，以及是否会推翻 D1 的 E2B 选择。**详见 §15** |
+| D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | P2-10、P2-11，以及是否会推翻 D1 的 E2B 选择。**详见 §16** |
 
 > D2 建议**等 P1 结束再决定**：先把后端契约（SSE 事件、能力清单）稳定下来，前端做出来才有意义。
 
@@ -759,26 +802,36 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.sandbox.sweep-interval` | `60000` | 回收任务间隔（毫秒或 ISO-8601） |
 | `nexus.agent.mcp.health-timeout` | `5s` | MCP 客户端健康检查超时 |
 | `nexus.agent.mcp.cache-clients` | `true` | 是否缓存复用 MCP 客户端。关闭会导致每轮对话新建连接（泄漏） |
+| `nexus.agent.skill.enabled` | `true` | 是否启用 Skill 能力。关闭后忽略请求里的 `skills` 参数 |
+| `nexus.agent.skill.root-dir` | `skills` | Skill 根目录（相对应用工作目录，支持 `~`）。目录约定见 §6.9 与 `skills/README.md` |
+| `nexus.agent.skill.refresh-interval` | `60s` | 目录扫描缓存时长。新增技能最多延迟这段时间生效，**无需重启**；设 `0s` 每次请求重扫 |
+| `nexus.agent.security.enabled` | `true` | **是否启用登录鉴权**（拦截器 + 配置类共用此开关）。关闭时启动打 WARN、所有接口免 token。**只能本地开发用，生产必须 true** |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，
 > 表现为模型「失忆」并只回一句寒暄。实测 60 会出问题，≥600 正常。
 
+> ⚠️ **鉴权的开关方式（P1 附带改造）**：`WebInterceptorConfig` 与 `LoginCheckInterceptor`
+> 都加了 `@ConditionalOnProperty(nexus.agent.security.enabled, matchIfMissing = true)` ——
+> 默认开启。要本地**关掉鉴权**请在**自己不提交的** `application-dev.yml` 里显式设 `false`，
+> **不要注释掉 `@Configuration`**（那样没有任何痕迹、容易误提交、也看不出当前状态）。
+> `SecurityModeReporter` 会在启动时把实际状态打进日志（关闭时打 WARN 横幅）。
+
 ---
 
-## 15. 文件与产物能力（设计说明）
+## 16. 文件与产物能力（设计说明）
 
 > 回答"能不能像桌面版 AI 工具那样，把文件产物交给用户 / 访问并编辑本地文件空间"。
 > 对应计划：`重构计划.md` P2-10 / P2-11，决策 D5。
 
-### 15.1 结论先行
+### 16.1 结论先行
 
 | 能力 | 可行性 | 现状基础 | 结论 |
 |---|---|---|---|
 | **A. 产物交付**（AI 生成文件 → 交给用户下载） | ✅ 高 | 已有约 80% 链路 | 做，属 P2，**投入中等** |
 | **B. 访问/编辑本地文件空间** | ⚠️ 取决于产品形态 | 无 | 需先定形态（决策 D5），四条路各有代价 |
 
-### 15.2 能力 A：产物交付（已有基础，缺口明确）
+### 16.2 能力 A：产物交付（已有基础，缺口明确）
 
 **现成链路**（这条已经通了）：
 
@@ -801,7 +854,7 @@ AI 在 E2B 沙盒里写文件
 
 **要点**：产物交付本质上是"**给 AI 一个 `publish_artifact` 工具 + 给前端一个 `artifact` 事件**"，不需要动 Agent 核心。这是投入产出比最高的一条能力线。
 
-### 15.3 能力 B：本地文件空间（四条路，必须先选形态）
+### 16.3 能力 B：本地文件空间（四条路，必须先选形态）
 
 **根本约束**：浏览器**不能**直接读写本地文件系统。桌面版 AI 工具能做，是因为它是原生/Electron 客户端。
 本项目是 B/S 架构，所以只能走下面四条路之一：
@@ -813,7 +866,7 @@ AI 在 E2B 沙盒里写文件
 | **(c) 虚拟工作区（服务端目录 + OSS）** | 跨平台无摩擦，但**不是真本地文件**，需手动导入导出 | 最低：复用现有 OSS + `sys_file` + 沙盒 | ⭐ **推荐先做这个** |
 | **(d) 服务端挂载本机目录** | AI 直接读写你指定的本机目录，最爽 | 仅自托管可行；需要容器隔离与权限控制；**与决策 D1 冲突**（见下） | 自托管/单机部署 |
 
-### 15.4 ⚠️ D1 选择 E2B 的一个重要后果
+### 16.4 ⚠️ D1 选择 E2B 的一个重要后果
 
 决策 D1 已经定为**保持 E2B 云沙盒**。需要明确它的含义：
 
@@ -824,7 +877,7 @@ AI 在 E2B 沙盒里写文件
 **方案 (b) 本地守护进程** 或 **(d) 自建 Docker 沙盒 + 挂载卷**，
 而不是继续在 E2B 上做优化。这一点建议在 D5 里一次性想清楚，避免 P2 做完才发现方向不对。
 
-### 15.5 推荐路径
+### 16.5 推荐路径
 
 1. **先做 (c) 虚拟工作区**（P2-10）。理由：它顺带把"会话中的文件引用 + 产物回传"这套**协议**定义出来，
    而这套协议是四条路**共用的**。先把协议立起来，再决定文件从哪来/去哪。

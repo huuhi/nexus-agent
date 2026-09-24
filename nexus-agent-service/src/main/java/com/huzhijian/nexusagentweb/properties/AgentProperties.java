@@ -28,6 +28,8 @@ public class AgentProperties {
     private Memory memory = new Memory();
     private Sandbox sandbox = new Sandbox();
     private Mcp mcp = new Mcp();
+    private Security security = new Security();
+    private Skill skill = new Skill();
 
     @Data
     public static class Sse {
@@ -85,5 +87,49 @@ public class AgentProperties {
 
         /** 连接后是否缓存复用（避免每次对话都新建客户端导致连接泄漏） */
         private boolean cacheClients = true;
+    }
+
+    @Data
+    public static class Security {
+        /**
+         * 是否启用登录鉴权（LoginCheckInterceptor）。
+         * <p>
+         * ⚠️ **默认 true，安全优先，不要为了本地方便改成默认 false。**
+         * 本地调试若确实不想带 token，请在**自己不提交的** application-dev.yml 里显式关闭：
+         * <pre>
+         * nexus:
+         *   agent:
+         *     security:
+         *       enabled: false
+         * </pre>
+         * 关闭时启动日志会打 WARN 提醒，避免出现「以为有鉴权、其实没有」的情况。
+         * <p>
+         * 历史做法是直接把 {@code @Configuration} 注释掉 —— 那样完全没有痕迹，
+         * 容易被误提交，也看不出当前到底是什么状态。
+         */
+        private boolean enabled = true;
+    }
+
+    @Data
+    public static class Skill {
+        /**
+         * 是否启用 Skill 能力。关闭后忽略请求里的 skills 参数。
+         */
+        private boolean enabled = true;
+
+        /**
+         * Skill 根目录。每个 skill 是一个子目录，内含 SKILL.md
+         * （YAML frontmatter 提供 name / description），与 Claude Code 的约定一致。
+         * <p>
+         * 默认 {@code skills}（相对于应用工作目录）。支持 ~ 与相对路径。
+         */
+        private String rootDir = "skills";
+
+        /**
+         * 目录扫描结果缓存多久。设为 0 表示每次请求都重新扫描。
+         * <p>
+         * 有缓存时，新增 skill 目录最多延迟这段时间生效，不需要重启应用。
+         */
+        private Duration refreshInterval = Duration.ofSeconds(60);
     }
 }
