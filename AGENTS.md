@@ -290,8 +290,9 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 | **`TOOL_EXECUTION_RESULT`** | `MessageVO{type: TOOL_EXECUTION_RESULT, toolResultVO:{id,toolName,result,isError}}` | 工具结果（**全大写**） |
 | `session_id` | `sessionId` | 仅新会话（小写） |
 | `finish` | `DONE` | 结束（小写） |
+| `error` | `{type: ERROR, runId, message, hint}` | **运行失败**（小写，P2-6 新增）。`runId` 是 trace_id，可直接在服务端日志里 grep `RUN runId=<值>` 定位本次运行；在此之前出错只是连接断掉，前端拿不到任何线索 |
 
-> ⚠️ **事件名大小写不统一，前端容易踩坑。** 实测确认：`message` / `session_id` / `finish` 是
+> ⚠️ **事件名大小写不统一，前端容易踩坑。** 实测确认：`message` / `session_id` / `finish` / `error` 是
 > 代码里写的小写字面量，而两个工具事件用的是 `MessageType` 枚举值（**全大写**）。
 > 按 `event: tool_execution` 监听会永远收不到工具事件。
 > 成因见 `SseResponseConverter`：前者写死 `"message"`，后者写 `MessageType.X.getValue()`。
@@ -525,6 +526,47 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 
 **配置**：`nexus.agent.tools.*`（见 §15）。设 `duplicate-threshold: 0` 即关闭该治理。
 
+### 6.12 可观测性：每次 Run 的 token / 费用 / 工具序列（P2-6）
+
+**解决什么**（根因 R6「不可观测」）：原来一次对话花了多少 token、调了哪些工具、耗时多久、
+用了哪个模型，全都查不到 —— 用户只能凭感觉猜成本，出问题也没有 trace_id 可追。
+
+**产出**：每次 Run 结束输出一行结构化日志（`RunMetricsReporter`）：
+
+```
+RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7.6s \
+    tokens=1234/567/1801(in/out/total) fee=¥0.0071 tools=3 seq=[create_box,execute_cmd,delete_box] result=OK
+```
+
+失败 Run 用 **WARN** 输出（`result=ERROR err=XXX`），便于在日志里一眼筛出来。
+
+**数据来源**（全部在 `ChatServiceImpl` 的同一次流式订阅里，不需要跨层传递）：
+
+| 字段 | 来源 |
+|---|---|
+| `model` / `tokens` | `onCompleteResponse(ChatResponse)` → `modelName()` / `tokenUsage()` |
+| `seq` / `tools` | `onToolExecuted(ToolExecution)` → 工具名 + `hasFailed()` |
+| `cost` | `RunMetrics` 自己记的开始时间 |
+| `result` / `err` | `onError` |
+| `runId` | `ChatServiceImpl` 每次 Run 生成 16 位十六进制串（= trace_id） |
+
+**设计要点**：
+
+- **用英文键值对**（`RUN runId=... tokens=...`）而不是中文：日志要被 grep / awk / 采集器解析，
+  中文键做分隔符很别扭。字段顺序固定，便于 `cut`/正则提取。
+- **费用只在配了单价时显示**：各厂商价格经常变动，写死必然过时并给出**错误金额**，
+  所以价格表由配置提供（`nexus.agent.observability.model-prices`，支持最长前缀匹配）；
+  没配就显示 `fee=unpriced` —— 明确表示"不知道"，而不是显示 ¥0。
+- **token 缺失显示 `unavailable`**：不是所有厂商都返回用量，缺了就说缺了，不编造 0
+  （内部用 -1 表示缺失，避免与真实的 0 混淆）。
+- **工具序列有上限**（30 步，超出显示 `...(+N)`）：长 Run 几十次工具调用会把日志撑爆。
+- **不改主流程语义**：只在既有回调里累加、在结尾输出一行；`observability.enabled=false` 即完全关闭。
+- 顺带补齐 **SSE `error` 事件带 trace_id**（P1-9 的遗留项）：见 §6.2。
+
+**为什么先落日志而不是落库**：日志已满足"查得到、能 grep、能统计"，且不引入表结构变更。
+`RunMetricsReporter` 已把「算」（`estimateFee` 纯函数）与「写」分开，
+将来要接统计面板时加一个落库实现即可，不必改动本类。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -667,6 +709,7 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 | 2026-09-24 | `AGENTS.md` 结构修复：消除两组重号章节（两个 §6.5、两个 §15） | `AGENTS.md` | Skill 系统改为 §6.9；「文件与产物能力」改为 §16（原与「运行时配置」重号）；同步全部交叉引用 |
 | 2026-09-24 | **P1-10 完成**：启动配置自检（一次性列出缺失项而非"一次报一个"）+ 消除模型静默回退 | 新增 `config/StartupConfigValidator.java`、`StartupConfigValidatorTest.java`（8 个单测）；`ChatContextFactory` 三处回退加日志；`AgentProperties` 加 `Startup.failFast`；两个 yml 补 `startup` 段 | 新增 §6.10；必需项（datasource/对话模型 Key/API_KEY_SECRET）默认 fail-fast，建议项只 WARN 并写明"哪项能力不可用"；README 排查表同步 |
 | 2026-09-24 | **P2-4 完成**：工具治理（重复调用拦截 + HTTP 响应超时） | 新增 `tools/ToolCallGuard.java`、`ToolCallGuardTest.java`（11 个单测）；13 个 `@Tool` 方法接入治理（其中 4 个补了 `@ToolMemoryId` 参数）；`WebClientConfig` 加 `responseTimeout`；`AgentProperties` 加 `Tools`；两个 yml 补 `tools` 段；`§6.4` 修正过时示例并加「新增工具检查清单」 | 新增 §6.11；`tools.http-timeout` 默认 100s（< SSE 120s）；`duplicate-threshold` 默认 2（第 3 次起拦） |
+| 2026-09-24 | **P2-6 完成**：可观测性（每次 Run 一行结构化验算日志）+ **SSE 新增 `error` 事件带 trace_id** | 新增 `observability/RunMetrics.java`、`RunMetricsReporter.java`、`RunMetricsTest.java`（11 个单测）；`ChatServiceImpl` 生成 runId 并挂 `onToolExecuted`/`onCompleteResponse`/`onError`；`SseResponseConverter` 加 runId 与 error 事件；`MessageType` 加 `ERROR`；`AgentProperties` 加 `Observability`；两个 yml 补 `observability` 段 | 新增 §6.12；§6.2 契约表加 `error` 行（补齐 P1-9 遗留的「SSE 错误事件带 trace_id」）；费用只在配了单价时显示 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -880,6 +923,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.tools.http-timeout` | `100s` | 工具 HTTP 调用的响应超时。**刻意小于 `sse.timeout`**，以便先返回结构化 `TIMEOUT` 而不是掐断整条流（见 §6.11） |
 | `nexus.agent.tools.duplicate-window` | `60s` | 重复调用判定窗口（见 §6.11） |
 | `nexus.agent.tools.duplicate-threshold` | `2` | 窗口内允许的相同调用次数，超过即拦截并回灌提示；设 `0` 关闭治理 |
+| `nexus.agent.observability.enabled` | `true` | 是否输出每次 Run 的汇总日志（见 §6.12） |
+| `nexus.agent.observability.model-prices.<模型名或前缀>.input/.output` | 无 | 每 100 万 token 的单价（元）。**故意无默认值**：价格会变，写死必然过时；未配置的模型显示 `fee=unpriced` |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

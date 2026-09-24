@@ -117,3 +117,17 @@ nexus:
       # 返回 DUPLICATE_CALL 结构化结果 + 自纠提示。设为 0 关闭该治理。
       duplicate-window: 60s
       duplicate-threshold: 2
+    observability:
+      # 是否输出每次运行的汇总日志：
+      #   RUN runId=... session=... model=... cost=7.6s tokens=1234/567/1801(in/out/total)
+      #       fee=¥0.0071 tools=3 seq=[create_box,execute_cmd] result=OK
+      enabled: true
+      # 模型单价（每 100 万 token，单位：元）。**故意不给默认值** —— 各厂商价格经常变动，
+      # 写死在代码里必然过时并给出错误金额；没配的模型汇总里显示 fee=unpriced（明确表示"不知道"）。
+      # 匹配规则：先精确匹配模型名，再按最长前缀匹配（配 deepseek 即可覆盖 deepseek-v4-flash）。
+      # 示例（价格请以厂商官网为准）：
+      # model-prices:
+      #   deepseek:
+      #     input: 2.0
+      #     output: 8.0
+      model-prices: {}

@@ -12,14 +12,21 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author 胡志坚
  * @version 1.0
  * 创造日期 2026/4/26
- * 说明:
+ * 说明: SSE 输出。
+ * <p>
+ * 事件契约见 {@code AGENTS.md §6.2}。P2-6 起新增 {@code error} 事件：
+ * 出错时先把它推给前端（带 {@code runId} = trace_id）再结束连接 ——
+ * 之前出错只调 {@code completeWithError}，前端**只看到连接断了**，
+ * 拿不到任何线索，也没法去日志里定位（现在可以直接用 runId 去 grep）。
  */
 
 @Slf4j
@@ -32,9 +39,11 @@ public class SseResponseConverter {
     private final String sessionId;
     private final Long userId;
     private final String message;
+    /** 本次运行的 trace_id，用于把前端错误与后端日志对上 */
+    private final String runId;
 
     @Builder
-    public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService, String sessionId, Long userId, String message) {
+    public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService, String sessionId, Long userId, String message, String runId) {
         this.emitter = sseEmitter;
         this.isNewSession = isNewSession;
         this.isFinished = new AtomicBoolean(false);
@@ -43,6 +52,7 @@ public class SseResponseConverter {
         this.sessionId = sessionId;
         this.userId = userId;
         this.message = message;
+        this.runId = runId;
     }
 
     public void writeThinking(PartialThinking thinking) {
@@ -126,8 +136,38 @@ public class SseResponseConverter {
     }
 
     public void onError(Throwable error) {
-        log.error("Chat stream error", error);
+        log.error("Chat stream error runId={} session={}", runId, sessionId, error);
+        sendErrorEvent(error);
         completeWithError(error);
+    }
+
+    /**
+     * 出错时把 trace_id 推给前端。
+     * <p>
+     * 只推「对用户有意义」的信息：错误类型 + 简短原因 + runId；
+     * 不推堆栈（前端读不懂，也可能泄露内部细节），定位靠 runId 去查服务端日志。
+     */
+    private void sendErrorEvent(Throwable error) {
+        if (isFinished.get()) {
+            return;
+        }
+        String reason = error == null || error.getMessage() == null
+                ? (error == null ? "未知错误" : error.getClass().getSimpleName())
+                : error.getMessage().strip().replaceAll("\\s+", " ");
+        if (reason.length() > 200) {
+            reason = reason.substring(0, 200) + "...";
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", MessageType.ERROR.getValue());
+        payload.put("runId", runId);
+        payload.put("message", reason);
+        payload.put("hint", "请把 runId 提供给开发者，可在服务端日志中检索 \"RUN runId=" + runId + "\" 定位本次运行");
+        try {
+            emitter.send(SseEmitter.event().name("error").data(payload));
+        } catch (Exception e) {
+            // 发送失败不能再抛：连接可能已经断了，这里只记日志
+            log.debug("推送 error 事件失败（连接可能已断开）：runId={} {}", runId, e.getMessage());
+        }
     }
 
     /**

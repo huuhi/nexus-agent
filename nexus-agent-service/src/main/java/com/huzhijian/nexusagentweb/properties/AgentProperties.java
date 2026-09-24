@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * @author 胡志坚
@@ -32,6 +34,7 @@ public class AgentProperties {
     private Skill skill = new Skill();
     private Startup startup = new Startup();
     private Tools tools = new Tools();
+    private Observability observability = new Observability();
 
     @Data
     public static class Sse {
@@ -175,5 +178,35 @@ public class AgentProperties {
          * 但会误伤「失败后按相同参数重试一次」的合理场景。
          */
         private int duplicateThreshold = 2;
+    }
+
+    @Data
+    public static class Observability {
+        /**
+         * 是否输出每次 Run 的指标汇总日志（`RUN runId=... tokens=... fee=... tools=...`）。
+         * <p>
+         * 默认开启：它是回答「刚才这次对话花了多少钱/调了什么工具」的唯一途径。
+         * 关掉后不产生任何汇总日志（不影响对话本身）。
+         */
+        private boolean enabled = true;
+
+        /**
+         * 模型单价表：{@code key = 模型名或前缀 → 每 100 万 token 的单价（元）}。
+         * <p>
+         * **故意不给默认值**：各厂商价格经常变动，写死在代码里必然过时并给出错误金额。
+         * 没配的模型汇总里显示 {@code fee=unpriced}（明确表示"不知道"，而不是显示 ¥0）。
+         * <p>
+         * 例：{@code deepseek: {input: 2, output: 8}} 可覆盖 {@code deepseek-v4-flash} 等
+         * 以该前缀开头的模型（最长前缀优先）。
+         */
+        private Map<String, Price> modelPrices = new LinkedHashMap<>();
+    }
+
+    @Data
+    public static class Price {
+        /** 每 100 万输入 token 单价（元） */
+        private double input;
+        /** 每 100 万输出 token 单价（元） */
+        private double output;
     }
 }

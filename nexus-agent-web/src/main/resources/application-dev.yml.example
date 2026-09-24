@@ -137,6 +137,16 @@ nexus:
       # 设为 0 关闭该治理。
       duplicate-window: 60s
       duplicate-threshold: 2
+    observability:
+      # 是否输出每次运行的汇总日志（RUN runId=... tokens=... fee=... tools=...）
+      enabled: true
+      # 模型单价（每 100 万 token，单位：元）；没配的模型显示 fee=unpriced。
+      # 支持最长前缀匹配（配 deepseek 可覆盖 deepseek-v4-flash）
+      # model-prices:
+      #   deepseek:
+      #     input: 2.0
+      #     output: 8.0
+      model-prices: {}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

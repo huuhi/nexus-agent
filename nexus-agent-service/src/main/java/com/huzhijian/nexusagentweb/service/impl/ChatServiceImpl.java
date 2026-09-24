@@ -12,6 +12,8 @@ import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
+import com.huzhijian.nexusagentweb.observability.RunMetrics;
+import com.huzhijian.nexusagentweb.observability.RunMetricsReporter;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
@@ -46,6 +48,7 @@ public class ChatServiceImpl implements ChatService {
     private final ChatMessageConverter converter;
     private final AgentProperties agentProperties;
     private final SkillLoader skillLoader;
+    private final RunMetricsReporter runMetricsReporter;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -76,6 +79,11 @@ public class ChatServiceImpl implements ChatService {
         String sessionId = isNewSession ? UUID.randomUUID().toString() : incomingSessionId;
         RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata());
 
+//        trace_id：贯穿一次 Run 的日志与 SSE 事件，把「用户看到的报错」与「服务端日志」对上
+        String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+//        本次运行的指标累加器（token / 工具调用 / 耗时），结尾汇总成一行 RUN 日志（见 §6.12）
+        RunMetrics metrics = new RunMetrics(runId, sessionId, userId);
+
 //        3) 构建对话上下文（内部会把 runContext 绑定到记忆存储上）
         ChatContext chatContext = chatContextFactory.create(chatDTO, runContext);
         ChatAssistant chatAssistant = chatContext.getChatAssistant();
@@ -89,6 +97,7 @@ public class ChatServiceImpl implements ChatService {
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)
                 .isNewSession(isNewSession)
+                .runId(runId)
                 .message(converter.extractFirstText(messages)).userId(userId)
                 .sseEmitter(sseEmitter)
                 .build();
@@ -102,11 +111,22 @@ public class ChatServiceImpl implements ChatService {
                 .onPartialToolCallWithContext(writer::writeToolRequestWithStream)
                 .onToolExecuted(consumer->{
                     ToolExecutionRequest request = consumer.request();
+//                    记录工具调用序列（可观测性）：这是回答「这次对话调了什么工具」的唯一数据源
+                    metrics.recordToolExecuted(request.name(), consumer.hasFailed());
 //                    writer.writeToolRequest(request.id(),request.name(),request.arguments());
                     writer.writeToolResult(request,consumer.hasFailed(),consumer.result());
                 })
-                .onCompleteResponse(response -> writer.finish())
-                .onError(writer::onError)
+                .onCompleteResponse(response -> {
+//                    token 用量与真实模型名只有在这里拿得到（流式响应的最后一次回调）
+                    metrics.recordResponse(response);
+                    runMetricsReporter.report(metrics);
+                    writer.finish();
+                })
+                .onError(error -> {
+                    metrics.recordError(error);
+                    runMetricsReporter.report(metrics);
+                    writer.onError(error);
+                })
                 .start();
         return sseEmitter;
     }
