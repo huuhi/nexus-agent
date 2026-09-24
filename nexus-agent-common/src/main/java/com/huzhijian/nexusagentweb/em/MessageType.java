@@ -17,6 +17,8 @@ public enum MessageType {
     TOOL_EXECUTION_RESULT("TOOL_EXECUTION_RESULT"),
     /** 运行失败：SSE 的 error 事件带 trace_id（runId），便于把前端看到的错误与服务端日志对上 */
     ERROR("ERROR"),
+    /** AI 产出的交付物（P2-10）：前端据此渲染"下载卡片" */
+    ARTIFACT("ARTIFACT"),
     CUSTOM("CUSTOM");
     @Getter
     private final String value;

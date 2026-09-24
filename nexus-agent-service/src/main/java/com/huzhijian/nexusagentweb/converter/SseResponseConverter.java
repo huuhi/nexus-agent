@@ -135,8 +135,32 @@ public class SseResponseConverter {
         }
     }
 
-    public void onError(Throwable error) {
-        log.error("Chat stream error runId={} session={}", runId, sessionId, error);
+    /**
+     * 推送「交付物」事件（P2-10）：前端据此渲染下载卡片。
+     * <p>
+     * 事件名 {@code artifact}（小写，与 message/session_id/finish/error 一族一致），
+     * data 为 {@code MessageVO{type:ARTIFACT, artifact:{id,name,url,size,extension}}}。
+     * 在工具执行后由 {@code ChatServiceImpl} 调用 —— 那时产物已上传 OSS 并落库，
+     * {@code id} 就是 {@code sys_file} 主键（前端可用它去重与追溯）。
+     */
+    public void writeArtifact(Map<String, Object> artifact) {
+        if (isFinished.get()) {
+            return;
+        }
+        MessageVO msg = MessageVO.builder()
+                .type(MessageType.ARTIFACT)
+                .artifact(artifact)
+                .build();
+        try {
+            emitter.send(SseEmitter.event()
+                    .name(MessageType.ARTIFACT.getValue())
+                    .data(msg));
+        } catch (IOException e) {
+            completeWithError(e);
+        }
+    }
+
+    public void onError(Throwable error) {        log.error("Chat stream error runId={} session={}", runId, sessionId, error);
         sendErrorEvent(error);
         completeWithError(error);
     }

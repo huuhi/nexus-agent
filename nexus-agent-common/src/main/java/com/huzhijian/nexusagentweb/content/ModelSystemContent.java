@@ -24,6 +24,8 @@ public class ModelSystemContent {
             技能里若提到资源文件，可用 read_resource 读取。
             若某项能力被标注为「不可用」，不要尝试调用它，也不要反复重试；
             如实告知用户该能力当前不可用即可。
+            如果你在沙盒里生成了文件（报告、表格、文档、图片等）需要交给用户，
+            必须用 publish_artifact 交付，这样用户才能下载到它；不要只把文件路径或链接写在回答里。
             当前会话ID:{{sessionId}}
             """;
     public static final String GET_MEMORY= """

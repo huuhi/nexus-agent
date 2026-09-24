@@ -1,11 +1,14 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
 import com.aliyuncs.exceptions.ClientException;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.context.ChatContext;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
+import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.exception.ParserFileException;
@@ -15,6 +18,7 @@ import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
 import com.huzhijian.nexusagentweb.observability.RunMetrics;
 import com.huzhijian.nexusagentweb.observability.RunMetricsReporter;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
+import com.huzhijian.nexusagentweb.service.ArtifactService;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
@@ -27,13 +31,16 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiModelCatalog;
 import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.tool.ToolExecution;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -53,6 +60,7 @@ public class ChatServiceImpl implements ChatService {
     private final SkillLoader skillLoader;
     private final RunMetricsReporter runMetricsReporter;
     private final QuotaService quotaService;
+    private final ArtifactService artifactService;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -123,6 +131,9 @@ public class ChatServiceImpl implements ChatService {
                     metrics.recordToolExecuted(request.name(), consumer.hasFailed());
 //                    writer.writeToolRequest(request.id(),request.name(),request.arguments());
                     writer.writeToolResult(request,consumer.hasFailed(),consumer.result());
+//                    P2-10：AI 产出的交付物在这里落库并推 SSE artifact 事件
+//                    （放在主流程而不是工具类里，因为只有这一层同时握有 userId / sessionId / SSE writer）
+                    publishArtifactIfAny(consumer, runContext, writer);
                 })
                 .onCompleteResponse(response -> {
 //                    token 用量与真实模型名只有在这里拿得到（流式响应的最后一次回调）
@@ -139,6 +150,55 @@ public class ChatServiceImpl implements ChatService {
                 })
                 .start();
         return sseEmitter;
+    }
+
+    /**
+     * 工具结果里若带 artifact（目前只有 {@code publish_artifact} 会带），落库并推 SSE 事件（P2-10）。
+     * <p>
+     * 任何异常都被吞掉：产物落库/推送失败不该把对话打挂 ——
+     * 文件其实已经生成并上传到 OSS 了，失败的最坏后果只是"用户看不到下载卡片"。
+     */
+    private void publishArtifactIfAny(ToolExecution execution, RunContext runContext, SseResponseConverter writer) {
+        if (execution == null || execution.hasFailed()) {
+            return;
+        }
+        Map<String, Object> artifact = extractArtifact(execution.result());
+        if (artifact == null) {
+            return;
+        }
+        try {
+            SysFile saved = artifactService.save(artifact, runContext.userId(), runContext.sessionId());
+            if (saved != null && saved.getId() != null) {
+                // 带上落库 id，前端可用它去重与追溯（列产物时也用它）
+                artifact.put("id", saved.getId());
+            }
+            writer.writeArtifact(artifact);
+        } catch (Exception e) {
+            log.warn("产物落库/推送失败（已忽略，文件已生成于 OSS）：session={} 原因={}",
+                    runContext.sessionId(), e.getMessage());
+        }
+    }
+
+    /**
+     * 从工具结果（JSON 文本）里取出 {@code artifact} 字段。
+     * <p>
+     * 抽成静态纯函数便于单测（判断"这是不是产物结果"的规则会直接影响
+     * 会不会给前端推下载卡片，值得被测试固定）。非产物结果返回 null。
+     */
+    public static Map<String, Object> extractArtifact(String toolResult) {
+        if (toolResult == null || toolResult.isBlank() || !toolResult.contains("\"artifact\"")) {
+            // 先做一次廉价的字符串预筛，避免对每一次工具结果都做 JSON 解析
+            // （绝大多数工具结果都不是产物，比如 execute_cmd 的大段输出）
+            return null;
+        }
+        try {
+            JSONObject json = JSONUtil.parseObj(toolResult);
+            JSONObject artifact = json.getJSONObject("artifact");
+            return artifact == null ? null : new LinkedHashMap<>(artifact);
+        } catch (Exception e) {
+            // 不是合法 JSON 或结构不符：当作"没有产物"，不干扰主流程
+            return null;
+        }
     }
 
     /**

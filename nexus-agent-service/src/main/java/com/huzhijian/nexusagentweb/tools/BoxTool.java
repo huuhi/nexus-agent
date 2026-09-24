@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.tools;
 
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.dto.UploadFileDTO;
 import com.huzhijian.nexusagentweb.handler.SafeExecuteToolHandler;
 import com.huzhijian.nexusagentweb.sandbox.SandboxClient;
@@ -141,7 +142,98 @@ public class BoxTool implements AgentToolSet {
         if (resolved == null) {
             return noSandbox("download_file");
         }
-        return handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file", () -> sandboxClient.downloadFile(path, resolved)));
+        return handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file",
+                () -> sandboxClient.downloadFile(path, resolved, UserContextHolder.getUserId())));
+    }
+
+    /**
+     * 把沙盒里的文件作为**交付物**发布给用户（P2-10）。
+     * <p>
+     * 与 {@code download_file} 的区别在**语义**：前者只是"把文件取出来"（模型拿到一个 URL 自己看），
+     * 后者表示"这是要交给用户的成果" —— 返回结果里带 {@code artifact} 结构，
+     * 上层（{@code ChatServiceImpl.onToolExecuted}）据此**落库**（{@code sys_file}, biz_type=ARTIFACT + session_id）
+     * 并推 **SSE {@code artifact} 事件**，前端渲染成下载卡片。
+     * <p>
+     * 为什么落库与事件不在本类做：这里只有 {@code @ToolMemoryId}（会话 ID），
+     * 而落库需要 userId、发事件需要 SSE writer —— 两者都在对话主流程里，且都在同一次工具回调中，
+     * 因此把"产出"与"交付"分开：工具负责产出，主流程负责交付。
+     */
+    @Tool(name = "publish_artifact",
+            value = "把沙盒中的文件作为交付物发布给用户（用户可直接下载）。生成报告/表格/文档/图片等文件后，用它把文件交给用户。")
+    public Map<String, Object> publishArtifact(@ToolMemoryId Object memoryId,
+                                              @P("沙盒内文件路径，例如 /home/report.docx") String path,
+                                              @P(value = "给用户看的文件名，可不传（默认取路径中的文件名）", required = false) String name,
+                                              @P(value = "沙盒ID，可不传", required = false) String boxId) {
+        Map<String, Object> blocked = toolCallGuard.intercept(memoryId, "publish_artifact",
+                ToolCallGuard.fingerprint(path, name));
+        if (blocked != null) {
+            return blocked;
+        }
+        String resolved = resolveBoxId(memoryId, boxId);
+        if (resolved == null) {
+            return noSandbox("publish_artifact");
+        }
+        Map<String, Object> result = handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("publish_artifact",
+                () -> sandboxClient.downloadFile(path, resolved, UserContextHolder.getUserId())));
+        if (result == null || isFailure(result)) {
+            // 失败（含沙盒失效）原样回传：SafeExecuteToolHandler/handleBoxResult 已经给了模型自纠提示
+            return result;
+        }
+        return artifactPayload(result, path, name);
+    }
+
+    /**
+     * 把「下载结果」包装成 artifact 结构。
+     * <p>
+     * URL 缺失时按失败返回而不是假装成功 —— 上层会据此落库并发下载卡片，
+     * 给前端一个空链接比直接说清楚"没拿到链接"更糟。
+     */
+    private Map<String, Object> artifactPayload(Map<String, Object> downloadResult, String path, String name) {
+        Object url = downloadResult.get("url");
+        if (url == null || String.valueOf(url).isBlank()) {
+            Map<String, Object> failure = new LinkedHashMap<>();
+            failure.put("success", false);
+            failure.put("errorCode", "EMPTY_RESPONSE");
+            failure.put("message", "沙盒服务没有返回下载链接（url 为空）");
+            failure.put("hint", "不要重复调用同一参数；请先用 list_dir 确认文件存在，再重试一次。");
+            return failure;
+        }
+        String fileName = (name == null || name.isBlank()) ? fileNameOf(path) : name.trim();
+        Map<String, Object> artifact = new LinkedHashMap<>();
+        artifact.put("name", fileName);
+        artifact.put("url", url);
+        artifact.put("sourcePath", path);
+        artifact.put("extension", extensionOf(fileName));
+        Object size = downloadResult.get("size");
+        if (size != null) {
+            artifact.put("size", size);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("success", true);
+        payload.put("message", "已把「" + fileName + "」发布为交付物，用户可直接下载。");
+        payload.put("artifact", artifact);
+        return payload;
+    }
+
+    /** 从沙盒路径取文件名（含扩展名） */
+    private static String fileNameOf(String path) {
+        if (path == null || path.isBlank()) {
+            return "artifact";
+        }
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        String name = slash >= 0 ? path.substring(slash + 1) : path;
+        return name.isBlank() ? "artifact" : name;
+    }
+
+    /** 从文件名取扩展名（不含点、小写）；取不到返回 null */
+    private static String extensionOf(String fileName) {
+        if (fileName == null) {
+            return null;
+        }
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 && dot < fileName.length() - 1
+                ? fileName.substring(dot + 1).toLowerCase()
+                : null;
     }
 
     /**

@@ -40,8 +40,21 @@ public class SandboxClient {
         return httpUtils.post("/file", uploadFile).block();
     }
 
-    public Map<String, Object> downloadFile(String path, String boxId) {
-        return httpUtils.get("/file", Map.of("box_id", boxId, "file_path", path)).block();
+    /**
+     * 从沙盒下载文件（沙盒 → OSS，返回可访问 URL）。
+     *
+     * @param userId 可选（P2-10）：传给沙盒服务用于把产物放到
+     *               {@code user/{userId}/artifact/{date}/} 下；
+     *               取不到时传 null，服务端会落到 {@code user/unknown/...}（不会失败）
+     */
+    public Map<String, Object> downloadFile(String path, String boxId, Long userId) {
+        Map<String, String> params = new HashMap<>();
+        params.put("box_id", boxId);
+        params.put("file_path", path);
+        if (userId != null) {
+            params.put("user_id", String.valueOf(userId));
+        }
+        return httpUtils.get("/file", params).block();
     }
 
     public List<Map<String, Object>> listDir(String dirPath, String boxId) {

@@ -291,6 +291,7 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 | `session_id` | `sessionId` | 仅新会话（小写） |
 | `finish` | `DONE` | 结束（小写） |
 | `error` | `{type: ERROR, runId, message, hint}` | **运行失败**（小写，P2-6 新增）。`runId` 是 trace_id，可直接在服务端日志里 grep `RUN runId=<值>` 定位本次运行；在此之前出错只是连接断掉，前端拿不到任何线索 |
+| `artifact` | `MessageVO{type: ARTIFACT, artifact:{id,name,url,size,extension,sourcePath}}` | **AI 产出的交付物**（小写，P2-10）。前端渲染成「下载卡片」；`id` 是 `sys_file` 主键（可去重/追溯）。由模型调用 `publish_artifact` 工具触发 |
 
 > ⚠️ **事件名大小写不统一，前端容易踩坑。** 实测确认：`message` / `session_id` / `finish` / `error` 是
 > 代码里写的小写字面量，而两个工具事件用的是 `MessageType` 枚举值（**全大写**）。
@@ -786,6 +787,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-3 完成**：模型能力矩阵 —— 额外参数改为**按服务商下发** | 新增 `model/ModelCapabilityResolver.java`、`ModelCapabilityResolverTest.java`（8 个单测）；`ChatContextFactory` 抽出 `buildExtraBody` 并按能力过滤；`AgentProperties` 加 `Model`/`ProviderCapability`；两个 yml 补 `model.providers` 段 | §6.3 重写（含能力表与「未知即不下发」的取舍说明）；⚠️ **行为变更**：未命中服务商的额外参数不再下发（此前无条件全塞）；默认模型的参数仍在 yml 的 `custom-parameters`（已去掉 DeepSeek 不认的 `enable_search`） |
 | 2026-09-24 | **P2-8 完成**：token 配额（事前拦截 + 事后原子记账） | 新增 `docs/sql/003_add_user_token_quota.sql`、`service/QuotaService` + `QuotaServiceImpl`、`exception/QuotaExceededException`、`QuotaServiceTest`（14 个单测）；`User` 加 `tokenQuota`/`tokenUsed`；`UserMapper.java`/`.xml` 加原子累加语句；`ChatServiceImpl` 接入；`UserServiceImpl.register` 写默认配额；`GlobalExceptionHandler` 加映射；两个 yml 补 `quota` 段 | 新增 §6.13；⚠️ **需先执行 `003` 才能启动**（实体已含新列，`Base_Column_List` 已引用）；存量用户 `token_quota` 为 NULL = 不限制，行为不变 |
 | 2026-09-24 | **P2-9 完成**：MCP 不可用时明确告知模型（不再静默丢弃） | `McpInformationService.getMcp` 返回 `McpResolution{provider, unavailableNames}`；`ChatContext` 加 `mcpUnavailable`；`ChatContextFactory`/`ChatServiceImpl` 适配；新增 `ChatServiceImpl.composeCapabilities`（+ `RuntimeCapabilitiesTest` 5 个单测）；提示词变量 `{{availableSkills}}` → **`{{runtimeCapabilities}}`**（同时承载技能清单与 MCP 状态），`ModelSystemContent` 加「不可用则如实告知、不要重试」的指引 | §6.7 重写（顺带修正「每次新建客户端且不关闭」这条已过时的描述，P1-6 已修）；§6.9 同步变量名 |
+| 2026-09-24 | **P2-10 部分完成**：产物交付链路打通（**决策 D5 已定为 (c) 虚拟工作区**） | 新增 `tools/BoxTool.publishArtifact`（工具）+ `service/ArtifactService`/`Impl` + `docs/sql/004_add_sys_file_session_id.sql`；`MessageType.ARTIFACT` + `MessageVO.artifact` + `SseResponseConverter.writeArtifact`；`ChatServiceImpl` 在 `onToolExecuted` 里识别并落库/推事件（+ `ArtifactExtractionTest` 5 个单测）；Python 侧 `oss_utils.object_prefix()` 与 `/file` 路由带 `user_id`；提示词加「产出文件必须用 publish_artifact 交付」 | §16.2 补实施结果表；§6.2 契约表加 `artifact` 行；⚠️ **需先执行 `004`**（实体已加 `sessionId`）。⬜ 虚拟工作区的「会话文件列表/删除」接口未做；⬜ E2B 模板预装 Office 库需用户在 E2B 侧执行 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -959,6 +961,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 |---|---|---|---|
 | D1 | 沙盒方案 | ✅ **保持 E2B 云沙盒** | 改动最小。**代价：必须补 P1-7 `SandboxSession` 做自动回收**，否则沙盒泄漏会持续产生费用 |
 | D3 | Skill 落地方案 | ✅ **本地目录扫描**（服务端内置 skill 目录，扫描 `SKILL.md` 注册） | 避开 B/S 下上传 zip 的解压落盘与路径穿越安全问题 |
+| D5 | 文件空间产品形态 | ✅ **(c) 虚拟工作区**（2026-09-24 定） | 协议优先：「文件引用 + 产物回传」这套协议是四条路**共用**的，且代价最低（复用 OSS + `sys_file` + 沙盒）。**边界：只做"AI 产出文件 → 用户拿走"，不含"AI 直接改本机文件"**（后者需另走 (b)/(d)，见 §16.4） |
 
 > ✅ **已兑现（P2-1，2026-09-23）**：`ChatDTO.skills` 已真正接进 `ChatContextFactory`
 > （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{runtimeCapabilities}}`）。
@@ -1057,6 +1060,25 @@ AI 在 E2B 沙盒里写文件
 | ④ 沙盒里缺生成 Office 的库 | E2B 基础镜像不含 `python-docx`/`openpyxl`/`python-pptx` | 两个选择：让 AI 每次 `pip install`（慢且不稳定），或**构建自定义 E2B 模板预装**（推荐） |
 
 **要点**：产物交付本质上是"**给 AI 一个 `publish_artifact` 工具 + 给前端一个 `artifact` 事件**"，不需要动 Agent 核心。这是投入产出比最高的一条能力线。
+
+**实施结果（2026-09-24，P2-10：①②③ 已完成，④ 需你在 E2B 侧执行）**：
+
+| 缺口 | 状态 | 实现 |
+|---|---|---|
+| ① 产物一等概念 | ✅ | 新增工具 `publish_artifact`（`BoxTool`）→ 结果带 `artifact{name,url,size,extension}`；`ChatServiceImpl.onToolExecuted` 检测到后落库并推 **SSE `artifact` 事件**；新增 `MessageType.ARTIFACT` 与 `MessageVO.artifact` |
+| ② 产物落库 | ✅ | 新增 `ArtifactService` → 写 `sys_file`（`biz_type=ARTIFACT` + `session_id`）；`004` 加 `session_id` 列 |
+| ③ OSS 路径规范 | ✅ | `oss_utils.object_prefix()` → `user/{userId}/artifact/{date}/`（原来是写死的 `test/`）；顺带修掉**中文文件名未做 URL 编码**的隐患（`quote(safe='/')`）；Java 侧 `SandboxClient.downloadFile` 带上 `user_id` |
+| ④ E2B 预装 Office 库 | ⬜ **需你在 E2B 侧执行** | 见下 |
+
+**为什么"落库 + 发事件"不放在工具类里**：工具只有 `@ToolMemoryId`（会话 ID），
+而落库要 userId、推事件要 SSE writer —— 只有 `ChatServiceImpl.onToolExecuted` 同时握有这三样。
+所以职责切成「工具负责产出、主流程负责交付」，避免为此把 RunContext 硬塞进工具层。
+
+**④ 怎么做（需要你操作，AI 代劳不了）**：E2B 基础镜像**不含** `python-docx`/`openpyxl`/`python-pptx`。
+
+- 临时方案：让 AI 每次在沙盒里 `pip install python-docx -q` —— 慢、依赖网络、可能失败
+- **推荐**：在 E2B 控制台基于基础模板构建**自定义模板**（Dockerfile 里预装这三个库），
+  并在创建沙盒时指定该 template。这样每次建沙盒就自带，AI 不必现场安装
 
 ### 16.3 能力 B：本地文件空间（四条路，必须先选形态）
 

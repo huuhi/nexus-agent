@@ -74,16 +74,23 @@ def upload_file(file:FileUpload):
 #         name=file.name
 #         file.write(content)
 @router.get("")
-def download_file(box_id:str,file_path:str):
+def download_file(box_id:str,file_path:str,user_id:str=None):
+    """把沙盒里的文件取出来并转存 OSS，返回可访问的 URL。
+
+    user_id 为可选参数（P2-10）：用于把产物放到 ``user/{userId}/artifact/{date}/`` 下；
+    不传则落到 ``user/unknown/...``（不会失败，但目录能看出是异常数据）。
+    """
     try:
         file_path= file_path
         sbx=Sandbox.connect(box_id)
         content= sbx.files.read(file_path)
         byte_array=content.encode()
         # 创建一个临时文件
-        result=str_upload_file(get_file_name(file_path),byte_array)
+        result=str_upload_file(get_file_name(file_path),byte_array,user_id)
         return {
-            'url':result
+            'url':result,
+            # 产物大小（P2-10）：前端下载卡片要展示，Java 侧也据此落库
+            'size':len(byte_array)
         }
     except Exception as e:
         return {

@@ -69,4 +69,12 @@ public class SysFile {
     private String extension;
 
     private BizType bizType;
+
+    /**
+     * 归属会话 ID（P2-10，可空）。
+     * <p>
+     * 仅 {@link BizType#ARTIFACT} 会写它：产物需要按会话追溯与清理
+     * （用户上传的附件走别的关系，不依赖本列）。
+     */
+    private String sessionId;
 }

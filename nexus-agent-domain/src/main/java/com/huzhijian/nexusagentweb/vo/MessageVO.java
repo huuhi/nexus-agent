@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * @author 胡志坚
@@ -24,6 +25,13 @@ public class MessageVO {
     private ToolResultVO toolResultVO;
 //    工具请求参数
     private List<ToolRequestVO> toolRequestList;
+    /**
+     * 产物（P2-10）：AI 产出的交付物，前端据此渲染「下载卡片」。
+     * <p>
+     * 结构：{@code {id, name, url, size, extension, sourcePath}}；
+     * {@code id} 是 {@code sys_file} 主键（用于去重与追溯），随 SSE {@code artifact} 事件下发。
+     */
+    private Map<String, Object> artifact;
     @Data
     @Builder
     public static class UserMessageVO{
