@@ -131,6 +131,14 @@ public class ChatContextFactory {
 
             if (apiConfig==null){
 //              TODO  判断余额是否足够
+//              回退本身是预期行为（用户没配就用系统默认），但必须留痕：
+//              否则用户会以为在用自己填的 Key，实际走的是系统默认模型
+                log.info("回退系统默认模型：用户 {} 的配置里{}，请求模型={}",
+                        userId,
+                        modelDTO.id() != null && !modelDTO.id().isEmpty()
+                                ? "找不到 id=" + modelDTO.id() + " 的配置项"
+                                : "没有标记为默认的配置项",
+                        modelDTO.modelName());
                 return defaultModel;
             }
             List<Model> models = apiConfig.getModel();
@@ -139,6 +147,10 @@ public class ChatContextFactory {
                 return model.getType().equals(ModelType.CHAT) && model.getName().equals(modelDTO.modelName());
             });
             if (!match){
+                log.info("回退系统默认模型：用户 {} 的配置（id={}）中不含可用模型「{}」，已配置的是 {}",
+                        userId, apiConfig.getId(), modelDTO.modelName(),
+                        models.stream().filter(m -> ModelType.CHAT.equals(m.getType()))
+                                .map(Model::getName).toList());
                 return defaultModel;
             }
 
@@ -167,6 +179,9 @@ public class ChatContextFactory {
                     .httpClientBuilder(new SpringRestClientBuilderFactory().create())
                     .build();
         }
+        log.info("回退系统默认模型：{}", userConfig == null
+                ? "用户 " + userId + " 没有 API 配置（未配置自带 Key）"
+                : "请求未指定模型（model 为空）");
         return defaultModel;
     }
 

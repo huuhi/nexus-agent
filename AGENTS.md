@@ -457,6 +457,32 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 用于快速验证「扫描 → 提示词注入 → activate_skill → 按步骤作答」整条链路。
 **将来支持用户自定义**：在 `SkillLoader.scan()` 里追加扫描 `<root>/users/<userId>` 即可，其余逻辑无需改动。
 
+### 6.10 启动配置自检（P1-10）
+
+`config/StartupConfigValidator`（`@PostConstruct`）在启动时**一次性**校验关键配置，
+把结果分成两级打日志：
+
+| 级别 | 缺失时行为 | 包含 |
+|---|---|---|
+| 必需 | **默认 fail-fast 阻止启动**（`nexus.agent.startup.fail-fast=false` 可降级为 WARN） | `spring.datasource.url`、对话模型 api-key、`API_KEY_SECRET` |
+| 建议 | 只 WARN，**明确写出哪项能力会不可用** | `JWT_SECRET`、`AI_KEY`、`MOONSHOT`、Redis 主机、SMTP 账号/密码 |
+
+**它解决什么**：根因 R2/R3 —— 原来缺配置时是「一次只报一个占位符错误」或**完全静默**
+（`JWT_SECRET` 缺失会随机生成密钥，重启后 token 全失效却没有任何提示）。
+现在启动日志里是一张清单：缺什么、后果是什么、怎么配。
+
+**实现要点**：
+
+- 取值统一走 `environment.getProperty(key)`：Spring 自带 `systemEnvironment` 属性源，
+  **环境变量名可直接当属性键用**，因此不需要维护「属性 / 环境变量」两套来源。
+  这条假设有回归测试守着（`StartupConfigValidatorTest`）。
+- 未解析的占位符（值为 `${DEEPSEEK}` 或 getProperty 抛异常）**按缺失处理**并纳入汇总，
+  不让它变成启动期的单条异常。
+- 校验项清单在类的 `REQUIREMENTS` 常量里，**新增配置项时顺手加一条**（含"缺失后果"文案）。
+
+**顺带修掉**：`ChatContextFactory.createModel` 的三处「静默回退系统默认模型」现在都会打日志
+（说明是"用户没配"还是"模型名不在配置里"）——原来用户会误以为在用自己填的 Key。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -597,6 +623,7 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 | 2026-09-23 | **P1 批次完成**：P1-6/7/8/9/11/13 六项一次性做完 | 新增 `sandbox/`、`mcp/`、`properties/AgentProperties`、3 个单测类；重写 `SafeExecuteToolHandler`、`PgChatMemoryStore`、`BoxTool`；6 个旧测试改为人工测试 | 详见 §6.5（工具错误契约）与 §15（运行时配置）；实测 4 组端到端验证通过 |
 | 2026-09-24 | **P2-1 + P2-2 完成**：Skill 系统落地（本地目录扫描），`ChatDTO.skills` 真实生效；旧 DB 注册表方案整体删除 | 新增 `skills/SkillLoader.java`、`skills/README.md`、`SkillLoaderTest.java`（11 个单测）；删除 `SkillMcpInformation` 实体/Mapper/XML/Service/Impl；改造 `ChatContextFactory`（与 MCP 合并 `toolProviders`）、`ChatAssistant`（注入 `{{availableSkills}}`）、`ChatServiceImpl`、`ModelSystemContent`；新增 `docs/sql/002_drop_skill_mcp_information.sql` | 新增 §6.9；实测发现库**刻意排除 `scripts/`** 目录，已写入文档与回归测试；顺带把鉴权改为 `nexus.agent.security.enabled` 开关 + 启动 WARN 提示 |
 | 2026-09-24 | `AGENTS.md` 结构修复：消除两组重号章节（两个 §6.5、两个 §15） | `AGENTS.md` | Skill 系统改为 §6.9；「文件与产物能力」改为 §16（原与「运行时配置」重号）；同步全部交叉引用 |
+| 2026-09-24 | **P1-10 完成**：启动配置自检（一次性列出缺失项而非"一次报一个"）+ 消除模型静默回退 | 新增 `config/StartupConfigValidator.java`、`StartupConfigValidatorTest.java`（8 个单测）；`ChatContextFactory` 三处回退加日志；`AgentProperties` 加 `Startup.failFast`；两个 yml 补 `startup` 段 | 新增 §6.10；必需项（datasource/对话模型 Key/API_KEY_SECRET）默认 fail-fast，建议项只 WARN 并写明"哪项能力不可用"；README 排查表同步 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -631,17 +658,17 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 | §12.1-5 打印用户密钥 | ✅ 已修 | 删掉 `System.out.println(apiKey)`，改为打印 configId/modelName |
 | §12.2-6 `execute_cmd` 路由错误 | ✅ 已修 | 改打 `POST /execute/cmd` + `{cmd, box_id}`，并把误用的 `log.error` 降为 `log.debug` |
 | §12.2-7 向量写入错位 | ✅ 已修 | `addAll(content, batch)`（原来是 `textSegments`）。**已有向量数据是错的，需要重建知识库** |
-| §12.2-8 `EncryptorFactory` 缺键 | ✅ 已修 | 改为启动期解析 + 明确报错，salt 为空也给出可读原因。**注意：仍是首次调用时才触发，完整启动校验属 P1-10** |
+| §12.2-8 `EncryptorFactory` 缺键 | ✅ 已修 | 改为启动期解析 + 明确报错，salt 为空也给出可读原因。**注意：仍是首次调用时才触发**；完整启动校验已由 **P1-10** `StartupConfigValidator` 补上（见 §6.10） |
 | §12.2-10 历史读取强转 | ✅ 已修 | `ChatMemoryServiceImpl` 改用 `instanceof TextContent` 模式匹配，并把多段文本拼接而非互相覆盖 |
 | §12.4-20 跨线程 ThreadLocal（附件元数据丢失） | ✅ 已修 | **P1-1**：新增 `RunContext`，在请求线程装好跨线程数据后显式传递；`MessageMetadataContext` 已删除。实测 3 轮对话附件元数据完整保留 |
-| §12.2-12 MCP client 泄漏 | ⬜ 未修 | 属 P1-6（McpRegistry 生命周期） |
+| §12.2-12 MCP client 泄漏 | ✅ 已修 | **P1-6**：新增 `mcp/McpClientRegistry`，按 mcpId 缓存复用、创建失败立即 close、配置变更 evict、`@PreDestroy` 统一关闭。⚠️ 未做运行时验证（库里无 MCP 配置） |
 | §12.2-9 Redis `session:` 5 分钟 | ✅ 已修 | **P1-1/P1-2** 引入 `RunContext`，userId 显式传递；`SESSION_KEY` 已删除，Redis 依赖解除 |
-| §12.2-11 token 估算写死 gpt-4o | ⬜ 未修 | 属 P1-8 |
+| §12.2-11 token 估算写死 gpt-4o | ✅ 已修 | **P1-8**：`nexus.agent.memory.token-estimator-model` 可配（默认仍是 gpt-4o，但换主力模型时可同步改，见 §15） |
 | §12.3-16 异常无兜底 | ✅ 已修 | `GlobalExceptionHandler` 增加 `Exception` 兜底：Spring 标准 HTTP 异常保留状态码，其余返回 500 + 通用提示（不再外泄内部信息） |
 | §12.3-13 模块版本不统一 | ✅ 已修 | 全部继承父版本 `0.0.1-SNAPSHOT`，内部依赖统一 `${project.version}` |
 | §12.3-14 无 Maven Wrapper | ✅ 已修 | 已生成 `mvnw`/`mvnw.cmd`/`.mvn/`，`distributionUrl` 指向阿里云。详见 §2.3 的镜像注意事项 |
 | §12.3-15 无数据库迁移 | ✅ 已修 | 新建 `docs/sql/`：约定 + `001_baseline.sql`（**v2.0 重新设计版**，非旧库照抄：12 表补齐主键/4 外键/9 索引、重建设 `sys_file`、`vector(1024)`+HNSW）。已在目标库执行验证 0 错误 |
-| §12.5-22 Skill 全链路未接入 | ⬜ 未修 | 属 P2-1（决策 D3 已定为本地目录扫描） |
+| §12.5-22 Skill 全链路未接入 | ✅ 已修 | **P2-1**：改为本地目录扫描（`skills/SkillLoader`），`ChatDTO.skills` 已真实生效；旧 DB 注册表方案整体删除。见 §6.9 |
 | §12.5-23 `RagTool` 死代码/重复 | ✅ 已修 | 职责拆开：`MemoryTool` 只管长期记忆，RAG 归 `RagTool`（显式声明工具名 `rag_search` 保持契约，并补了异常兜底）；`ChatContextFactory` 中 `ragTool` 字段名不再张冠李戴 |
 | §12.5-24 `showHistory.html` | ✅ 保留（更正） | **它不是遗留垃圾**，实为「极简 AI 对话助手」调试页，是当前唯一可用的 UI，不要删 |
 | — 新增发现：JDBC URL 参数分隔符 | ✅ 已修 | `application-prod.yml` 里 `...=true?stringtype=unspecified` 第二个 `?` 应为 `&`，否则 `reWriteBatchedInserts` 与 `stringtype` 双双失效（后者是 jsonb 写入前提） |
@@ -806,6 +833,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.skill.root-dir` | `skills` | Skill 根目录（相对应用工作目录，支持 `~`）。目录约定见 §6.9 与 `skills/README.md` |
 | `nexus.agent.skill.refresh-interval` | `60s` | 目录扫描缓存时长。新增技能最多延迟这段时间生效，**无需重启**；设 `0s` 每次请求重扫 |
 | `nexus.agent.security.enabled` | `true` | **是否启用登录鉴权**（拦截器 + 配置类共用此开关）。关闭时启动打 WARN、所有接口免 token。**只能本地开发用，生产必须 true** |
+| `nexus.agent.startup.fail-fast` | `true` | 启动配置自检发现必需配置缺失时是否阻止启动。`false` 只建议临时排查用（见 §6.10） |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

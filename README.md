@@ -109,8 +109,15 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 ## 常见启动失败
 
+> 💡 应用启动时会做一次**配置自检**（`StartupConfigValidator`）：把必需配置（数据库连接串、
+> 对话模型 Key、`API_KEY_SECRET`）与建议配置（`JWT_SECRET`、`AI_KEY`、Redis、SMTP）**一次性**检查完，
+> 缺什么、各自导致哪项能力不可用，都会在启动日志里列成清单 —— 不用再"改一个、起一次"来回试。
+> 必需配置缺失会**阻止启动**；只想临时带病启动可加 `nexus.agent.config.fail-fast=false`。
+
 | 现象 | 原因 |
 |---|---|
+| 启动日志出现 `配置自检未通过：缺少 N 项必需配置` | 按日志里列出的清单逐项补齐（每项都写了「配置项 / 后果」） |
+| 启动日志出现 `建议配置缺失` 横幅 | 只是某项能力不可用（RAG / 标题生成 / 邮箱验证码等），应用仍可启动，按需补 |
 | 占位符解析失败 / datasource 报错 | 没建 `application-dev.yml`，或占位符没替换完 |
 | `relation "sys_file" does not exist` | 没执行基线 SQL，或执行的是旧的、不完整的结构 |
 | `type "vector" does not exist` | PostgreSQL 没装 pgvector 扩展 |
@@ -119,6 +126,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | 沙盒工具报 `Connection refused` | FastAPI 沙盒服务没启动，或 `BASE_URL` 指向不对 |
 | 邮箱验证码收不到 | QQ 邮箱要用 **SMTP 授权码**，不是邮箱登录密码 |
 | `column "file_name" does not exist` | 数据库是重构前的旧结构，重跑一次基线 SQL |
+| 技能「配了但没反应」 | `nexus.agent.skill.root-dir` 是相对**应用工作目录**解析的；看启动日志里的 `Skill 目录不存在，Skill 能力为空：<绝对路径>`，必要时改成绝对路径 |
 
 ---
 

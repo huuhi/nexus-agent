@@ -122,6 +122,11 @@ nexus:
       root-dir: skills
       # 目录扫描结果缓存时长。新增技能最多延迟这段时间生效，不需要重启
       refresh-interval: 60s
+    startup:
+      # 启动配置自检发现「必需配置缺失」时是否直接阻止启动。
+      # true（默认）：fail-fast，启动日志会一次性列出缺哪些、各自什么后果
+      # false：降级为 WARN 继续启动，仅建议临时排查问题时用
+      fail-fast: true
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

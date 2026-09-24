@@ -30,6 +30,7 @@ public class AgentProperties {
     private Mcp mcp = new Mcp();
     private Security security = new Security();
     private Skill skill = new Skill();
+    private Startup startup = new Startup();
 
     @Data
     public static class Sse {
@@ -131,5 +132,19 @@ public class AgentProperties {
          * 有缓存时，新增 skill 目录最多延迟这段时间生效，不需要重启应用。
          */
         private Duration refreshInterval = Duration.ofSeconds(60);
+    }
+
+    @Data
+    public static class Startup {
+        /**
+         * 启动配置自检发现**必需配置缺失**时是否 fail-fast 阻止启动。
+         * <p>
+         * 默认 {@code true}：缺配置就明确报错并列出清单，而不是带病启动、
+         * 等到第一个请求进来才失败（见 {@code StartupConfigValidator}）。
+         * <p>
+         * ⚠️ 设为 {@code false} 只建议临时排查问题时用：缺失的必需配置仍然会导致
+         * 对应能力不可用，启动日志会有 WARN 提示。
+         */
+        private boolean failFast = true;
     }
 }
