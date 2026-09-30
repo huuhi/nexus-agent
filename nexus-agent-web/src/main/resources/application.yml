@@ -12,6 +12,41 @@ logging:
       huzhijian:
         nexusagentweb: debug
 
+# ---------------------------------------------------------------------------
+# P3-3：优雅停机 + 健康检查
+# ---------------------------------------------------------------------------
+server:
+  # 优雅停机：收到 SIGTERM 后**先停止接收新请求**，等正在处理的请求跑完才退出。
+  # 容器/编排环境（`docker stop`、k8s 滚动更新）默认就是发 SIGTERM ——
+  # 不配这项等于把"对话进行到一半"的连接直接掐断，SSE 会断在半句上。
+  shutdown: graceful
+spring:
+  lifecycle:
+    # 等待上限，到期强制关闭。太长会让 `docker stop` 卡到 Docker 的 10s 超时后被 SIGKILL
+    # （等于白配优雅停机）；30s 够一次长对话收尾。
+    timeout-per-shutdown-phase: 30s
+management:
+  endpoints:
+    web:
+      exposure:
+        # ⚠️ 只开 health / info。**永远不要**加 env / heapdump / threaddump / beans：
+        # `/actuator/env` 会把数据库密码、各家 API Key 原样吐出来（连脱敏都没有）。
+        include: health,info
+  endpoint:
+    health:
+      # 对外只给 `{"status":"UP"}`：组件细节里带库名、Redis 地址等拓扑信息。
+      # 而 /actuator/health 是免鉴权的（容器健康检查访问不了带 token 的接口），
+      # 所以这里必须是 never。
+      show-details: never
+      # 额外给出 /actuator/health/liveness 与 /readiness，供 k8s 探针使用
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
 # P3-4：API 文档（SpringDoc）。默认开启，方便本地联调与前端对接；
 # ⚠️ prod 环境由 application-prod.yml 关闭（接口清单属于敏感信息，不该对外暴露）。
 springdoc:

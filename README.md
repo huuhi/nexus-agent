@@ -77,8 +77,11 @@ cp nexus_agent_box/.env.example nexus_agent_box/.env
 cd nexus_agent_box
 uv run main.py          # 开发模式
 # 或
-docker compose up -d    # 容器模式
+docker compose up -d    # 容器模式（改完代码要 docker compose up -d --build）
 ```
+
+> `docker-compose.yml` 里现在**不再挂载源码**（镜像为准）；
+> 开发期热重载由自动合并的 `docker-compose.override.yml` 提供。详见下节。
 
 ### 5. 启动应用（8080 端口）
 
@@ -87,6 +90,48 @@ docker compose up -d    # 容器模式
 # 或
 mvn clean package -DskipTests && java -jar nexus-agent-web/target/nexus-agent-web-*.jar
 ```
+
+---
+
+## 部署（P3-3）
+
+### 一键起全套（PG + Redis + 沙盒服务 + 应用）
+
+```bash
+cp .env.example .env                                   # 填好占位符
+cp nexus_agent_box/.env.example nexus_agent_box/.env   # 沙盒服务也要一份
+docker compose up -d --build
+docker compose ps     # 四个服务都 healthy 才算起来
+```
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| `postgres` | 5432 | `pgvector/pgvector:pg16`（`001` 需要 vector 扩展）。数据卷首次创建时自动按序执行 `docs/sql/001…007` |
+| `redis` | 6379 | 密码 `redis`（`application-prod.yml` 里写死了，改一处要改两处） |
+| `box` | 8000 | FastAPI 沙盒服务 |
+| `app` | 8080 | Java 应用（`SPRING_PROFILES_ACTIVE=prod`，镜像里没有 dev 配置） |
+
+⚠️ 库如果已经在别处跑，把 `postgres` / `redis` 两个 service 删掉，再把 `SERVICE_IP` 指过去。
+⚠️ **别**把有真实数据的目录挂到 `pgdata` 卷上 —— 初始化会执行 `001_baseline.sql`，它**会 DROP 全表**。
+
+### 只跑应用镜像
+
+```bash
+docker build -t nexus-agent:local .
+docker run --rm -p 8080:8080 --env-file .env nexus-agent:local
+```
+
+镜像内：非 root 用户、`-XX:MaxRAMPercentage=75`、`HEALTHCHECK` 打 `/actuator/health`、
+`ENTRYPOINT` 用 `sh -c exec java` 保证 java 是 PID 1（**否则收不到 SIGTERM，优雅停机失效**）。
+
+### 优雅停机与健康检查
+
+- `server.shutdown=graceful` + `spring.lifecycle.timeout-per-shutdown-phase=30s`：
+  `docker stop` 发的是 SIGTERM，不配就会把"对话进行到一半"的 SSE 连接直接掐断。
+- 只暴露 `/actuator/health` 与 `/actuator/info`，且 `show-details: never`。
+  ⚠️ 绝不要加 `env` / `heapdump` —— `/actuator/env` 会把数据库密码和 API Key 原样吐出来。
+- 这两个端点在 `LoginCheckInterceptor` 白名单里（容器探针不会带 token），
+  所以**对外只返回 `{"status":"UP"}`**，看不到任何组件细节。
 
 ---
 
@@ -210,3 +255,4 @@ nexus-agent (parent pom)
 | [skills/README.md](./skills/README.md) | 技能（Skill）目录约定、SKILL.md 写法、`scripts/` 与文档资源的区别 |
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
 | [开发日志.md](./开发日志.md) | 项目演进历史记录 |
+| `Dockerfile` / `docker-compose.yml` / `.env.example` | 部署形态（P3-3）：应用镜像与一键起全套；用法见本文「部署」章节 |

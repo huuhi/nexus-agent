@@ -6,6 +6,11 @@ target/
 /nexus-agent-web/src/main/resources/application-dev.yml
 /nexus-agent-web/src/main/resources/.env
 
+### P3-3：docker-compose 用的环境变量文件（含真实密钥，不要提交） ###
+# 仓库里只保留 .env.example
+/.env
+/nexus_agent_box/.env
+
 ### WorkBuddy / AI Agent 本地状态 ###
 # 会话记忆与本地缓存，属于个人环境，不纳入版本管理
 .workbuddy/

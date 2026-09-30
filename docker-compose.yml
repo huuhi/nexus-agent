@@ -1,0 +1,119 @@
+# ============================================================================
+#  nexus-agent 全套一键起（P3-3 部署形态固化）
+# ----------------------------------------------------------------------------
+#  用法：
+#      cp .env.example .env            # 填好占位符
+#      cp nexus_agent_box/.env.example nexus_agent_box/.env   # 沙盒服务也要
+#      docker compose up -d --build
+#      docker compose ps               # 四个服务都 healthy 才算起来
+#
+#  ⚠️ 注意事项（改动前务必读）：
+#  1. **postgres / redis 是可选的**。如果你的库已经在别处跑着，
+#     把这两个 service 整个删掉，再把 app 的 SERVICE_IP 指过去即可。
+#     ⚠️ 千万别把存有真实数据的目录挂到下面那个 pgdata 卷上 ——
+#     首次初始化会执行 docs/sql/001_baseline.sql，**它会 DROP 全表**。
+#  2. `SERVICE_IP=postgres` 是 **compose 服务名**，不是 localhost。
+#     容器网络里 app 通过服务名访问数据库，写 localhost 会连到 app 自己。
+#  3. `BASE_URL=http://box:8000` 同理：容器内访问沙盒服务要用服务名。
+#  4. 本文件在本机没有 Docker 的环境下**未经实际启动验证**
+#     （见 README「部署」章节）。首次使用请先 `docker compose config` 检查。
+# ============================================================================
+
+name: nexus-agent
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL 16 + pgvector
+  # -------------------------------------------------------------------------
+  # 用 pgvector/pgvector 而不是官方 postgres：docs/sql/001 里有
+  # `CREATE EXTENSION vector`，官方镜像装不了（知识库向量检索直接不可用）。
+  # pg_trgm（006 要用的模糊匹配扩展）属于 contrib，这个镜像里也已经带了。
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: nexus-agent-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nexus_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 只在**数据卷首次创建（目录为空）**时按文件名顺序执行 001 → 007，
+      # 新环境因此不用手工跑 SQL。已有数据的卷不会触发。
+      - ./docs/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nexus_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Redis
+  # -------------------------------------------------------------------------
+  # ⚠️ application-prod.yml 里写死了 `spring.data.redis.password=redis`，
+  #    所以这里必须 --requirepass redis（或改 yml，二选一，别只改一边）。
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-agent-redis
+    command: ["redis-server", "--requirepass", "redis", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a redis ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # 沙盒服务（FastAPI / E2B）
+  # -------------------------------------------------------------------------
+  box:
+    build:
+      context: ./nexus_agent_box
+    container_name: nexus-agent-box
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./nexus_agent_box/.env
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Java 应用
+  # -------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-agent-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 容器网络内用服务名互访（见文件头注意事项 2 / 3）
+      SERVICE_IP: postgres
+      BASE_URL: http://box:8000
+      # 镜像里没有 application-dev.yml，必须跑 prod
+      SPRING_PROFILES_ACTIVE: prod
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

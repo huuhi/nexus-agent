@@ -50,7 +50,12 @@ public class WebInterceptorConfig implements WebMvcConfigurer {
                         //   springdoc.api-docs.enabled / springdoc.swagger-ui.enabled 决定**
                         //   （prod 默认 false，见 application-prod.yml）。
                         //   打开文档前先确认这是你能接受的信息暴露范围。
-                        "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**"
+                        "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**",
+                        // P3-3：健康检查。容器的 HEALTHCHECK / k8s 探针不会带 token，
+                        // 不豁免就永远是 unhealthy（表现为容器反复被重启）。
+                        // 只放 health 与 info —— 其它 actuator 端点（env/heapdump 等）
+                        // 一律不豁免，且默认就没暴露（见 application.yml 的 management 段）。
+                        "/actuator/health", "/actuator/health/**", "/actuator/info"
                 )
                 .order(2);
     }

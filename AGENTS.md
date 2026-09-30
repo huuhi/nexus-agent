@@ -844,6 +844,49 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 **怎么加接口文档**：在 Controller 上写 `@Tag`、在方法上写 `@Operation`。
 **不要**在 `OpenApiConfig` 里手工登记 URL（那是把"事实"抄成第二份）。
 
+### 6.18 部署形态（P3-3）
+
+**产物**（都在仓库根目录，除了沙盒服务自己的那份）：
+
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | Java 应用镜像：maven 多阶段构建 → `eclipse-temurin:21-jre`，非 root、`MaxRAMPercentage=75`、`HEALTHCHECK` |
+| `.dockerignore` | 排除 `.git`、`target/`、本地 `application-dev.yml`、`docs/` |
+| `docker-compose.yml` | 一键起全套：pgvector / redis / box / app（含 depends_on 健康检查） |
+| `.env.example` | **应用**的环境变量模板（与 `nexus_agent_box/.env.example` 是两份，别混） |
+| `nexus_agent_box/docker-compose.yml` | 沙盒服务，**以镜像为准** |
+| `nexus_agent_box/docker-compose.override.yml` | 开发用（自动合并）：把源码挂回去热重载 |
+
+**修掉的坑：build + volumes 混用**
+原 `nexus_agent_box/docker-compose.yml` 同时写了 `build: .` 和把源码目录挂进容器，
+结果是「镜像里有代码，运行时又被宿主机目录盖掉」——
+同一个镜像在不同机器上跑出不同行为，且会冒出"我明明改了却没生效"这类最难排查的问题。
+现在拆成两份：主文件以镜像为准，override 只服务本地开发。
+
+**优雅停机**（`application.yml`）：
+
+- `server.shutdown: graceful` + `spring.lifecycle.timeout-per-shutdown-phase: 30s`。
+  `docker stop` / k8s 滚动更新发的都是 SIGTERM，不配就会把"对话进行到一半"的 SSE 连接直接掐断。
+- Dockerfile 用 `ENTRYPOINT ["sh","-c","exec java ..."]`：**必须让 java 是 PID 1**，
+  否则 SIGTERM 送给 shell 而不会转发给 java，上面那两项配置等于白写。
+
+**健康检查**：只暴露 `/actuator/health` 与 `/actuator/info`，且 `show-details: never`。
+
+- ⚠️ 绝不要加 `env` / `heapdump` / `threaddump` —— `/actuator/env` 会把数据库密码、
+  各家 API Key **原样**吐出来。
+- `/actuator/health` 与 `/actuator/info` 在 `LoginCheckInterceptor` 白名单里
+  （容器探针不会带 token），所以对外只能看到 `{"status":"UP"}`，看不到组件细节 ——
+  这正是 `show-details: never` 的原因。
+
+**容器里的坑**：
+
+- `application.yml` 默认 profile 是 `dev`，而 `application-dev.yml` 被 gitignore
+  （镜像里没有）→ **容器必须跑 prod**：`SPRING_PROFILES_ACTIVE=prod`。
+- 容器网络内互访用 **compose 服务名**，不是 localhost：`SERVICE_IP=postgres`、`BASE_URL=http://box:8000`。
+- `application-prod.yml` 写死了 redis 密码 `redis`，改 compose 时要两边一起改。
+- PG 用 `pgvector/pgvector:pg16`：官方 postgres 镜像装不了 `vector` 扩展
+  （`docs/sql/001` 有 `CREATE EXTENSION vector`）。数据卷首次创建时会自动按序执行 `001…007`。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -1005,6 +1048,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-09-30 | **P2-13 完成**：知识库向量口径统一 + **修掉 RAG 跨用户越权** | `KnowledgeBaseFileServiceImpl`（注入系统 `EmbeddingModel`、**删除** `getEmbeddingModel()`，顺带修 `failReason` 跨文件污染）；`KnowledgeBaseFileService.embedding` 去掉 `configId`/`model` 参数；`KnowledgeFileDTO` 两字段标 `@Deprecated` 且**不再必填**；`KnowledgeBaseServiceImpl` 调用同步；`RagTool.ragSearch` 检索加 `user_id` 过滤（无用户上下文时拒绝检索）；新增 `RagToolTest`（4 个）+ `KnowledgeBaseFileServiceImplTest`（4 个） | ⚠️ **行为变更**：① 向量模型固定为系统模型，用户自选向量模型能力移除（自选会让入库/检索向量空间不一致 → 检索结果完全不相关且不报错）；② `POST` 上传知识库不再要求 `configId`/`model`；③ RAG 只检索**本人**知识库（此前是全表检索，用户 A 能命中用户 B 的内容）。过滤用 `::text` 比较，历史数据里 `user_id` 存成 JSON 数字或字符串都能命中。测试 158（146 通过 + 12 人工跳过），0 失败 |
 | 2026-09-30 | **P2-8 遗留完成**：配额周期重置 + 用量查询接口 | 新增 `em/QuotaPeriod`（周期枚举，容错解析）、`vo/QuotaVO`、`docs/sql/007_add_user_token_quota_period.sql`（`users` 加 `token_period`/`token_period_start`）；`User` 加两字段；`UserMapper.java`/`.xml` 加 `resetQuotaPeriod`（带 WHERE 的原子 UPDATE）；`AgentProperties.Quota` 加 `period`；`QuotaServiceImpl` 抽出 `resetPeriodIfDue`/`periodOf`；`UserController` 加 `GET /api/user/quota`；新增 `QuotaPeriodTest`（7 个）+ `QuotaServiceTest` 扩到 29 个 | ✅ **惰性重置**：不跑 `@Scheduled`（挂了会导致全员配额不刷新、多实例还要抢锁），改为校验/查询时顺手判断；并发只命中一个，天然幂等。✅ `007` 未执行时**降级为按累计用量判定**（保守，不放行），周期值非法按 `NONE` —— 行为与 `003` 完全一致。✅ 查询接口失败返回 `degraded=true` 而不抛异常；身份取自 `UserContextHolder`，**不接受入参**（防越权）。⚠️ **需执行 `007`** 才能用到周期重置；两个 yml 补 `period: NONE`。测试 190（178 通过 + 12 人工跳过），0 失败。§6.13 局限 ① 已划掉 |
 | 2026-09-30 | **P3-4 完成**：API 文档（SpringDoc 自动生成 + 手写 SSE 契约） | 父 `pom.xml` 加 `springdoc.version=2.8.13`（dependencyManagement）+ web 模块引 `springdoc-openapi-starter-webmvc-ui`；新增 `nexus-agent-web/.../config/OpenApiConfig`（元信息 + `token` 请求头安全方案 + 指向 `docs/sse-contract.md`）、`OpenApiConfigTest`（4 个）；8 个 Controller 全部补 `@Tag`，关键接口补 `@Operation`，4 个免鉴权接口加 `@SecurityRequirements`；`WebInterceptorConfig` 白名单加 swagger 路径；`application.yml` 默认开、`application-prod.yml` 默认关 | ⚠️ **安全取舍**：Swagger 路径免鉴权（否则页面自身不带 token 打不开），因此**是否暴露只由 `springdoc.*.enabled` 决定**，prod 默认 `false`。⚠️ SSE 接口**不在** OpenAPI 里描述帧结构（OpenAPI 表达不了同一连接内的事件序列），只在 `@Operation` 里把人引到手写契约。⬜ **待用户验证**：重启后 `/v3/api-docs` 应返回 200、`/swagger-ui.html` 可打开；若 SpringDoc 与 Boot 3.5 有兼容问题导致启动失败，把两个 `enabled` 设为 `false` 即可降级。新增 §6.17；README 补「API 文档」章节；测试 194（182 通过 + 12 人工跳过），0 失败 |
+| 2026-09-30 | **P3-3 完成**：部署形态固化（修 build+volumes 混用、应用镜像、健康检查、优雅停机） | 新增根目录 `Dockerfile`（maven 多阶段 → `temurin:21-jre`，非 root + `HEALTHCHECK` + `exec java` 保 PID 1）、`.dockerignore`、`docker-compose.yml`（pgvector/redis/box/app 一键起，depends_on 走健康检查）、`.env.example`（**应用**的环境变量模板）；`nexus_agent_box/docker-compose.yml` **去掉源码挂载并加 healthcheck**，热重载移到新建的 `docker-compose.override.yml`（Compose 自动合并）；`nexus_agent_box/Dockerfile` 装 curl 供健康检查；`application.yml` 加 `server.shutdown=graceful` + `timeout-per-shutdown-phase=30s` + actuator（只暴露 health/info、`show-details: never`）；`WebInterceptorConfig` 白名单加 `/actuator/health`、`/actuator/info`；`.gitignore` 忽略 `/.env` 与 `/nexus_agent_box/.env` | ✅ **修掉的坑**：`build: .` + 挂载源码混用 → 跑的代码 ≠ 镜像里的代码（同一镜像不同行为、"改了没生效"最难排查），现拆成「主文件以镜像为准 + override 只服务开发」。⚠️ **安全**：actuator 只开 health/info（`env` 会把库密码与 API Key 原样吐出），health 免鉴权故 `show-details: never`。⚠️ **容器里的坑**：镜像里没有 `application-dev.yml` → 必须 `SPRING_PROFILES_ACTIVE=prod`；互访用 compose 服务名而非 localhost（写 localhost 会连到自己）。⬜ **未在真机验证**：本机无 Docker，`docker build` / `compose up` 未实跑，首次使用请先 `docker compose config` 与 `docker build` 各跑一遍。新增 §6.18；README 补「部署」章节；测试仍为 194，0 失败 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 

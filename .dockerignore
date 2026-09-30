@@ -1,0 +1,12 @@
+# 让构建上下文尽量小：源码之外的东西都别进镜像
+.git
+.workbuddy
+**/target
+**/src/main/resources/application-dev.yml
+.env
+nexus_agent_box/.env
+**/*.log
+**/.idea
+**/.vscode
+docs
+开发日志.md

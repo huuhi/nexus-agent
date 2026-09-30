@@ -7,6 +7,13 @@ WORKDIR /app
 # 安装 uv（快速包管理器）
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# curl 只服务于 docker-compose.yml 里的 healthcheck（slim 镜像默认不带）。
+# 别用业务接口做健康检查：E2B Key 配错时接口拿不到 200，
+# 容器会被判成不健康反复重启，反而把真正的原因盖住 —— 探 /docs 就好。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
 # 先复制依赖文件（利用 Docker 缓存）
 COPY pyproject.toml uv.lock ./
 

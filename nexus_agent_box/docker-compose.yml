@@ -1,4 +1,17 @@
-version: "3.9"
+# ============================================================================
+#  沙盒服务（FastAPI / E2B）容器
+# ----------------------------------------------------------------------------
+#  ⚠️ P3-3 修掉的坑：原先这里同时写了 `build: .` 和把源码目录挂进去的 volumes。
+#     结果是「镜像里有代码，运行时又被宿主机目录盖掉」：
+#       · 改了代码却没生效（或反过来：没改却生效了），是最难排查的一类问题；
+#       · 同一个镜像在不同机器上跑出不同行为 —— 镜像不再是可信的交付物。
+#     现在的分工：
+#       · **本文件 = 以镜像为准**（改代码必须 `docker compose up -d --build`）；
+#       · **docker-compose.override.yml = 开发用**，Compose 会自动合并它，
+#         把源码挂回去实现热重载（`docker compose up` 默认就带上）。
+#     CI / 生产要跳过 override，显式指定文件即可：
+#       docker compose -f docker-compose.yml up -d --build
+# ============================================================================
 
 services:
   nexus-agent-box:
@@ -8,8 +21,12 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    volumes:
-      # 挂载源码目录，改代码后只需重启容器，不用重构建镜像
-      - ./app:/app/app
-      - ./main.py:/app/main.py
+    healthcheck:
+      # 探 /docs：FastAPI 起来后这个页面一定在，且**不依赖 E2B Key 是否有效**。
+      # 若去探业务接口，Key 配错时容器会被判成不健康而反复重启，掩盖真正的原因。
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
