@@ -234,7 +234,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 |---|---|
 | 对话主流程 / SSE 事件 | `nexus-agent-service/.../service/impl/ChatServiceImpl.java` |
 | 模型选择 / 工具注册 / 记忆窗口 | `nexus-agent-service/.../factory/ChatContextFactory.java` |
-| SSE 输出格式 | `nexus-agent-service/.../converter/SseResponseConverter.java` |
+| SSE 输出格式 | `nexus-agent-service/.../converter/SseResponseConverter.java` + `common/.../em/SseEventType.java`（事件名）+ `domain/.../vo/SseEvent.java`（信封）。**权威契约见 `docs/sse-contract.md`** |
 | 用户消息 → LangChain4j Content | `nexus-agent-service/.../converter/ChatMessageConverter.java` |
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
 | 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
@@ -282,27 +282,30 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
 
 **新会话额外行为**：`finish()` 时先发 `session_id` 事件，再**异步**生成标题（见 §6.6），最后发 `finish` 事件。
 
-### 6.2 SSE 事件契约（前端按此对接）
+### 6.2 SSE 事件契约（**v2**，前端按此对接）
 
-> 📌 **P2-12 起，`message` 事件是"批量增量"**：不再逐 token 推送，而是攒够 200 字符或 60ms 才推一帧
-> （见 §6.14）。**契约没变**（仍是增量、append 语义），只是**帧数更少、单帧更长**。
-> 前端对接细节（含渲染最佳实践）见 **`docs/frontend-guide.md`**。
+> 📌 **权威契约在 `docs/sse-contract.md`，本节只留索引**（两处冲突以契约文档为准）。
+>
+> **P2-5 已落地（2026-09-30）**：事件名统一小写、所有 data 套同一个信封
+> `{seq, runId, event, data}`、新增 `run` 首帧。由 `SseContractTest`（10 个单测）固定。
 
-| event name | data | 说明 |
+| event name | data（信封里的 `data` 字段） | 说明 |
 |---|---|---|
-| `message` | `MessageVO{type: THINK\|CONTENT, thinking?, content?}` | 思考 / 正文增量（小写） |
-| **`TOOL_EXECUTION`** | `MessageVO{type: TOOL_EXECUTION, toolRequestList:[{id,toolName,arguments}]}` | 工具调用请求（**注意是全大写**；arguments 为**流式片段**，会被拆成很多个事件） |
-| **`TOOL_EXECUTION_RESULT`** | `MessageVO{type: TOOL_EXECUTION_RESULT, toolResultVO:{id,toolName,result,isError}}` | 工具结果（**全大写**） |
-| `session_id` | `sessionId` | 仅新会话（小写） |
-| `finish` | `DONE` | 结束（小写） |
-| `error` | `{type: ERROR, runId, message, hint}` | **运行失败**（小写，P2-6 新增）。`runId` 是 trace_id，可直接在服务端日志里 grep `RUN runId=<值>` 定位本次运行；在此之前出错只是连接断掉，前端拿不到任何线索 |
-| `artifact` | `MessageVO{type: ARTIFACT, artifact:{id,name,url,size,extension,sourcePath}}` | **AI 产出的交付物**（小写，P2-10）。前端渲染成「下载卡片」；`id` 是 `sys_file` 主键（可去重/追溯）。由模型调用 `publish_artifact` 工具触发 |
+| `run` | `{sessionId, isNewSession}` | **第一帧**（P2-5 新增）。把 runId/sessionId 提前交给前端；v1 的 `session_id` 事件已并入此帧 |
+| `message` | `MessageVO{type: THINK\|CONTENT, thinking?, content?}` | 思考 / 正文增量。**批量增量**（P2-12）：攒够 200 字符或 60ms 才推一帧，append 语义不变 |
+| `tool_execution` | `MessageVO{type: TOOL_EXECUTION, toolRequestList:[{id,toolName,arguments}]}` | 工具调用请求；`arguments` 是**流式片段**，同一调用会拆成多帧，需按 `id` 累积 |
+| `tool_execution_result` | `MessageVO{type: TOOL_EXECUTION_RESULT, toolResultVO:{id,toolName,result,isError}}` | 工具结果，用 `id` 与上面对配对 |
+| `artifact` | `MessageVO{type: ARTIFACT, artifact:{id,name,url,size,extension,sourcePath}}` | AI 产出的交付物（P2-10），渲染成下载卡片 |
+| `finish` | `{status: DONE}` | 正常结束（v1 是裸字符串 `"DONE"`） |
+| `error` | `{type: ERROR, message, hint}` | 运行失败；`runId` 在**信封层**，可 grep `RUN runId=<值>` 定位本次运行 |
 
-> ⚠️ **事件名大小写不统一，前端容易踩坑。** 实测确认：`message` / `session_id` / `finish` / `error` 是
-> 代码里写的小写字面量，而两个工具事件用的是 `MessageType` 枚举值（**全大写**）。
-> 按 `event: tool_execution` 监听会永远收不到工具事件。
-> 成因见 `SseResponseConverter`：前者写死 `"message"`，后者写 `MessageType.X.getValue()`。
-> 统一大小写属于接口契约变更，已列入 **P2-5（SSE 契约版本化）**，本轮只把文档改成真实值。
+**信封字段**：`seq`（本次 Run 内从 1 递增，可判断丢帧）、`runId`（trace_id）、
+`event`（与 SSE `event:` 同名）、`data`（上表载荷）。
+`seq` 同时写进 SSE 原生 `id:`，浏览器 `EventSource` 重连时会作为 `Last-Event-ID` 回传。
+
+> ⚠️ **v1 → v2 是破坏性变更**（事件名改小写、data 多一层、`session_id` 取消）。
+> 之所以现在一次改干净：当前没有存量前端，前端由我们在 P3-1 自己写。迁移对照表见契约文档 §6。
+> **服务端回放未实现**（需事件持久化），断线后请按 `sessionId` 重拉历史 —— 契约文档 §5 有说明。
 
 ### 6.3 模型选择逻辑
 
@@ -676,12 +679,16 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 - **把判断逻辑抽成独立的 `SseChunkBuffer`**：`SseResponseConverter` 依赖 `SseEmitter` 很难单测，
   抽出来后"何时该发"可以用纯单测覆盖，发送本身只剩一行 `emitter.send`
 - 缓冲操作 `synchronized`（流式回调可能来自不同线程）；配置成 0/负数会兜到安全值（否则等于没优化）
-- **不改 SSE 契约**：事件名、data 结构都没变，只是**帧数变少、单帧变长**。
-  所以前端唯一要注意的是**保持 append 语义**（详见 `docs/frontend-guide.md §5.2`）
+- **不改 SSE 契约的语义**：仍是增量、append，只是**帧数变少、单帧变长**。
+  所以前端唯一要注意的是**保持 append 语义**（详见 `docs/sse-contract.md §7`）
 
 **前端配套**：后端只减少了帧数，前端若"每个事件都重渲染整棵消息列表"照样卡 ——
 渲染侧的做法（按 `requestAnimationFrame` 批量提交、思考区/正文分开累积、Markdown 延后整体渲染、
-自动滚动节流）已写进 **`docs/frontend-guide.md`**，可直接交给前端同学。
+自动滚动节流）已写进 **`docs/sse-contract.md §7`**，可直接交给前端同学。
+
+> 📌 `docs/frontend-guide.md` 曾在 P2-12 产出，后被用户删除（当时前端暂缓）。
+> D2 已改判为"做前端"，该文档将在 **P3-1 重新产出**；在那之前，前端相关的权威说明就是
+> **`docs/sse-contract.md`** + 本文 §7（API 一览）与 §6.2。
 
 ---
 
@@ -939,6 +946,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-10 收尾**：虚拟工作区的会话文件列表/删除接口 | 新增 `controller/ArtifactController` + `ArtifactService.listBySession/delete` + `AliOssUtil.deleteObject/objectNameOf`（+ `OssObjectNameTest` 6 个单测）+ `docs/sql/005_add_sys_file_session_index.sql` | ⚠️ **需执行 `005`**（列表查询的索引）；所有查询/删除都带 `user_id` 过滤（越权防护）；删除顺序为先删记录再尽力删对象；§7 API 一览已登记；§16.2 实施结果表加 ⑤ |
 | 2026-09-24 | **P2-12 完成**：SSE 增量合并（修"输出卡顿"）+ **新增前端对接文档** | 新增 `converter/SseChunkBuffer.java`（+ `SseChunkBufferTest` 9 个单测）；`SseResponseConverter` 改为批量推送并在工具/产物/结束/报错前强制冲刷；`AgentProperties.Sse` 加 `flushMaxChars`/`flushInterval`；两个 yml 补 `sse` 配置；**新增 `docs/frontend-guide.md`** | 新增 §6.14；§6.2 加"批量增量"提示；§15 补 2 行配置。根因：原来每个 token 推一帧（千字回复=上千帧）→ 前后端被高频小包拖慢；现攒 200 字符/60ms 推一帧 |
 | 2026-09-30 | **P2-7 完成**：长期记忆检索重写（**决策 D4 拍板 = pg_trgm**） | 新增 `utils/MemoryQueryParser`（+ `MemoryQueryParserTest` 12 个）、`UserMemoryServiceImplTest`（18 个）；`UserMemoryServiceImpl` 重写检索与写入（多关键词 OR + Java 排序/去重 + pg_trgm 兜底 + 写入两级去重）；`UserMemoryMapper`/XML 换成 5 条专用语句；**删除坏死的向量路径**（`search`/`SearchMemoryRequest`/`MemorySearchResult`/`searchMemory`，同步删 `ModelTest.testEmbeddingSearch`）；`MemoryTool` 输出改逐行 `- xxx`；`AgentProperties.Memory` 加 6 项；新增 `docs/sql/006_add_user_memory_trgm_index.sql` | 新增 §6.15；⚠️ **需执行 `006`**（`pg_trgm` 扩展 + GIN 索引）才有模糊兜底；**不执行也能正常跑**（自动降级为纯字面匹配，只 WARN 一次）。修掉的四个硬伤见 §6.15 表格 |
+| 2026-09-30 | **P2-5 完成**：SSE 契约 v2（事件名统一小写 + `seq`/`runId` 信封 + `run` 首帧） | 新增 `em/SseEventType`（事件名枚举，杜绝字面量漂移）、`vo/SseEvent`（统一信封）、**`docs/sse-contract.md`（权威契约文档）**、`SseContractTest`（10 个单测）；`SseResponseConverter` 所有事件改走唯一的 `dispatch(SseEvent)` 出口并写入 SSE 原生 `id:`；`ChatServiceImpl` 建好 writer 后调 `writer.start()` | ⚠️ **破坏性变更**：① 事件名 `TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` → 小写；② 所有 data 多一层信封（原载荷移到 `data`）；③ `session_id` 事件取消（并入首帧 `run`）；④ `finish` 的 data 由 `"DONE"` 改 `{"status":"DONE"}`；⑤ `error` 的 `runId` 提到信封层。当前无存量前端，前端由我们在 P3-1 写，故一次改干净；迁移对照表见契约文档 §6。⬜ **服务端回放未做**（需事件持久化），断线后按 `sessionId` 重拉历史，已写进契约文档 §5。README 文档索引同步（原指向已删除的 `frontend-guide.md`） |
 | 2026-09-30 | **P2-13 完成**：知识库向量口径统一 + **修掉 RAG 跨用户越权** | `KnowledgeBaseFileServiceImpl`（注入系统 `EmbeddingModel`、**删除** `getEmbeddingModel()`，顺带修 `failReason` 跨文件污染）；`KnowledgeBaseFileService.embedding` 去掉 `configId`/`model` 参数；`KnowledgeFileDTO` 两字段标 `@Deprecated` 且**不再必填**；`KnowledgeBaseServiceImpl` 调用同步；`RagTool.ragSearch` 检索加 `user_id` 过滤（无用户上下文时拒绝检索）；新增 `RagToolTest`（4 个）+ `KnowledgeBaseFileServiceImplTest`（4 个） | ⚠️ **行为变更**：① 向量模型固定为系统模型，用户自选向量模型能力移除（自选会让入库/检索向量空间不一致 → 检索结果完全不相关且不报错）；② `POST` 上传知识库不再要求 `configId`/`model`；③ RAG 只检索**本人**知识库（此前是全表检索，用户 A 能命中用户 B 的内容）。过滤用 `::text` 比较，历史数据里 `user_id` 存成 JSON 数字或字符串都能命中。测试 158（146 通过 + 12 人工跳过），0 失败 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
@@ -999,7 +1007,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | **`sys_file` 表在库中不存在** | ✅ 已修 | 该表曾丢失，导致文件上传必报 `relation does not exist`。依据 `SysFile` 实体 + `FileMapper.xml` 的 resultMap 推导出 DDL 并建表 |
 | **`knowledge_base_file` 缺 `file_name` 列** | ✅ 已修 | `insertKnowledge` 会写入它、`resultMap` 也映射它，缺列导致**知识库入库与详情查询双双报错**。基线已含该列 |
 | **`KnowledgeBaseFileMapper.xml` 把 `fileName` 映射到 `fail_name`** | ✅ 已修 | 笔误，改为 `file_name` |
-| **SSE 事件名大小写不统一** | 📝 记录 | `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写）。按 `event: tool_execution` 监听会收不到工具事件。属接口契约变更，列入 P2-5 统一。详见 §6.2 |
+| ~~**SSE 事件名大小写不统一**~~ | ✅ 已修（P2-5） | v1 里 `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写），按 `event: tool_execution` 监听收不到。v2 已统一为小写，并顺带做了 `seq` + `runId` 信封与 `run` 首帧。权威契约见 **`docs/sse-contract.md`**（§6.2 只留索引） |
 | ~~**知识库入库强制要求用户自带 embedding 配置**~~ | ✅ 已修（P2-13） | 原 `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索用的是**系统默认** EmbeddingModel → 没配 API Key 的用户建库必失败，且即便配上也是**跨模型检索**（向量空间不可比、结果不相关且不报错）。现已统一为「入库与检索共用注入的系统模型」，`getEmbeddingModel()` 整体删除（连带删掉里面的 `System.out.println(apiKey)`），`configId`/`model` 从方法签名移除 |
 | ~~**RAG 检索无任何用户隔离（跨用户越权）**~~ | ✅ 已修（P2-13） | `RagTool.ragSearch` 构造 `EmbeddingSearchRequest` 时**没有 filter**，等于在整张 `knowledge_embedding` 上做全局检索 → 用户 A 能检索到用户 B 的知识库内容。现已加 `user_id` 过滤（`::text` 比较，兼容历史数据里数字/字符串两种存法）；拿不到用户上下文时**拒绝检索**而不是退化成全表检索。⚠️ 已知取舍：检索范围只限本人，`KnowledgeBase.isPublic` 目前在 RAG 侧不生效（该字段本来也从未被任何查询使用） |
 | **`User` 实体缺 `@TableId`** | ✅ 已修 | 补 `@TableId(type = IdType.AUTO)`。原先 `getById`/`updateById` 会失败，且 `save()` 后取不到 id（`register` 要用它签 JWT） |

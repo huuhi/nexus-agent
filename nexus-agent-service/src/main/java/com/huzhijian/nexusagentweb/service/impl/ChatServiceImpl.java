@@ -121,6 +121,9 @@ public class ChatServiceImpl implements ChatService {
                 .sseEmitter(sseEmitter)
                 .build();
 
+//        P2-5：首帧立刻把 runId / sessionId 交给前端（内部幂等，漏调也会被后续事件兜底补发）
+        writer.start();
+
         sseEmitter.onCompletion(writer::finish);
         sseEmitter.onTimeout(()->writer.onError(new Throwable("超时！")));
         sseEmitter.onError(writer::onError);
