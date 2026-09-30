@@ -79,6 +79,57 @@ public class AgentProperties {
          * 与实际使用的模型无关，会导致窗口裁剪不准。换了主力模型后建议同步改这里。
          */
         private String tokenEstimatorModel = "gpt-4o";
+
+        /**
+         * 单次长期记忆检索最多返回多少条（P2-7）。
+         * <p>
+         * 这些条目会直接拼进系统提示词，条数过多既费 token 又稀释重点。
+         * 默认 20。
+         */
+        private int maxResults = 20;
+
+        /**
+         * 一次查询最多拆出多少个关键词（P2-7）。
+         * <p>
+         * 模型可能丢一整句话进来（"用户喜欢吃什么口味的菜"），
+         * 拆太多词会让 OR 条件膨胀、命中变"什么都算相关"。默认 6。
+         */
+        private int maxKeywords = 6;
+
+        /**
+         * 是否启用 pg_trgm 相似检索兜底（P2-7 / D4）。
+         * <p>
+         * 字面匹配（{@code ILIKE '%kw%'}）一条都没命中时，再用
+         * {@code similarity(content, kw)} 做一次模糊匹配，
+         * 能救回"喜欢看科幻电影" ↔ "喜欢看科幻片"这类**部分重叠**的表述。
+         * <p>
+         * ⚠️ 它需要 <b>pg_trgm 扩展</b>（见 {@code docs/sql/006_add_user_memory_trgm_index.sql}）；
+         * 没装也不会报错 —— 首次失败会被捕获并永久降级为纯字面匹配，只在日志里 WARN 一次。
+         */
+        private boolean fuzzy = true;
+
+        /**
+         * 相似检索的最低分值（0~1，P2-7）。
+         * <p>
+         * 中文短句的三元文法重叠率天然偏低（不像英文有空格和词形变化），
+         * 沿用 PG 默认的 0.3 会漏掉不少相关项，故默认压到 0.15。
+         * 觉得结果太杂就往上调。
+         */
+        private double fuzzyMinScore = 0.15;
+
+        /**
+         * 单条长期记忆的最大字符数，写入时截断（P2-7）。
+         * 默认 500。
+         */
+        private int maxContentLength = 500;
+
+        /**
+         * 写入去重的相似度阈值（0~1，P2-7）。
+         * <p>
+         * 已有记忆与待写入内容的 {@code similarity()} 达到该值即判为重复、直接丢弃，
+         * 避免模型反复保存同一条偏好把库撑爆、把检索结果污染。默认 0.85。
+         */
+        private double dedupThreshold = 0.85;
     }
 
     @Data

@@ -16,14 +16,14 @@ MCP 工具接入、E2B 云沙盒执行代码、RAG 知识库、用户长期记�
 |---|---|---|
 | JDK | **21** | 项目用 Java 21 + 虚拟线程 |
 | Maven | 3.9+ | 也可用项目自带的 `./mvnw`（首次会自行下载） |
-| PostgreSQL | **16** + **pgvector 扩展** | 向量检索必需，`docs/sql/001_baseline.sql` 会 `CREATE EXTENSION vector` |
+| PostgreSQL | **16** + **pgvector 扩展**（+ `pg_trgm`，可选） | `vector`：RAG 向量检索必需，`001_baseline.sql` 会 `CREATE EXTENSION vector`；`pg_trgm`：长期记忆模糊检索（`006`），**不装也能跑**，只是检索质量降级为纯字面匹配 |
 | Redis | 任意版本 | 缓存用户配置、验证码、会话归属 |
 | 外部服务 | E2B API Key、阿里云 OSS、LLM API Key | 见下方配置 |
 
 ### 1. 建库并初始化表结构
 
 ```bash
-# 建库（pgvector 扩展由基线脚本创建，但要确保服务端已安装该扩展）
+# 建库（扩展由脚本创建，但要确保服务端已安装 pgvector / pg_trgm 这两个 contrib 模块）
 createdb -h <PG_HOST> -U postgres nexus_agent
 
 # 1) 执行基线（12 张表 + 2 枚举 + 4 外键 + 9 索引）
@@ -34,9 +34,10 @@ psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/002_drop_skill_mcp_info
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/003_add_user_token_quota.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/004_add_sys_file_session_id.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/005_add_sys_file_session_index.sql
+psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/006_add_user_memory_trgm_index.sql
 ```
 
-> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 → 004 → 005 的顺序**各跑一次。
+> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 → 004 → 005 → 006 的顺序**各跑一次。
 > ⚠️ 基线脚本会先 DROP 再重建，**只能在空库或允许清空的环境执行**；
 > 增量脚本都是幂等的（可重复执行）。
 > ⚠️ **增量脚本必须执行**：实体已经包含新增的列，库里缺列会导致登录/查用户直接报
@@ -157,6 +158,8 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | `nexus.agent.security.enabled` | `true` | 本地调试不想带 token 时设为 `false`（关闭时启动会打 WARN）。**生产必须为 true** |
 | `nexus.agent.startup.fail-fast` | `true` | 启动自检发现必需配置缺失时是否阻止启动；只想临时带病启动再设 `false` |
 | `nexus.agent.quota.enabled` / `.default-quota` | `true` / `0` | token 配额校验；`default-quota` 是新用户默认额度（`<=0` 不限）。**给某人限额改库**：`UPDATE users SET token_quota = N WHERE id = ?`（需先执行 `docs/sql/003`） |
+| `nexus.agent.memory.max-results` | `20` | 长期记忆单次检索最多返回多少条（太多会塞爆提示词） |
+| `nexus.agent.memory.fuzzy` | `true` | 字面匹配零命中时用 `pg_trgm` 模糊兜底。**需执行 `docs/sql/006`**；没装扩展会自动降级（仅 WARN 一次） |
 
 ---
 

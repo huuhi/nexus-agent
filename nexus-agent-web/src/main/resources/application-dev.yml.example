@@ -101,6 +101,21 @@ nexus:
       # token 估算器使用的模型名。注意它只用于本地估算，不产生 API 调用；
       # 与真实使用的模型不一致会导致窗口裁剪不准，换主力模型时建议同步改
       token-estimator-model: gpt-4o
+      # ---- 长期记忆检索（P2-7 / 决策 D4 = pg_trgm）----
+      # 单次检索最多返回多少条（会拼进系统提示词，太多既费 token 又稀释重点）
+      max-results: 20
+      # 一次查询最多拆几个关键词（模型可能丢一整句话进来，拆太多命中会变"什么都相关"）
+      max-keywords: 6
+      # 字面匹配一条都没中时，是否再用 pg_trgm 的 similarity() 兜底模糊匹配
+      # ⚠️ 依赖 pg_trgm 扩展（docs/sql/006_add_user_memory_trgm_index.sql）；
+      #    没装会降级为纯字面匹配，不报错
+      fuzzy: true
+      # 兜底的最低相似度（0~1）。中文短句三元文法重叠率天然偏低，故低于 PG 默认的 0.3
+      fuzzy-min-score: 0.15
+      # 单条记忆最大字符数，写入时截断
+      max-content-length: 500
+      # 写入去重阈值（0~1）：与已有记忆相似度达到该值即判重复丢弃
+      dedup-threshold: 0.85
     sandbox:
       # 是否按会话复用沙盒。开启后同一会话内多次工具调用复用同一个沙盒（E2B 按量计费）
       reuse-per-session: true

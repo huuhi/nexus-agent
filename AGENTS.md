@@ -32,7 +32,7 @@
 | MCP 接入（仅 streamable_http） | ✅ 可用（有资源泄漏） | `McpInformationServiceImpl` |
 | 沙盒执行代码（**E2B 云沙盒**，非本地 Docker） | ✅ 可用（有路由 bug） | `BoxTool` + `nexus_agent_box/` |
 | RAG 知识库（pgvector） | ⚠️ 可用但有数据写入 bug | `KnowledgeBaseFileServiceImpl` |
-| 长期记忆 | ⚠️ 已降级为 SQL LIKE 模糊搜索（向量检索被注释） | `UserMemoryServiceImpl` / `MemoryTool` |
+| 长期记忆 | ✅ 可用（`pg_trgm` 模糊检索 + 字面匹配兜底，P2-7） | `UserMemoryServiceImpl` + `utils/MemoryQueryParser` / `MemoryTool`（见 §6.15） |
 | Skill 系统（`langchain4j-skills`） | ✅ 可用（本地目录扫描，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `skills/` 目录 |
 | JWT 登录 / 邮件验证码 / WS 推送 / OSS 上传 | ✅ 可用 | `LoginCheckInterceptor` 等 |
 | 前端 | ❌ 无（仅 `static/showHistory.html` 调试页） | — |
@@ -684,6 +684,59 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 ---
 
+### 6.15 长期记忆检索（P2-7，决策 D4 = pg_trgm）
+
+**原实现的问题**：`UserMemoryServiceImpl.getMemory` 只有一句
+`query().like(key != null, "content", key)`，四个硬伤：
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | 整串当一个关键词 | 模型丢一句"用户喜欢吃什么口味的菜"进来 → `LIKE '%...%'` 必然零命中 |
+| 2 | `key == null` 时不加条件 | **返回该用户全部记忆**，一次性塞进系统提示词 |
+| 3 | 无条数上限 / 无排序 / 无去重 | 有多少返回多少，顺序随数据库；重复记忆重复注入 |
+| 4 | 不转义 LIKE 通配符 | 关键词里带 `%` 会退化成"匹配全部" |
+
+**现在的检索链路**（`UserMemoryServiceImpl.getMemory`）：
+
+1. `MemoryQueryParser.split(key)` 切关键词：按非中英文数字的标点/空白切分，
+   丢掉长度 < 2 的碎片，去重保序，最多 `memory.max-keywords` 个；
+   **切不出东西但原串非空时整串当一个词**（保证不退化成"查全部"）。
+2. 有关键词 → `searchByKeywords`（多关键词 `ILIKE '%kw%' ESCAPE '\'` **OR**）→
+   Java 侧按「命中关键词个数 ↓、id ↓」排序 → 按内容键去重 → 截断到 `memory.max-results`。
+   数据库粗筛时多取 4 倍（`OVER_FETCH`），否则排序只在"前 N 条"内进行，等于没排。
+3. 无关键词 → `latestByUser`（按 id 倒序取 N 条）= "浏览全部"，**不再是返回全部**。
+4. 字面匹配**零命中**且启用了 `fuzzy` → `searchBySimilarity` 走 pg_trgm 的
+   `similarity(content, ?) >= 阈值` 兜底。
+
+**能力边界（很重要，别对 pg_trgm 抱错期望）**：
+
+- ✅ 能救回**字面部分重叠**：`喜欢看科幻电影` ↔ `喜欢看科幻片`
+- ❌ 救不了**语义相似**：`喜欢吃什么` ↔ `不吃辣` —— 那必须靠向量（pgvector），
+  决策 D4 已把它推迟（见下）。
+
+**降级设计**：pg_trgm 是**可选扩展**。没装时 `similarity()` 会直接报错，
+首次异常被捕获后 `fuzzyBroken` 置位 → **永久降级为纯字面匹配**，只 WARN 一次，绝不拖垮对话。
+字面匹配（ILIKE）不依赖扩展，装不装都能用 —— `006` 只影响性能与兜底能力。
+
+**写入侧**（`saveMemory`，`@Async`）：归一化（去首尾 + 压缩空白）→ 超长截断 →
+**两级去重**（① SQL `countByNormalizedContent`：归一化后完全一致；② `countSimilar`：trigram 相似度 ≥ 阈值）。
+模型很容易反复保存同一条偏好，不去重会把库撑爆、把检索结果污染。
+
+> ⚠️ **去重键必须两侧一致**：Java 用 `MemoryQueryParser.contentKey`（去掉**全部**空白 + 转小写），
+> SQL 用 `lower(regexp_replace(content, '\s+', '', 'g'))`。
+> 早期版本 Java 侧只是"压缩空白"，与 SQL 的"去掉空白"不一致，出现过同内容判不重复的问题 —— 改任一侧都要同步另一侧。
+
+**向量路径已删除**：`UserMemoryMapper.search` 引用了表里不存在的 `embedding`/`category` 列，
+是坏代码且从未被调用（`searchMemory` 无调用方）。D4 选定 pg_trgm 后整条删除
+（`SearchMemoryRequest` / `MemorySearchResult` / `UserMemoryService.searchMemory` 一并移除）。
+将来要上 pgvector：`006` 注释里有说明，SQL 可从 git 历史找回。
+
+**工具输出**：`MemoryTool.searchUserMemory` 以前是无分隔符硬拼接（`不吃辣喜欢科幻片`），
+模型很难切分；现改为 `「- xxx」` 逐行拼接 + 去重，空结果返回明确文案而不是空串。
+`@P` 描述也改成"只用 1~2 个核心词"——原描述只写"关键字"，模型经常传整句话。
+
+---
+
 ## 7. API 一览（真实前缀是 `/api`）
 
 | 方法 | 路径 | Controller | 说明 |
@@ -722,7 +775,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 - **分层**：Controller（薄，只做参数校验和转发）→ Service/ServiceImpl → Mapper。业务逻辑不要写在 Controller。
 - **注入**：构造器注入为主。Lombok `@RequiredArgsConstructor` 或手写构造函数。现存少量 `@Resource` 字段注入（`ChatMemoryServiceImpl`、`PgVectorEmbeddingFactory`），新代码不要效仿。
-- **DTO**：优先 Java `record`（`ChatDTO`、`ChatUserMessage`、`ModelDTO`、`SearchMemoryRequest`）。
+- **DTO**：优先 Java `record`（`ChatDTO`、`ChatUserMessage`、`ModelDTO`）。
 - **返回信封**：统一 `Result{code,msg,data,total}`，`code=0` 成功、`1` 失败。SSE 接口例外（直接返回流）。
 - **异常**：抛自定义异常（`ValidationException` / `UnauthorizedException` / `NotFoundException` / `NotSupportException` / `ParserFileException` / `PermissionDeniedException`），由 `GlobalExceptionHandler` 统一转 `Result`。
 - **日志**：`@Slf4j`。**禁止 `System.out.println`**（现存 2 处违规：`KnowledgeBaseFileServiceImpl`、`NexusAgentWebApplication` 打印 BASE_URL）。
@@ -773,8 +826,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 - **只给 4 个关系加外键**（`user_config`、`knowledge_base_file`×2、`skill_mcp_information`）。
   `chat_memory` / `chat_history_list` / `mcp_information` **刻意不加** —— 沿用原作者决定
   （`开发日志.md` 4.20：存在「先插子行、父信息异步补」的写入顺序）。
-- **`user_memory` 故意没有 `embedding` 列**：长期记忆当前走 SQL LIKE，是否恢复向量检索
-  取决于决策 D4（见 P2-7）。
+- **`user_memory` 没有 `embedding` 列（仍然如此）**：D4 已定为 pg_trgm，**不恢复向量检索**；
+  语义相似检索（pgvector）推迟到记忆量上来之后。详见 §6.15 与 `docs/sql/006_*.sql`。
 
 ### 9.3 字段层面的坑
 
@@ -833,6 +886,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-10 部分完成**：产物交付链路打通（**决策 D5 已定为 (c) 虚拟工作区**） | 新增 `tools/BoxTool.publishArtifact`（工具）+ `service/ArtifactService`/`Impl` + `docs/sql/004_add_sys_file_session_id.sql`；`MessageType.ARTIFACT` + `MessageVO.artifact` + `SseResponseConverter.writeArtifact`；`ChatServiceImpl` 在 `onToolExecuted` 里识别并落库/推事件（+ `ArtifactExtractionTest` 5 个单测）；Python 侧 `oss_utils.object_prefix()` 与 `/file` 路由带 `user_id`；提示词加「产出文件必须用 publish_artifact 交付」 | §16.2 补实施结果表；§6.2 契约表加 `artifact` 行；⚠️ **需先执行 `004`**（实体已加 `sessionId`）。⬜ E2B 模板预装 Office 库需用户在 E2B 侧执行 |
 | 2026-09-24 | **P2-10 收尾**：虚拟工作区的会话文件列表/删除接口 | 新增 `controller/ArtifactController` + `ArtifactService.listBySession/delete` + `AliOssUtil.deleteObject/objectNameOf`（+ `OssObjectNameTest` 6 个单测）+ `docs/sql/005_add_sys_file_session_index.sql` | ⚠️ **需执行 `005`**（列表查询的索引）；所有查询/删除都带 `user_id` 过滤（越权防护）；删除顺序为先删记录再尽力删对象；§7 API 一览已登记；§16.2 实施结果表加 ⑤ |
 | 2026-09-24 | **P2-12 完成**：SSE 增量合并（修"输出卡顿"）+ **新增前端对接文档** | 新增 `converter/SseChunkBuffer.java`（+ `SseChunkBufferTest` 9 个单测）；`SseResponseConverter` 改为批量推送并在工具/产物/结束/报错前强制冲刷；`AgentProperties.Sse` 加 `flushMaxChars`/`flushInterval`；两个 yml 补 `sse` 配置；**新增 `docs/frontend-guide.md`** | 新增 §6.14；§6.2 加"批量增量"提示；§15 补 2 行配置。根因：原来每个 token 推一帧（千字回复=上千帧）→ 前后端被高频小包拖慢；现攒 200 字符/60ms 推一帧 |
+| 2026-09-30 | **P2-7 完成**：长期记忆检索重写（**决策 D4 拍板 = pg_trgm**） | 新增 `utils/MemoryQueryParser`（+ `MemoryQueryParserTest` 12 个）、`UserMemoryServiceImplTest`（18 个）；`UserMemoryServiceImpl` 重写检索与写入（多关键词 OR + Java 排序/去重 + pg_trgm 兜底 + 写入两级去重）；`UserMemoryMapper`/XML 换成 5 条专用语句；**删除坏死的向量路径**（`search`/`SearchMemoryRequest`/`MemorySearchResult`/`searchMemory`，同步删 `ModelTest.testEmbeddingSearch`）；`MemoryTool` 输出改逐行 `- xxx`；`AgentProperties.Memory` 加 6 项；新增 `docs/sql/006_add_user_memory_trgm_index.sql` | 新增 §6.15；⚠️ **需执行 `006`**（`pg_trgm` 扩展 + GIN 索引）才有模糊兜底；**不执行也能正常跑**（自动降级为纯字面匹配，只 WARN 一次）。修掉的四个硬伤见 §6.15 表格 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -843,7 +897,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 沙盒实现 | Docker + docker-compose | **E2B 云沙盒**（`e2b-code-interpreter`），docker-compose 只是容器化 FastAPI |
 | Mapper 数量 | 12 | **11** |
 | 工具注册 | `MemoryTool.ragSearch` 条件注册 | 实际注册的是整个 `MemoryTool` 实例；`RagTool` 是未注册死代码 |
-| 长期记忆 | pgvector 向量检索 | **已改为 SQL LIKE**，向量代码被注释 |
+| 长期记忆 | pgvector 向量检索 | **`pg_trgm` 模糊检索**（P2-7，见 §6.15）：`ILIKE '%kw%'` 走 GIN 索引，零命中时 `similarity()` 兜底。向量路径已删除 |
 | 默认流式模型 | `deepseek-v4-flash` | 与 yml 一致 ✅ |
 | 认证头 | 未提及 | 自定义头 **`token`** |
 
@@ -901,7 +955,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | **`user_memory.source` 是 `char(32)` 装不下 UUID** | ✅ 已修 | `saveLongMemory` 会写入 36 字符的会话 ID，原 `char(32)` 插入即报 `value too long`。已改 `varchar(64)` |
 | **`user_config.mcp_token` 是 `char(128)` 偏窄** | ✅ 已修 | `Encryptors.text` 输出长度 = (16字节IV + 明文)×2，token 超 48 字符即溢出。已改 `varchar(512)` |
 | `user_config` 字段与实体不一致 | ✅ 已修 | `llm_api_token` 由 `json` 改 `jsonb`；删除实体中不存在的 `user_default` 死列 |
-| `UserMemoryMapper.search` 引用了不存在的 `category`/`embedding` 列 | ⬜ 未修 | 死代码（`searchMemory` 从未被调用），调用即失败。与 D4 一起在 P2-7 处理 |
+| ~~`UserMemoryMapper.search` 引用了不存在的 `category`/`embedding` 列~~ | ✅ 已消除（P2-7） | 死代码（`searchMemory` 从未被调用），调用即失败。D4 定 pg_trgm 后整条向量路径删除（含 `SearchMemoryRequest` / `MemorySearchResult` / `searchMemory`） |
 
 **实测阶段新发现（2026-09-23 把项目真跑起来后暴露，静态审查无法发现）**
 
@@ -1007,6 +1061,11 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | D1 | 沙盒方案 | ✅ **保持 E2B 云沙盒** | 改动最小。**代价：必须补 P1-7 `SandboxSession` 做自动回收**，否则沙盒泄漏会持续产生费用 |
 | D3 | Skill 落地方案 | ✅ **本地目录扫描**（服务端内置 skill 目录，扫描 `SKILL.md` 注册） | 避开 B/S 下上传 zip 的解压落盘与路径穿越安全问题 |
 | D5 | 文件空间产品形态 | ✅ **(c) 虚拟工作区**（2026-09-24 定） | 协议优先：「文件引用 + 产物回传」这套协议是四条路**共用**的，且代价最低（复用 OSS + `sys_file` + 沙盒）。**边界：只做"AI 产出文件 → 用户拿走"，不含"AI 直接改本机文件"**（后者需另走 (b)/(d)，见 §16.4） |
+| D4 | 长期记忆检索方式 | ✅ **pg_trgm**（2026-09-30 定，P2-7 已落地） | 零 API 成本解掉 LIKE 的硬伤；**不加 `embedding` 列**。边界：只解决字面部分重叠（"喜欢看科幻电影"↔"喜欢看科幻片"），**语义相似（"喜欢吃什么"↔"不吃辣"）仍需 pgvector**，留到记忆量上来之后再做 |
+
+> ✅ **已兑现（P2-7，2026-09-30）**：`docs/sql/006_add_user_memory_trgm_index.sql`
+> （`pg_trgm` 扩展 + `content` 的 GIN `gin_trgm_ops` 索引）+ `UserMemoryServiceImpl` 重写，
+> 坏死的向量路径已删除。实现要点与降级设计见 **§6.15**。
 
 > ✅ **已兑现（P2-1，2026-09-23）**：`ChatDTO.skills` 已真正接进 `ChatContextFactory`
 > （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{runtimeCapabilities}}`）。
@@ -1014,16 +1073,15 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 
 ### 14.2 仍待定（**详细简报见 `重构计划.md §七`**）
 
-> 2026-09-24：P2 里"不依赖决策"的任务已全部完成；**D5 已定 (c) 并落地 P2-10**。
-> 剩下的 `P2-5` / `P2-7` / `P2-11` 与整个 P3 仍在等决策（`P2-10` 已不阻塞）。
+> 2026-09-30：**D4 已定（pg_trgm）并落地 P2-7**。
+> 仍待定的只剩 **D2**；`P2-11` 在 D5=(c) 下不需要做。
+> `P2-5`（SSE 契约版本化）是**破坏性变更**，建议与前端一起定 —— 因此实际被 D2 阻塞。
 > 每项的选项对比、代价、推荐与"选定后立刻要做的事"已整理在 `重构计划.md §七`，
 > 本表只留索引，避免两处维护。
 
 | # | 问题 | 选项 | 影响范围 |
 |---|---|---|---|
 | D2 | 前端是否要做？ | 做（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐）/ 只做 API + SDK 不碰 UI | 整个 P3 阶段；也决定 `P2-5`（SSE 契约）何时能一次定死 |
-| D4 | 长期记忆要不要恢复向量检索 | 恢复 pgvector / 保持 SQL LIKE / **pg_trgm 全文检索** | `UserMemoryServiceImpl`、`user_memory` 表。⚠️ **PG 的 `tsvector` 对中文分词很差**，要改善中文检索应选 `pg_trgm` |
-| D5 | 文件空间产品形态 | (a) File System Access API / (b) 本地守护进程·桌面客户端 / (c) 虚拟工作区 / (d) 服务端挂载本机目录 | `P2-10`、`P2-11`，以及是否会推翻 D1 的 E2B 选择。**详见 §16**；先回答"是产出文件拿走，还是直接改本机文件"（§16.4） |
 
 > ❗**D1 的后果要在 D5 里一次性想清楚**：E2B 是云端沙盒，**AI 读不到你本机磁盘**。
 > 若核心诉求是"让 AI 直接改我本机项目文件"，答案不是优化 E2B，而是 (b) 或 (d)。
@@ -1042,6 +1100,12 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.sse.flush-interval` | `60ms` | 流式增量合并的兜底时间阈值（≈16 帧/秒，与屏幕刷新率相当） |
 | `nexus.agent.memory.max-tokens` | `100000` | 对话记忆窗口。只影响送给模型的上下文，**不影响已入库的消息** |
 | `nexus.agent.memory.token-estimator-model` | `gpt-4o` | token 估算器用的模型名。只做本地估算、不产生 API 调用；与实际模型不一致会导致窗口裁剪不准 |
+| `nexus.agent.memory.max-results` | `20` | 长期记忆单次检索最多返回多少条（P2-7，见 §6.15）。这些条目会进提示词，太多既费 token 又稀释重点 |
+| `nexus.agent.memory.max-keywords` | `6` | 一次检索最多拆几个关键词。模型可能丢整句话进来，拆太多会让 OR 条件膨胀 |
+| `nexus.agent.memory.fuzzy` | `true` | 字面匹配零命中时是否用 pg_trgm `similarity()` 兜底。**需要 `006` 建的扩展**；没装会自动降级（只 WARN 一次） |
+| `nexus.agent.memory.fuzzy-min-score` | `0.15` | 兜底相似度阈值。中文短句三元文法重叠率天然偏低，故低于 PG 默认的 0.3；结果太杂就调高 |
+| `nexus.agent.memory.max-content-length` | `500` | 单条记忆最大字符数，写入时截断 |
+| `nexus.agent.memory.dedup-threshold` | `0.85` | 写入去重阈值：与已有记忆相似度达到该值即丢弃（防模型反复保存同一条偏好） |
 | `nexus.agent.sandbox.reuse-per-session` | `true` | 同一会话复用同一沙盒（E2B 按量计费，关闭会导致反复创建） |
 | `nexus.agent.sandbox.idle-timeout` | `8m` | 空闲多久后主动销毁沙盒。**必须小于沙盒服务的 `set_timeout(600)`** |
 | `nexus.agent.sandbox.sweep-interval` | `60000` | 回收任务间隔（毫秒或 ISO-8601） |

@@ -17,8 +17,9 @@
 | `003_add_user_token_quota.sql` | `users` 新增 `token_quota` / `token_used` 两列（P2-8 token 配额）。幂等可重放，无破坏性 |
 | `004_add_sys_file_session_id.sql` | `sys_file` 新增 `session_id` 列（P2-10 产物按会话归属）。幂等可重放，无破坏性 |
 | `005_add_sys_file_session_index.sql` | `sys_file` 增加 `(session_id, user_id)` 索引（P2-10 产物列表查询）。幂等可重放，无破坏性 |
+| `006_add_user_memory_trgm_index.sql` | `CREATE EXTENSION pg_trgm` + `user_memory.content` 的 `gin_trgm_ops` 索引（P2-7 长期记忆检索，决策 D4）。**不加列、不动数据**，幂等可重放 |
 
-> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005`（最终 11 张表）。
+> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005` → `006`（最终 11 张表）。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
 > 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
 > 这是本目录「无真实查询就不加索引」约定的一次完整实践。
@@ -44,6 +45,11 @@ Navicat：右键目标库 → 运行 SQL 文件 → 选择 `001_baseline.sql`。
 ## ✅ 执行结果（已验证）
 
 2026-09-23 已在目标库实际执行 `001_baseline.sql`：**0 错误，12 张表创建成功**。
+
+> 2026-09-24：`002` ~ `005` 已在目标库执行完毕。
+> ⬜ `006` **待执行**：它只加扩展与索引，**不加列** ——
+> 不执行也能正常启动（Java 侧会捕获 `similarity()` 的报错并永久降级为纯字面匹配），
+> 只是失去长期记忆的模糊兜底能力。
 
 由于脚本**没有吞异常**（第 3/4/5 节的 `ALTER TABLE ... ADD CONSTRAINT` 与 `CREATE INDEX`
 任一条失败都会中断并报错），因此「0 错误」同时说明：
@@ -129,6 +135,7 @@ from pg_attribute where attrelid='public.knowledge_embedding'::regclass
 | `mcp_information(user_id)` | `McpInformationServiceImpl.getMcp` |
 | `system_log(create_at DESC)` | 日志按时间倒序查看 |
 | `knowledge_embedding HNSW(vector_cosine_ops)` | RAG 相似度检索 |
+| `user_memory(content) gin_trgm_ops` | `UserMemoryServiceImpl.getMemory` 的 `ILIKE '%kw%'`（P2-7，见 `006`） |
 
 ## ⚠️ 已知问题（需要改代码，不是改表）
 
@@ -145,7 +152,7 @@ from pg_attribute where attrelid='public.knowledge_embedding'::regclass
 
 | 问题 | 说明 | 归属 |
 |---|---|---|
-| `UserMemoryMapper.xml` 的 `search` 是坏的 | 它 SELECT 了 `user_memory` 中不存在的 `category` 和 `embedding` 两列。该方法是**死代码**（`searchMemory` 从未被调用，`MemoryTool` 走 LIKE），所以暂不报错，但一调用就失败 | P2-7（与 D4 一起处理） |
+| ~~`UserMemoryMapper.xml` 的 `search` 是坏的~~ ✅ 已处理（P2-7） | 该向量检索是**死代码**（`searchMemory` 从未被调用），且 SELECT 了 `user_memory` 中不存在的 `category`/`embedding` 列 —— 一调用必然报错。决策 D4 定为**先做 pg_trgm**（不加 `embedding` 列），故整条向量路径已删除：`UserMemoryMapper.search`、`SearchMemoryRequest`、`MemorySearchResult`、`UserMemoryService.searchMemory`。将来要上 pgvector 可 `git show` 找回，或按 `006` 注释里的方式重写 | — |
 | ~~`skill_mcp_information` 表虽已补，但功能未接通~~ ✅ 已处理（P2-1） | 旧方案（DB 注册表 + `SkillMcpInformationServiceImpl`）整体废弃：实体/Mapper/Service 已删除，表由 `002_drop_skill_mcp_information.sql` 删除。Skill 改为本地目录扫描（`skills/` 目录 + `SkillLoader`），`ChatDTO.skills` 已真实生效 |
 | `knowledge_base_file.file_name` 目前是冗余列 | 详情接口实际用 `fileService.queryFileByids(...)`（即 `sys_file`）取文件名 | 观察后决定是否删列 |
 

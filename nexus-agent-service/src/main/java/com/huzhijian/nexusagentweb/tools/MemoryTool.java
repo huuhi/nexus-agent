@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * @author 胡志坚
@@ -61,8 +63,14 @@ public class MemoryTool implements AgentToolSet {
         this.toolCallGuard = toolCallGuard;
     }
 
-    @Tool(name = "search_user_memory",value = "检索用户画像")
-    public String searchUserMemory(@ToolMemoryId Object memoryId, @P("关键字") String query){
+    /**
+     * P2-7：@P 的措辞刻意改成"1~2 个核心词"。
+     * 以前只写"关键字"，模型经常把整句话丢进来（"用户喜欢吃什么口味的菜"），
+     * 而检索是字面匹配，整句必然零命中 —— 提示词里说清楚能省掉一次无效调用。
+     */
+    @Tool(name = "search_user_memory", value = "检索用户画像")
+    public String searchUserMemory(@ToolMemoryId Object memoryId,
+                                   @P("检索关键词，**只用 1~2 个核心词**（如\"饮食偏好\"\"职业\"），不要传整句话") String query) {
         String blocked = toolCallGuard.interceptText(memoryId, "search_user_memory",
                 ToolCallGuard.fingerprint(query));
         if (blocked != null) {
@@ -70,14 +78,21 @@ public class MemoryTool implements AgentToolSet {
         }
         try {
             List<UserMemoryVO> memory = memoryService.getMemory(query);
-            StringBuilder builder = new StringBuilder();
-            memory.forEach(memoryVO -> {
-                String content = memoryVO.getContent();
-                builder.append(content);
-            });
-            return builder.toString();
+            if (memory == null || memory.isEmpty()) {
+                // 以前返回空串，模型无法区分"没查到"和"查到了但内容为空"
+                return "没有检索到与该关键词相关的长期记忆。";
+            }
+            // 以前是无分隔符硬拼接（"不吃辣喜欢科幻片"），模型很难切分、还会误读成一条
+            return memory.stream()
+                    .map(UserMemoryVO::getContent)
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .distinct()
+                    .map(s -> "- " + s)
+                    .collect(Collectors.joining("\n"));
         } catch (Exception e) {
-            return "错误，请勿重复"+e.getMessage();
+            return "错误，请勿重复" + e.getMessage();
         }
     }
 

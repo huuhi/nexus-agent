@@ -11,26 +11,72 @@
             <result property="source" column="source" jdbcType="VARCHAR"/>
             <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
     </resultMap>
-    <resultMap id="MemorySearchResultMap"
-               type="com.huzhijian.nexusagentweb.vo.MemorySearchResult">
-        <id property="id" column="id"/>
-        <result property="content" column="content"/>
-        <result property="category" column="category"/>
-        <result property="score" column="score"/>
 
-    </resultMap>
-    <select id="search" resultMap="MemorySearchResultMap">
-        <![CDATA[
-        SELECT
-        id,
-        content,
-        category,
-        1 - (embedding <=> CAST(#{embedding} AS vector)) AS score
+    <!-- ===================================================================
+         P2-7 长期记忆检索（决策 D4 = pg_trgm）
+         -------------------------------------------------------------------
+         原实现只有一句 MP 的 .like("content", key)：整串当一个关键词、
+         不转义通配符、无条数上限、无排序、无去重。这里拆成三条各司其职的语句。
+
+         索引配合：
+           - searchByKeywords / latestByUser 依赖 user_memory(user_id)（001 已建）
+             与 idx_user_memory_content_trgm（006 建的 gin_trgm_ops）
+           - searchBySimilarity / countSimilar 依赖 pg_trgm 扩展的 similarity()；
+             没装扩展会直接报错，由 Service 捕获后降级，见 UserMemoryServiceImpl
+         =================================================================== -->
+
+    <!-- 多关键词字面匹配：命中任意一个即可（OR），排序交给 Java 按"命中关键词个数"做 -->
+    <select id="searchByKeywords" resultMap="BaseResultMap">
+        SELECT id, user_id, content, source, create_at
         FROM user_memory
-        WHERE user_id = #{userId} AND
-        1 - (embedding <=> CAST(#{embedding} AS vector)) > #{minScore}
-        ORDER BY embedding <=> CAST(#{embedding} AS vector)
-        LIMIT #{maxResult}
-        ]]>
+        WHERE user_id = #{userId}
+        <if test="patterns != null and patterns.size() > 0">
+            AND (
+            <foreach collection="patterns" item="p" separator=" OR ">
+                content ILIKE #{p} ESCAPE '\'
+            </foreach>
+            )
+        </if>
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 无关键词（用户/模型没给检索词）时：按最新浏览，而不是像原来那样返回全部 -->
+    <select id="latestByUser" resultMap="BaseResultMap">
+        SELECT id, user_id, content, source, create_at
+        FROM user_memory
+        WHERE user_id = #{userId}
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 字面匹配全落空时的模糊兜底：pg_trgm 的 similarity()（0~1，越大越像）。
+         注意 GIN 只能加速 % 操作符，这里用显式阈值便于调参；
+         表是几十~几百行的量级，顺序扫描代价可以忽略。 -->
+    <select id="searchBySimilarity" resultMap="BaseResultMap">
+        SELECT id, user_id, content, source, create_at
+        FROM user_memory
+        WHERE user_id = #{userId}
+          AND similarity(content, #{query}) <![CDATA[ >= ]]> #{minScore}
+        ORDER BY similarity(content, #{query}) DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 写入去重①：归一化（去掉全部空白）后完全一致视为重复。
+         用数据库算是为了不用把历史记忆全拉到 Java 里。 -->
+    <select id="countByNormalizedContent" resultType="long">
+        SELECT count(*)
+        FROM user_memory
+        WHERE user_id = #{userId}
+          AND lower(regexp_replace(content, '\s+', '', 'g'))
+            = lower(regexp_replace(#{content}, '\s+', '', 'g'))
+    </select>
+
+    <!-- 写入去重②：trigram 相似度达到阈值也视为重复（依赖 pg_trgm，失败会被降级） -->
+    <select id="countSimilar" resultType="long">
+        SELECT count(*)
+        FROM user_memory
+        WHERE user_id = #{userId}
+          AND similarity(content, #{content}) <![CDATA[ >= ]]> #{threshold}
     </select>
 </mapper>
