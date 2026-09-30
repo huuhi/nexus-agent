@@ -236,6 +236,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 模型选择 / 工具注册 / 记忆窗口 | `nexus-agent-service/.../factory/ChatContextFactory.java` |
 | SSE 输出格式 | `nexus-agent-service/.../converter/SseResponseConverter.java` + `common/.../em/SseEventType.java`（事件名）+ `domain/.../vo/SseEvent.java`（信封）。**权威契约见 `docs/sse-contract.md`** |
 | token 配额（拦截 / 记账 / 周期重置 / 用量查询） | `nexus-agent-service/.../service/impl/QuotaServiceImpl.java` + `common/.../em/QuotaPeriod.java`（周期）+ `domain/.../vo/QuotaVO.java`（返回体）。见 §6.13 |
+| API 文档（Swagger / OpenAPI） | `nexus-agent-web/.../config/OpenApiConfig.java`（只写元信息）+ 各 Controller 的 `@Tag`/`@Operation`。SSE 的契约另见 `docs/sse-contract.md`。见 §6.17 |
 | 用户消息 → LangChain4j Content | `nexus-agent-service/.../converter/ChatMessageConverter.java` |
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
 | 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
@@ -815,6 +816,34 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 `embedding()` 里 `failReason` 原来定义在 `for` 循环**外** ——
 一个文件失败后，后面**所有**文件都会被记成同一个失败原因。已移进循环内。
 
+### 6.17 API 文档（P3-4）
+
+**两半，故意分开**：
+
+| 部分 | 谁维护 | 为什么 |
+|---|---|---|
+| 普通 REST 接口 | **SpringDoc 自动生成**（扫 `@RestController`） | 手写登记接口清单必然随代码漂移；让事实只有一个来源 |
+| `/api/chat/stream`（SSE） | **手写**：`docs/sse-contract.md` | OpenAPI 描述不了"一条连接里按序到达的多种事件"，只能登记入口参数 |
+
+**落在哪**：`nexus-agent-web/.../config/OpenApiConfig.java`（只写文档元信息：标题、鉴权方式、外部文档链接）。
+依赖 `springdoc-openapi-starter-webmvc-ui`，**版本在父 `pom.xml` 的 `<dependencyManagement>` 里统一管理**（`springdoc.version`）。
+
+**鉴权怎么试**：本项目登录态在**请求头 `token`**（不是 `Authorization: Bearer`），
+所以安全方案声明成 `apiKey / in: header / name: token`；Swagger UI 右上角 Authorize 填的就是登录返回的 JWT。
+免鉴权接口（login / register / password / email）在方法上用 `@SecurityRequirements`（空）覆盖掉全局要求 ——
+否则 Swagger 给它们也加锁，试接口的人会以为必须先登录。
+
+**⚠️ 安全取舍（重要）**：
+
+- Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`）被加进了
+  `LoginCheckInterceptor` 的白名单 —— 不给豁免的话 Swagger UI 自己不带 token，页面根本打不开。
+- 于是**是否对外暴露只由 `springdoc.api-docs.enabled` / `springdoc.swagger-ui.enabled` 决定**：
+  `application.yml` 默认开（本地联调方便），**`application-prod.yml` 里默认关**。
+- 打开前先想清楚：接口清单 = 后端攻击面的地图。
+
+**怎么加接口文档**：在 Controller 上写 `@Tag`、在方法上写 `@Operation`。
+**不要**在 `OpenApiConfig` 里手工登记 URL（那是把"事实"抄成第二份）。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -848,7 +877,11 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | WS | `/ws/{userId}` | `WebSocketService` | 标题等实时推送 |
 
 **鉴权约定**：请求头 `token: <JWT>`（❗不是 `Authorization: Bearer`）。
-`LoginCheckInterceptor` 拦截 `/**`，白名单：`/api/user/login|register|password`、`/api/common/email`。
+`LoginCheckInterceptor` 拦截 `/**`，白名单：`/api/user/login|register|password`、`/api/common/email`、
+Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`）。
+⚠️ 文档路径免鉴权，所以**是否暴露由 `springdoc.*.enabled` 决定**（prod 默认关，见 §6.17）。
+
+> 📄 生成式文档见 §6.17：启动后访问 `/swagger-ui.html`；SSE 接口的手写契约在 `docs/sse-contract.md`。
 
 ---
 
@@ -971,6 +1004,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-30 | **P2-5 完成**：SSE 契约 v2（事件名统一小写 + `seq`/`runId` 信封 + `run` 首帧） | 新增 `em/SseEventType`（事件名枚举，杜绝字面量漂移）、`vo/SseEvent`（统一信封）、**`docs/sse-contract.md`（权威契约文档）**、`SseContractTest`（10 个单测）；`SseResponseConverter` 所有事件改走唯一的 `dispatch(SseEvent)` 出口并写入 SSE 原生 `id:`；`ChatServiceImpl` 建好 writer 后调 `writer.start()` | ⚠️ **破坏性变更**：① 事件名 `TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` → 小写；② 所有 data 多一层信封（原载荷移到 `data`）；③ `session_id` 事件取消（并入首帧 `run`）；④ `finish` 的 data 由 `"DONE"` 改 `{"status":"DONE"}`；⑤ `error` 的 `runId` 提到信封层。当前无存量前端，前端由我们在 P3-1 写，故一次改干净；迁移对照表见契约文档 §6。⬜ **服务端回放未做**（需事件持久化），断线后按 `sessionId` 重拉历史，已写进契约文档 §5。README 文档索引同步（原指向已删除的 `frontend-guide.md`） |
 | 2026-09-30 | **P2-13 完成**：知识库向量口径统一 + **修掉 RAG 跨用户越权** | `KnowledgeBaseFileServiceImpl`（注入系统 `EmbeddingModel`、**删除** `getEmbeddingModel()`，顺带修 `failReason` 跨文件污染）；`KnowledgeBaseFileService.embedding` 去掉 `configId`/`model` 参数；`KnowledgeFileDTO` 两字段标 `@Deprecated` 且**不再必填**；`KnowledgeBaseServiceImpl` 调用同步；`RagTool.ragSearch` 检索加 `user_id` 过滤（无用户上下文时拒绝检索）；新增 `RagToolTest`（4 个）+ `KnowledgeBaseFileServiceImplTest`（4 个） | ⚠️ **行为变更**：① 向量模型固定为系统模型，用户自选向量模型能力移除（自选会让入库/检索向量空间不一致 → 检索结果完全不相关且不报错）；② `POST` 上传知识库不再要求 `configId`/`model`；③ RAG 只检索**本人**知识库（此前是全表检索，用户 A 能命中用户 B 的内容）。过滤用 `::text` 比较，历史数据里 `user_id` 存成 JSON 数字或字符串都能命中。测试 158（146 通过 + 12 人工跳过），0 失败 |
 | 2026-09-30 | **P2-8 遗留完成**：配额周期重置 + 用量查询接口 | 新增 `em/QuotaPeriod`（周期枚举，容错解析）、`vo/QuotaVO`、`docs/sql/007_add_user_token_quota_period.sql`（`users` 加 `token_period`/`token_period_start`）；`User` 加两字段；`UserMapper.java`/`.xml` 加 `resetQuotaPeriod`（带 WHERE 的原子 UPDATE）；`AgentProperties.Quota` 加 `period`；`QuotaServiceImpl` 抽出 `resetPeriodIfDue`/`periodOf`；`UserController` 加 `GET /api/user/quota`；新增 `QuotaPeriodTest`（7 个）+ `QuotaServiceTest` 扩到 29 个 | ✅ **惰性重置**：不跑 `@Scheduled`（挂了会导致全员配额不刷新、多实例还要抢锁），改为校验/查询时顺手判断；并发只命中一个，天然幂等。✅ `007` 未执行时**降级为按累计用量判定**（保守，不放行），周期值非法按 `NONE` —— 行为与 `003` 完全一致。✅ 查询接口失败返回 `degraded=true` 而不抛异常；身份取自 `UserContextHolder`，**不接受入参**（防越权）。⚠️ **需执行 `007`** 才能用到周期重置；两个 yml 补 `period: NONE`。测试 190（178 通过 + 12 人工跳过），0 失败。§6.13 局限 ① 已划掉 |
+| 2026-09-30 | **P3-4 完成**：API 文档（SpringDoc 自动生成 + 手写 SSE 契约） | 父 `pom.xml` 加 `springdoc.version=2.8.13`（dependencyManagement）+ web 模块引 `springdoc-openapi-starter-webmvc-ui`；新增 `nexus-agent-web/.../config/OpenApiConfig`（元信息 + `token` 请求头安全方案 + 指向 `docs/sse-contract.md`）、`OpenApiConfigTest`（4 个）；8 个 Controller 全部补 `@Tag`，关键接口补 `@Operation`，4 个免鉴权接口加 `@SecurityRequirements`；`WebInterceptorConfig` 白名单加 swagger 路径；`application.yml` 默认开、`application-prod.yml` 默认关 | ⚠️ **安全取舍**：Swagger 路径免鉴权（否则页面自身不带 token 打不开），因此**是否暴露只由 `springdoc.*.enabled` 决定**，prod 默认 `false`。⚠️ SSE 接口**不在** OpenAPI 里描述帧结构（OpenAPI 表达不了同一连接内的事件序列），只在 `@Operation` 里把人引到手写契约。⬜ **待用户验证**：重启后 `/v3/api-docs` 应返回 200、`/swagger-ui.html` 可打开；若 SpringDoc 与 Boot 3.5 有兼容问题导致启动失败，把两个 `enabled` 设为 `false` 即可降级。新增 §6.17；README 补「API 文档」章节；测试 194（182 通过 + 12 人工跳过），0 失败 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -1209,6 +1243,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.quota.enabled` | `true` | 是否启用 token 配额校验（见 §6.13）。关闭后不再拦截，但**用量仍会累加** |
 | `nexus.agent.quota.default-quota` | `0` | 新注册用户的默认 token 配额；`<=0` 表示不限制（存量用户不受影响，见 §6.13） |
 | `nexus.agent.quota.period` | `NONE` | 配额重置周期：`NONE`（累计，默认）/ `DAILY` / `MONTHLY`。单个用户可在库里用 `users.token_period` 覆盖。**需先执行 `docs/sql/007`**（见 §6.13） |
+| `springdoc.api-docs.enabled` | `true`（prod `false`） | 是否暴露 `/v3/api-docs`（P3-4）。⚠️ 文档路径**免鉴权**，关掉它才是关掉暴露（见 §6.17） |
+| `springdoc.swagger-ui.enabled` | `true`（prod `false`） | 是否启用 `/swagger-ui.html` |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

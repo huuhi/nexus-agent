@@ -177,3 +177,19 @@ nexus:
       # 重置是**惰性**的（对话前校验配额时顺手判断），没有定时任务。
       # 需先执行 docs/sql/007_add_user_token_quota_period.sql
       period: NONE
+
+# ---------------------------------------------------------------------------
+# P3-4：API 文档（SpringDoc / Swagger UI）
+# ---------------------------------------------------------------------------
+# ⚠️ 生产默认**关闭**：接口清单（URL、参数、返回的字段结构）属于敏感信息，
+#    对外暴露等于把整个后端的攻击面画成地图给出去。
+# 需要临时打开时（例如线上联调）把两个 enabled 改成 true 即可，
+#   Swagger UI 地址：http://<host>:<port>/swagger-ui.html
+#   原始 OpenAPI JSON：http://<host>:<port>/v3/api-docs
+# 注意：`LoginCheckInterceptor` 的白名单里放了 swagger 相关路径（不带 token 也能访问），
+#    所以这里是**唯一**的开关 —— 打开即对外可读。
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

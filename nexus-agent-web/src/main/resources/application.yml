@@ -11,3 +11,13 @@ logging:
     com:
       huzhijian:
         nexusagentweb: debug
+
+# P3-4：API 文档（SpringDoc）。默认开启，方便本地联调与前端对接；
+# ⚠️ prod 环境由 application-prod.yml 关闭（接口清单属于敏感信息，不该对外暴露）。
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html

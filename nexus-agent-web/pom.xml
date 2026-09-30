@@ -39,6 +39,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+
+        <!-- P3-4：OpenAPI / Swagger UI（自动生成 API 文档，供 P3-1 前端对接与 curl 调试）。
+             默认只在 dev 开启，prod 由 application-prod.yml 关闭（见该文件 springdoc 段的说明）。
+             手写契约部分（SSE 流式接口）在 docs/sse-contract.md —— SpringDoc 描述不了
+             SSE 的帧序列，那部分是手写的。 -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

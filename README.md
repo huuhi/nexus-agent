@@ -35,9 +35,10 @@ psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/003_add_user_token_quot
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/004_add_sys_file_session_id.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/005_add_sys_file_session_index.sql
 psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/006_add_user_memory_trgm_index.sql
+psql -h <PG_HOST> -U postgres -d nexus_agent -f docs/sql/007_add_user_token_quota_period.sql
 ```
 
-> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → 003 → 004 → 005 → 006 的顺序**各跑一次。
+> 也可以用 Navicat：右键库 → 运行 SQL 文件，**按 001 → 002 → … → 007 的顺序**各跑一次。
 > ⚠️ 基线脚本会先 DROP 再重建，**只能在空库或允许清空的环境执行**；
 > 增量脚本都是幂等的（可重复执行）。
 > ⚠️ **增量脚本必须执行**：实体已经包含新增的列，库里缺列会导致登录/查用户直接报
@@ -108,6 +109,25 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
   -H 'token: <上一步返回的JWT>' \
   -d '{"messages":[{"type":"TEXT","content":"你好"}],"enableRag":false}'
 ```
+
+---
+
+## API 文档（P3-4）
+
+应用启动后：
+
+| 地址 | 内容 |
+|---|---|
+| <http://localhost:8080/swagger-ui.html> | Swagger UI（可直接在页面上试接口） |
+| <http://localhost:8080/v3/api-docs> | 原始 OpenAPI JSON（可导入 Apifox / Postman） |
+
+- 接口清单由 **SpringDoc 自动扫描 `@RestController`** 生成，改代码即同步，**不需要**手工维护。
+- 鉴权：点 Swagger UI 右上角 **Authorize**，填 `POST /api/user/login` 返回的 JWT
+  （本项目登录态在**请求头 `token`**，不是 `Authorization: Bearer`）。
+- ⚠️ **`/api/chat/stream` 是 SSE**，Swagger UI 试不出效果（它不会渲染事件流）。
+  帧结构看手写契约 [`docs/sse-contract.md`](./docs/sse-contract.md) —— 那是权威版本。
+- ⚠️ **生产默认关闭**（`application-prod.yml` 里 `springdoc.*.enabled=false`）：
+  接口清单等于把后端攻击面画成地图，需要时手动打开这两个开关。
 
 第 3 步返回 SSE 流，事件类型：`message`(THINK / CONTENT) / `tool_execution` /
 `tool_execution_result` / `session_id` / `finish`，契约见 [AGENTS.md §6.2](./AGENTS.md)。

@@ -12,6 +12,9 @@ import com.huzhijian.nexusagentweb.service.UserService;
 import com.huzhijian.nexusagentweb.vo.QuotaVO;
 import com.huzhijian.nexusagentweb.vo.Result;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -28,23 +31,34 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/user")
 @RequiredArgsConstructor
+@Tag(name = "用户", description = "登录/注册/密码、LLM 与 MCP 配置、长期记忆、token 配额")
 public class UserController {
     private final UserService userService;
     private final UserConfigService userConfigService;
     private final UserMemoryService userMemoryService;
     private final QuotaService quotaService;
 
+    // 下面三个是免鉴权接口：@SecurityRequirements 留空 = 覆盖掉全局的 token 要求，
+    // 否则 Swagger UI 会给它们也加一把锁，试接口的人会以为必须登录。
+
+    @Operation(summary = "登录", description = "返回 JWT，后续请求放进请求头 `token`。")
+    @SecurityRequirements
     @PostMapping("/login")
     public Result login(@RequestBody @Valid UserLoginDTO loginDTO){
         String token= userService.login(loginDTO);
         return Result.ok(token);
     }
+
+    @Operation(summary = "注册")
+    @SecurityRequirements
     @PostMapping("/register")
     public Result register(@RequestBody @Valid UserRegisterDTO registerDTO){
         String token= userService.register(registerDTO);
         return Result.ok(token);
     }
 //    忘记密码/设置密码
+    @Operation(summary = "设置 / 重置密码", description = "走邮箱验证码；免鉴权（否则忘密码的人永远进不来）。")
+    @SecurityRequirements
     @PutMapping("/password")
     public Result setPassword(@RequestBody UserPasswordDTO  passwordDTO){
         userService.updateOrSetPassword(passwordDTO);
@@ -92,6 +106,11 @@ public class UserController {
      * 该接口不抛业务异常：查询失败（典型是没执行 {@code docs/sql/003} 或 {@code 007}）
      * 时返回 {@code degraded=true} 的占位对象，前端据此提示"配额信息暂不可用"。
      */
+    @Operation(summary = "查询当前用户的 token 配额与用量", description = """
+            返回 `QuotaVO`。**查询失败不抛异常**，而是返回 `degraded=true` 的占位对象 ——
+            典型原因是 `docs/sql/003` / `007` 没执行（缺列）。
+            前端见到 `degraded=true` 应提示"配额信息暂不可用"，**不要**把 null 显示成 0。
+            """)
     @GetMapping("/quota")
     public Result getQuota(){
         Long userId = UserContextHolder.getUserId();
