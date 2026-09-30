@@ -254,5 +254,6 @@ nexus-agent (parent pom)
 | [重构计划.md](./重构计划.md) | 分阶段重构计划、任务表、验收标准、里程碑 |
 | [skills/README.md](./skills/README.md) | 技能（Skill）目录约定、SKILL.md 写法、`scripts/` 与文档资源的区别 |
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
+| [docs/后端变更review.md](./docs/%E5%90%8E%E7%AB%AF%E5%8F%98%E6%9B%B4review.md) | **变更 review 指南**：核心文件的 before/after 代码对照、好在哪、review 盯哪里、怎么验证 |
 | [开发日志.md](./开发日志.md) | 项目演进历史记录 |
 | `Dockerfile` / `docker-compose.yml` / `.env.example` | 部署形态（P3-3）：应用镜像与一键起全套；用法见本文「部署」章节 |
