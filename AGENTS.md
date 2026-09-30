@@ -31,7 +31,7 @@
 | 工具调用（Tool Calling）+ 流式回显 | ✅ 可用 | `tools/` + `SseResponseConverter` |
 | MCP 接入（仅 streamable_http） | ✅ 可用（有资源泄漏） | `McpInformationServiceImpl` |
 | 沙盒执行代码（**E2B 云沙盒**，非本地 Docker） | ✅ 可用（有路由 bug） | `BoxTool` + `nexus_agent_box/` |
-| RAG 知识库（pgvector） | ⚠️ 可用但有数据写入 bug | `KnowledgeBaseFileServiceImpl` |
+| RAG 知识库（pgvector） | ✅ 可用（P2-13：入库/检索同模型 + 检索带 `user_id` 隔离） | `KnowledgeBaseFileServiceImpl`（入库）/ `RagTool`（检索） |
 | 长期记忆 | ✅ 可用（`pg_trgm` 模糊检索 + 字面匹配兜底，P2-7） | `UserMemoryServiceImpl` + `utils/MemoryQueryParser` / `MemoryTool`（见 §6.15） |
 | Skill 系统（`langchain4j-skills`） | ✅ 可用（本地目录扫描，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `skills/` 目录 |
 | JWT 登录 / 邮件验证码 / WS 推送 / OSS 上传 | ✅ 可用 | `LoginCheckInterceptor` 等 |
@@ -239,12 +239,13 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
 | 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
 | 沙盒工具 | `nexus-agent-service/.../tools/BoxTool.java` |
-| 记忆 / RAG 工具 | `tools/MemoryTool.java`（⚠️`RagTool.java` 是未注册的死代码） |
+| 记忆 / RAG 工具 | `tools/MemoryTool.java`（长期记忆，常驻） + `tools/RagTool.java`（知识库检索，`enableRag=true` 时启用；**检索带 `user_id` 隔离**，见 §6.16） |
 | 沙盒服务端 | `nexus_agent_box/app/routers/{box,file,execute,mcp}.py` |
 | 聊天历史落库 | `nexus-agent-service/.../config/PgChatMemoryStore.java` |
 | 鉴权 | `nexus-agent-service/.../interceptor/LoginCheckInterceptor.java` |
 | MCP | `nexus-agent-service/.../service/impl/McpInformationServiceImpl.java` |
-| 知识库向量化 | `nexus-agent-service/.../service/impl/KnowledgeBaseFileServiceImpl.java` |
+| 知识库**入库**（切分 + 向量化） | `nexus-agent-service/.../service/impl/KnowledgeBaseFileServiceImpl.java` |
+| 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java`（**维度取自 `embeddingModel.dimension()`**，改模型要同步 `vector(N)` 与 HNSW 索引） |
 | 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java` |
 
 ---
@@ -737,6 +738,57 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 ---
 
+### 6.16 知识库 RAG：入库 / 检索的向量口径与隔离（P2-13）
+
+> 一句话：**入库和检索必须用同一个向量模型**，且**检索必须带 `user_id` 过滤**。
+> 这两条各对应一个"不报错但结果是错的"级别的坑。
+
+#### ① 向量模型口径：固定用系统模型
+
+| 侧 | 用什么模型 | 位置 |
+|---|---|---|
+| 入库（切分 → 向量化 → 写 `knowledge_embedding`） | 注入的 `EmbeddingModel` Bean | `KnowledgeBaseFileServiceImpl.embedding()` |
+| 检索（query → 向量 → 相似度） | 同一个 `EmbeddingModel` Bean | `RagTool.ragSearch()` |
+
+旧实现入库走 `getEmbeddingModel(configId, model)`，从**用户 API 配置**里翻 EMBEDDING 模型，
+翻不到就抛异常。两个后果，第二个致命：
+
+1. **没配过 API Key 的用户建知识库必然失败** —— 尽管系统早就配好了向量模型；
+2. 就算配上，也是**跨模型检索**：不同向量模型的向量空间不可比（维度都是 1024 也不行），
+   相似度分数毫无意义 → 表现是"检索结果完全不相关"，而且**没有任何报错**。
+
+所以「用户自选向量模型」是个**伪能力**（自选即串味），已移除：
+`KnowledgeBaseFileService.embedding(list, userId, knowledgeId)` 不再收 `configId`/`model`；
+`KnowledgeFileDTO` 的两个字段标 `@Deprecated` 且**不再 `@NotNull`**（旧版本强制必填，
+导致没配 Key 的用户连参数校验都过不去）。
+
+> 维度来自 `embeddingModel.dimension()`（`PgVectorEmbeddingFactory`）。
+> **换向量模型 → 必须同步改 `knowledge_embedding.embedding` 的 `vector(N)` 与 HNSW 索引，
+> 并且已有向量全部作废、需要重新入库。**
+
+#### ② 检索隔离：必须带 `user_id` 过滤
+
+`RagTool.ragSearch` 旧实现构造 `EmbeddingSearchRequest` 时**没有 filter** ——
+等于在整张 `knowledge_embedding` 上做全局检索，**用户 A 能检索到用户 B 的知识库内容**。
+现加 `Filter`：`metadataKey("user_id").isEqualTo(String.valueOf(userId))`。
+
+- 入库时已把 `user_id` 写进 metadata（`KnowledgeBaseFileServiceImpl`，与 `file_id`/`file_name`/`knowledge` 一起）。
+- 用 **String 比较**（langchain4j 会生成 `(metadata->>'user_id')::text = '42'`）而不是 Long（会生成 `::bigint`），
+  这样历史数据里 `user_id` 存成 JSON **数字还是字符串都能命中**。
+- **拿不到用户上下文时拒绝检索**，绝不能退化成"不过滤"（那就是全表泄露）。
+- 单测 `RagToolTest` 把这条约束钉死了，别把它"优化"掉。
+
+**已知取舍**：检索范围目前只限本人，`KnowledgeBase.isPublic` 在 RAG 侧**不生效**
+（该字段此前也从未被任何查询使用）。将来要支持"公开知识库参与检索"，
+需要在入库时把 `is_public` 写进 metadata，检索时用 `Or(user_id = 我, is_public = true)`。
+
+#### ③ 顺带修的：失败原因跨文件污染
+
+`embedding()` 里 `failReason` 原来定义在 `for` 循环**外** ——
+一个文件失败后，后面**所有**文件都会被记成同一个失败原因。已移进循环内。
+
+---
+
 ## 7. API 一览（真实前缀是 `/api`）
 
 | 方法 | 路径 | Controller | 说明 |
@@ -759,7 +811,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | POST | `/api/file/image` | `FileController` | 上传图片 |
 | GET | `/api/file` | `FileController` | 当前用户文件列表 |
 | POST | `/api/knowledge` | `KnowledgeController` | 建知识库 |
-| POST | `/api/knowledge/file` | `KnowledgeController` | 文件入知识库（触发向量化） |
+| POST | `/api/knowledge/file` | `KnowledgeController` | 文件入知识库（触发向量化）。⚠️ P2-13：`configId`/`model` 已废弃且**不再必填**，向量模型固定用系统模型 |
 | GET | `/api/knowledge/list`、`/{id}` | `KnowledgeController` | 知识库列表 / 详情 |
 | GET | `/api/mcp/service` | `McpController` | 从服务端拉 MCP 列表 |
 | GET/POST/PUT | `/api/mcp` | `McpController` | 查 / 存 / 改 |
@@ -887,6 +939,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-24 | **P2-10 收尾**：虚拟工作区的会话文件列表/删除接口 | 新增 `controller/ArtifactController` + `ArtifactService.listBySession/delete` + `AliOssUtil.deleteObject/objectNameOf`（+ `OssObjectNameTest` 6 个单测）+ `docs/sql/005_add_sys_file_session_index.sql` | ⚠️ **需执行 `005`**（列表查询的索引）；所有查询/删除都带 `user_id` 过滤（越权防护）；删除顺序为先删记录再尽力删对象；§7 API 一览已登记；§16.2 实施结果表加 ⑤ |
 | 2026-09-24 | **P2-12 完成**：SSE 增量合并（修"输出卡顿"）+ **新增前端对接文档** | 新增 `converter/SseChunkBuffer.java`（+ `SseChunkBufferTest` 9 个单测）；`SseResponseConverter` 改为批量推送并在工具/产物/结束/报错前强制冲刷；`AgentProperties.Sse` 加 `flushMaxChars`/`flushInterval`；两个 yml 补 `sse` 配置；**新增 `docs/frontend-guide.md`** | 新增 §6.14；§6.2 加"批量增量"提示；§15 补 2 行配置。根因：原来每个 token 推一帧（千字回复=上千帧）→ 前后端被高频小包拖慢；现攒 200 字符/60ms 推一帧 |
 | 2026-09-30 | **P2-7 完成**：长期记忆检索重写（**决策 D4 拍板 = pg_trgm**） | 新增 `utils/MemoryQueryParser`（+ `MemoryQueryParserTest` 12 个）、`UserMemoryServiceImplTest`（18 个）；`UserMemoryServiceImpl` 重写检索与写入（多关键词 OR + Java 排序/去重 + pg_trgm 兜底 + 写入两级去重）；`UserMemoryMapper`/XML 换成 5 条专用语句；**删除坏死的向量路径**（`search`/`SearchMemoryRequest`/`MemorySearchResult`/`searchMemory`，同步删 `ModelTest.testEmbeddingSearch`）；`MemoryTool` 输出改逐行 `- xxx`；`AgentProperties.Memory` 加 6 项；新增 `docs/sql/006_add_user_memory_trgm_index.sql` | 新增 §6.15；⚠️ **需执行 `006`**（`pg_trgm` 扩展 + GIN 索引）才有模糊兜底；**不执行也能正常跑**（自动降级为纯字面匹配，只 WARN 一次）。修掉的四个硬伤见 §6.15 表格 |
+| 2026-09-30 | **P2-13 完成**：知识库向量口径统一 + **修掉 RAG 跨用户越权** | `KnowledgeBaseFileServiceImpl`（注入系统 `EmbeddingModel`、**删除** `getEmbeddingModel()`，顺带修 `failReason` 跨文件污染）；`KnowledgeBaseFileService.embedding` 去掉 `configId`/`model` 参数；`KnowledgeFileDTO` 两字段标 `@Deprecated` 且**不再必填**；`KnowledgeBaseServiceImpl` 调用同步；`RagTool.ragSearch` 检索加 `user_id` 过滤（无用户上下文时拒绝检索）；新增 `RagToolTest`（4 个）+ `KnowledgeBaseFileServiceImplTest`（4 个） | ⚠️ **行为变更**：① 向量模型固定为系统模型，用户自选向量模型能力移除（自选会让入库/检索向量空间不一致 → 检索结果完全不相关且不报错）；② `POST` 上传知识库不再要求 `configId`/`model`；③ RAG 只检索**本人**知识库（此前是全表检索，用户 A 能命中用户 B 的内容）。过滤用 `::text` 比较，历史数据里 `user_id` 存成 JSON 数字或字符串都能命中。测试 158（146 通过 + 12 人工跳过），0 失败 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -947,7 +1000,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | **`knowledge_base_file` 缺 `file_name` 列** | ✅ 已修 | `insertKnowledge` 会写入它、`resultMap` 也映射它，缺列导致**知识库入库与详情查询双双报错**。基线已含该列 |
 | **`KnowledgeBaseFileMapper.xml` 把 `fileName` 映射到 `fail_name`** | ✅ 已修 | 笔误，改为 `file_name` |
 | **SSE 事件名大小写不统一** | 📝 记录 | `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写）。按 `event: tool_execution` 监听会收不到工具事件。属接口契约变更，列入 P2-5 统一。详见 §6.2 |
-| **知识库入库强制要求用户自带 embedding 配置** | 📝 记录 | `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索时用的是**系统默认** EmbeddingModel。两者口径不一致 → 没配过 API Key 的用户建知识库必然失败，尽管系统已配好向量模型。建议 P1-8/P2-7 一起统一为「用户配置优先、系统默认兜底」 |
+| ~~**知识库入库强制要求用户自带 embedding 配置**~~ | ✅ 已修（P2-13） | 原 `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索用的是**系统默认** EmbeddingModel → 没配 API Key 的用户建库必失败，且即便配上也是**跨模型检索**（向量空间不可比、结果不相关且不报错）。现已统一为「入库与检索共用注入的系统模型」，`getEmbeddingModel()` 整体删除（连带删掉里面的 `System.out.println(apiKey)`），`configId`/`model` 从方法签名移除 |
+| ~~**RAG 检索无任何用户隔离（跨用户越权）**~~ | ✅ 已修（P2-13） | `RagTool.ragSearch` 构造 `EmbeddingSearchRequest` 时**没有 filter**，等于在整张 `knowledge_embedding` 上做全局检索 → 用户 A 能检索到用户 B 的知识库内容。现已加 `user_id` 过滤（`::text` 比较，兼容历史数据里数字/字符串两种存法）；拿不到用户上下文时**拒绝检索**而不是退化成全表检索。⚠️ 已知取舍：检索范围只限本人，`KnowledgeBase.isPublic` 目前在 RAG 侧不生效（该字段本来也从未被任何查询使用） |
 | **`User` 实体缺 `@TableId`** | ✅ 已修 | 补 `@TableId(type = IdType.AUTO)`。原先 `getById`/`updateById` 会失败，且 `save()` 后取不到 id（`register` 要用它签 JWT） |
 | **`skill_mcp_information` 表在库中不存在** | ✅ 已废弃（P2-1） | 原按实体补表使其路径不坏；D3 定为本地目录扫描后，实体/Mapper/Service **整体删除**，表由 `docs/sql/002_drop_skill_mcp_information.sql` 删除。Skill 改为 `skills/` 目录 + `SkillLoader`（§6.9） |
 | **库中有表但代码无用**：`skill_information`、`user_skill` | ✅ 已删 | Skill 功能的历史设计残留（`开发日志.md` 4.20），代码中已无任何实体或 Mapper 使用 |
@@ -980,7 +1034,9 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
      知道 sessionId 即可读他人聊天
    - `UserMemoryServiceImpl.deleteById(id)` 无归属校验
 4. **密钥进 URL**：`GET /api/chat/model?baseUrl=&token=` 明文走 query。
-5. `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 里 `System.out.println(apiKey)` 打印用户密钥。
+5. ~~`KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 里 `System.out.println(apiKey)` 打印用户密钥。~~
+   → ✅ 已修（P2-13）：整个 `getEmbeddingModel()` 已删除，改为注入系统 `EmbeddingModel`，
+   不再读取用户 API 配置，也就没有密钥可打印。
 
 ### 12.2 P0 — 功能性 Bug（影响正确性）
 
@@ -1061,6 +1117,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | D1 | 沙盒方案 | ✅ **保持 E2B 云沙盒** | 改动最小。**代价：必须补 P1-7 `SandboxSession` 做自动回收**，否则沙盒泄漏会持续产生费用 |
 | D3 | Skill 落地方案 | ✅ **本地目录扫描**（服务端内置 skill 目录，扫描 `SKILL.md` 注册） | 避开 B/S 下上传 zip 的解压落盘与路径穿越安全问题 |
 | D5 | 文件空间产品形态 | ✅ **(c) 虚拟工作区**（2026-09-24 定） | 协议优先：「文件引用 + 产物回传」这套协议是四条路**共用**的，且代价最低（复用 OSS + `sys_file` + 沙盒）。**边界：只做"AI 产出文件 → 用户拿走"，不含"AI 直接改本机文件"**（后者需另走 (b)/(d)，见 §16.4） |
+| D2 | 前端是否要做？ | ✅ **做**（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐），**但严格排在后端全部完成之后**（2026-09-30 定） | 用户拍板："把后端做完再做前端"。因此 `P2-5`（SSE 契约）**不再被 D2 阻塞** —— 前端由我们自己写，契约可以现在一次定死，不必迁就任何既有前端 |
 | D4 | 长期记忆检索方式 | ✅ **pg_trgm**（2026-09-30 定，P2-7 已落地） | 零 API 成本解掉 LIKE 的硬伤；**不加 `embedding` 列**。边界：只解决字面部分重叠（"喜欢看科幻电影"↔"喜欢看科幻片"），**语义相似（"喜欢吃什么"↔"不吃辣"）仍需 pgvector**，留到记忆量上来之后再做 |
 
 > ✅ **已兑现（P2-7，2026-09-30）**：`docs/sql/006_add_user_memory_trgm_index.sql`
@@ -1071,17 +1128,13 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 > （Skill 与 MCP 合并为 `toolProviders` 注册，技能清单注入系统提示词 `{{runtimeCapabilities}}`）。
 > 旧 DB 注册表方案与 `SkillMcpInformation*` 已一并删除，未留装饰。落地方案与实现要点见 **§6.9**。
 
-### 14.2 仍待定（**详细简报见 `重构计划.md §七`**）
+### 14.2 仍待定
 
-> 2026-09-30：**D4 已定（pg_trgm）并落地 P2-7**。
-> 仍待定的只剩 **D2**；`P2-11` 在 D5=(c) 下不需要做。
-> `P2-5`（SSE 契约版本化）是**破坏性变更**，建议与前端一起定 —— 因此实际被 D2 阻塞。
-> 每项的选项对比、代价、推荐与"选定后立刻要做的事"已整理在 `重构计划.md §七`，
-> 本表只留索引，避免两处维护。
-
-| # | 问题 | 选项 | 影响范围 |
-|---|---|---|---|
-| D2 | 前端是否要做？ | 做（Vue3 + Element Plus，与 `kimi_demo` 技术栈对齐）/ 只做 API + SDK 不碰 UI | 整个 P3 阶段；也决定 `P2-5`（SSE 契约）何时能一次定死 |
+> 2026-09-30：**D4 已定（pg_trgm）并落地 P2-7；D2 也已拍板 = 做前端（排在后端之后）。**
+> **至此 D1–D5 全部已定，本表不再有条目。**
+> `P2-11` 在 D5=(c) 下不需要做。
+> 后端剩余任务（P2-5 / P2-8 遗留 / P3-3 / P3-4）按 P3-1 之前的顺序做完，再做前端。
+> 各决策的选项对比与代价仍保留在 `重构计划.md §七`，本表只留索引，避免两处维护。
 
 > ❗**D1 的后果要在 D5 里一次性想清楚**：E2B 是云端沙盒，**AI 读不到你本机磁盘**。
 > 若核心诉求是"让 AI 直接改我本机项目文件"，答案不是优化 E2B，而是 (b) 或 (d)。

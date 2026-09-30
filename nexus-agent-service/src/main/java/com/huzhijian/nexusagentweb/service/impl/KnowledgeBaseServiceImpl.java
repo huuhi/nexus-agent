@@ -68,7 +68,8 @@ public class KnowledgeBaseServiceImpl extends ServiceImpl<KnowledgeBaseMapper, K
             knowledgeBaseFileList.add(knowledgeBaseFile);
         }
         knowledgeBaseFileService.saveBatch(knowledgeBaseFileList);
-        knowledgeBaseFileService.embedding(list,userId,knowledgeId,knowledgeDTO.configId(),knowledgeDTO.model());
+        // configId/model 不再下发：向量模型统一用系统默认（见 KnowledgeBaseFileServiceImpl#embedding）
+        knowledgeBaseFileService.embedding(list, userId, knowledgeId);
         return "上传中~";
     }
 
