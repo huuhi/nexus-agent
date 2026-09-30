@@ -171,3 +171,9 @@ nexus:
       # 存量用户不受影响（users.token_quota 为 NULL 同样视为不限制）；
       # 要限制谁就在库里给 users.token_quota 设值。见 docs/sql/003_add_user_token_quota.sql
       default-quota: 0
+      # 配额重置周期：NONE=不重置（累计，与 003 原行为一致）/ DAILY / MONTHLY。
+      # 这是全局默认，单个用户可在库里覆盖：
+      #   UPDATE users SET token_period='MONTHLY' WHERE id=...;
+      # 重置是**惰性**的（对话前校验配额时顺手判断），没有定时任务。
+      # 需先执行 docs/sql/007_add_user_token_quota_period.sql
+      period: NONE

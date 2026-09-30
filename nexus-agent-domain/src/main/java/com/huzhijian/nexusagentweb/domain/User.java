@@ -3,7 +3,7 @@ package com.huzhijian.nexusagentweb.domain;
 
 
 import java.io.Serializable;
-
+import java.time.LocalDateTime;
 import java.util.Date;
 
 import com.baomidou.mybatisplus.annotation.IdType;
@@ -74,9 +74,25 @@ public class User implements Serializable {
      */
     private Long tokenQuota;
     /**
-     * 已累计消耗的 token 总量，由对话结束时累加，**单调递增、不清零**。
+     * 已累计消耗的 token 总量，由对话结束时累加。
+     * <p>
+     * 周期类型为 {@code NONE} 时**单调递增、不清零**；
+     * 设为 {@code DAILY}/{@code MONTHLY} 后会在跨周期时清零（P2-8 遗留，见 {@code docs/sql/007}）。
      */
     private Long tokenUsed;
+    /**
+     * token 配额的**重置周期**：{@code NONE}（默认，累计）/ {@code DAILY} / {@code MONTHLY}。
+     * <p>
+     * 存的是字符串而不是枚举，避开 MyBatis 枚举处理器在不同列类型上的坑；
+     * 解析统一走 {@code QuotaPeriod.of(...)}（null/未知值都按 NONE 处理，
+     * 这样 `007` 没执行时行为与 003 完全一致）。
+     */
+    private String tokenPeriod;
+    /**
+     * 当前周期的起点时间（**服务端本地时区**）。
+     * 小于"本次算出的周期起点"时触发清零 —— 惰性重置，没有后台任务。
+     */
+    private LocalDateTime tokenPeriodStart;
     /**
     * githubID
     */

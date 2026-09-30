@@ -18,8 +18,9 @@
 | `004_add_sys_file_session_id.sql` | `sys_file` 新增 `session_id` 列（P2-10 产物按会话归属）。幂等可重放，无破坏性 |
 | `005_add_sys_file_session_index.sql` | `sys_file` 增加 `(session_id, user_id)` 索引（P2-10 产物列表查询）。幂等可重放，无破坏性 |
 | `006_add_user_memory_trgm_index.sql` | `CREATE EXTENSION pg_trgm` + `user_memory.content` 的 `gin_trgm_ops` 索引（P2-7 长期记忆检索，决策 D4）。**不加列、不动数据**，幂等可重放 |
+| `007_add_user_token_quota_period.sql` | `users` 新增 `token_period` / `token_period_start` 两列（P2-8 遗留，配额按日/月重置）。默认值 `'NONE'`，**存量行为不变**；幂等可重放 |
 
-> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005` → `006`（最终 11 张表）。
+> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005` → `006` → `007`（最终 11 张表）。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
 > 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
 > 这是本目录「无真实查询就不加索引」约定的一次完整实践。
@@ -50,6 +51,9 @@ Navicat：右键目标库 → 运行 SQL 文件 → 选择 `001_baseline.sql`。
 > ⬜ `006` **待执行**：它只加扩展与索引，**不加列** ——
 > 不执行也能正常启动（Java 侧会捕获 `similarity()` 的报错并永久降级为纯字面匹配），
 > 只是失去长期记忆的模糊兜底能力。
+> ⬜ `007` **待执行**：不执行也能正常启动 —— 缺列时 `QuotaPeriod.of(null)` 会按 `NONE`
+> 处理（等同 `003` 的累计语义），周期重置降级为"不重置"，`GET /api/user/quota` 返回
+> `degraded=true`。**要用到每日/每月重置就必须执行它。**
 
 由于脚本**没有吞异常**（第 3/4/5 节的 `ALTER TABLE ... ADD CONSTRAINT` 与 `CREATE INDEX`
 任一条失败都会中断并报错），因此「0 错误」同时说明：

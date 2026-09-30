@@ -1,5 +1,7 @@
 package com.huzhijian.nexusagentweb.service;
 
+import com.huzhijian.nexusagentweb.vo.QuotaVO;
+
 /**
  * @author 胡志坚
  * @version 1.0
@@ -19,6 +21,9 @@ public interface QuotaService {
      * 注意这是「事后记账 + 事前检查」的粗粒度方案：检查时并不知道本次会用多少，
      * 因此**允许最后一次小幅超额**（超支后下次对话才会被拒）。要精确控制需要在调用前
      * 估算 token，而估算本身不可靠（上下文长度随工具调用变化），故不做。
+     * <p>
+     * 若用户配了周期（{@code DAILY}/{@code MONTHLY}），这里还会**顺手做惰性重置** ——
+     * 没有后台任务，也就不会有"定时任务挂了导致配额不刷新"这种故障模式。
      */
     void assertWithinQuota(Long userId);
 
@@ -28,4 +33,18 @@ public interface QuotaService {
      * @param totalTokens 本次对话的总 token（in + out）；为 null 或 &lt;=0 时直接忽略
      */
     void recordUsage(Long userId, Integer totalTokens);
+
+    /**
+     * 查询当前用户的配额与用量（P2-8 遗留，供 {@code GET /api/user/quota} 展示）。
+     * <p>
+     * 与 {@link #assertWithinQuota} 不同，这里**不抛异常**：查询失败时返回
+     * {@code QuotaVO.degraded()}（{@code degraded=true}），因为配额只是附加信息，
+     * 不该让"没跑 003/007 迁移"的环境连设置页都打不开。
+     * <p>
+     * 为了让前端看到的是**当前周期**的真实用量（而不是上一周期遗留的累计值），
+     * 这里同样会顺手做一次惰性重置 —— 该 UPDATE 幂等，重复调用没有副作用。
+     *
+     * @param userId 用户 ID；为 null 时返回 {@code degraded}
+     */
+    QuotaVO getQuota(Long userId);
 }

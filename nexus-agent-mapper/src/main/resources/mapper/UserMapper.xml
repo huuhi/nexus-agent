@@ -14,13 +14,16 @@
             <result property="apiQuota" column="api_quota" jdbcType="SMALLINT"/>
             <result property="tokenQuota" column="token_quota" jdbcType="BIGINT"/>
             <result property="tokenUsed" column="token_used" jdbcType="BIGINT"/>
+            <result property="tokenPeriod" column="token_period" jdbcType="VARCHAR"/>
+            <result property="tokenPeriodStart" column="token_period_start" jdbcType="TIMESTAMP"/>
             <result property="githubId" column="github_id" jdbcType="VARCHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id,email,username,
         password,avatar_img,register_time,
-        api_quota,token_quota,token_used,github_id
+        api_quota,token_quota,token_used,github_id,
+        token_period,token_period_start
     </sql>
 
     <!--
@@ -32,5 +35,20 @@
         UPDATE "public"."users"
         SET token_used = COALESCE(token_used, 0) + #{delta}
         WHERE id = #{userId}
+    </update>
+
+    <!--
+      P2-8 遗留：跨周期时清零用量。
+      条件全部写在 WHERE 里，因此并发安全且幂等（同时到达的两个请求只有一个会命中）。
+      token_period <> 'NONE' 是必须的：否则会把「累计不重置」的存量用户也清掉。
+    -->
+    <update id="resetQuotaPeriod">
+        UPDATE "public"."users"
+        SET token_used = 0,
+            token_period_start = #{periodStart}
+        WHERE id = #{userId}
+          AND token_period IS NOT NULL
+          AND token_period &lt;&gt; 'NONE'
+          AND (token_period_start IS NULL OR token_period_start &lt; #{periodStart})
     </update>
 </mapper>

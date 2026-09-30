@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.properties;
 
+import com.huzhijian.nexusagentweb.em.QuotaPeriod;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -333,5 +334,17 @@ public class AgentProperties {
          * 要限谁就在库里给谁设值（或用管理接口，当前没有）。
          */
         private long defaultQuota = 0;
+
+        /**
+         * token 配额的**重置周期**（P2-8 遗留）：{@code NONE} / {@code DAILY} / {@code MONTHLY}。
+         * <p>
+         * 默认 {@code NONE} = 不重置（{@code token_used} 累计只增不减），
+         * 与 {@code docs/sql/003} 的既有行为完全一致，不影响任何存量用户。
+         * <p>
+         * 这是**全局默认值**；单个用户可在库里覆盖
+         * （{@code UPDATE users SET token_period='MONTHLY' WHERE id=...}，见 {@code docs/sql/007}）。
+         * 周期按**服务端默认时区**计算。
+         */
+        private QuotaPeriod period = QuotaPeriod.NONE;
     }
 }

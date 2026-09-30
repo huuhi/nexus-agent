@@ -1,12 +1,15 @@
 package com.huzhijian.nexusagentweb.controller;
 
+import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.dto.UserLoginDTO;
 import com.huzhijian.nexusagentweb.dto.UserPasswordDTO;
 import com.huzhijian.nexusagentweb.dto.UserRegisterDTO;
+import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import com.huzhijian.nexusagentweb.service.UserService;
+import com.huzhijian.nexusagentweb.vo.QuotaVO;
 import com.huzhijian.nexusagentweb.vo.Result;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import jakarta.validation.Valid;
@@ -29,6 +32,7 @@ public class UserController {
     private final UserService userService;
     private final UserConfigService userConfigService;
     private final UserMemoryService userMemoryService;
+    private final QuotaService quotaService;
 
     @PostMapping("/login")
     public Result login(@RequestBody @Valid UserLoginDTO loginDTO){
@@ -77,6 +81,22 @@ public class UserController {
     public Result deleteUserMemory(@PathVariable Long id){
         userMemoryService.deleteById(id);
         return Result.ok();
+    }
+
+    /**
+     * 查询当前登录用户的 token 配额与用量（P2-8 遗留）。
+     * <p>
+     * 用户身份取 {@link UserContextHolder}（由 {@code LoginCheckInterceptor} 写入），
+     * **不接受任何入参** —— 否则就成了「传个 userId 就能看别人用量」的越权口子。
+     * <p>
+     * 该接口不抛业务异常：查询失败（典型是没执行 {@code docs/sql/003} 或 {@code 007}）
+     * 时返回 {@code degraded=true} 的占位对象，前端据此提示"配额信息暂不可用"。
+     */
+    @GetMapping("/quota")
+    public Result getQuota(){
+        Long userId = UserContextHolder.getUserId();
+        QuotaVO quota = quotaService.getQuota(userId);
+        return Result.ok(quota);
     }
 
 }

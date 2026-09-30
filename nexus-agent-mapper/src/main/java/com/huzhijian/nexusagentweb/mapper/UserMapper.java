@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.huzhijian.nexusagentweb.domain.User;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDateTime;
+
 /**
 * @author windows
 * @description 针对表【user(用户表)】的数据库操作Mapper
@@ -31,5 +33,18 @@ public interface UserMapper extends BaseMapper<User> {
      * @return 受影响行数；0 表示用户不存在
      */
     int addTokenUsage(@Param("userId") Long userId, @Param("delta") long delta);
+
+    /**
+     * 跨周期时把用量清零并写入新的周期起点（P2-8 遗留，见 {@code docs/sql/007}）。
+     * <p>
+     * 用**一条原子 UPDATE** 而不是「查 → 判断 → 写」，并且把判断条件写进 WHERE：
+     * 并发的两个请求只会有一个命中，另一个的 WHERE 已不成立（天然幂等）。
+     * <p>
+     * ⚠️ 只对 {@code token_period <> 'NONE'} 的用户生效 —— 其余用户的
+     * {@code token_used} 必须保持"只增不减"，否则等于悄悄改了 003 的语义。
+     *
+     * @return 受影响行数；{@code 0} 表示「不需要重置」或「用户不存在」
+     */
+    int resetQuotaPeriod(@Param("userId") Long userId, @Param("periodStart") LocalDateTime periodStart);
 
 }

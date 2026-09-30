@@ -235,6 +235,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 对话主流程 / SSE 事件 | `nexus-agent-service/.../service/impl/ChatServiceImpl.java` |
 | 模型选择 / 工具注册 / 记忆窗口 | `nexus-agent-service/.../factory/ChatContextFactory.java` |
 | SSE 输出格式 | `nexus-agent-service/.../converter/SseResponseConverter.java` + `common/.../em/SseEventType.java`（事件名）+ `domain/.../vo/SseEvent.java`（信封）。**权威契约见 `docs/sse-contract.md`** |
+| token 配额（拦截 / 记账 / 周期重置 / 用量查询） | `nexus-agent-service/.../service/impl/QuotaServiceImpl.java` + `common/.../em/QuotaPeriod.java`（周期）+ `domain/.../vo/QuotaVO.java`（返回体）。见 §6.13 |
 | 用户消息 → LangChain4j Content | `nexus-agent-service/.../converter/ChatMessageConverter.java` |
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
 | 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
@@ -644,10 +645,30 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 **已知局限**（要做得更细再看这里）：
 
-1. **不是周期配额**：`token_used` 只增不减，没有"每日/每月重置"。做周期制需额外记录周期起点，
-   并处理跨周期边界的记账。
+1. ~~**不是周期配额**~~ ✅ **已补（P2-8 遗留）**：见下方「周期重置」。
 2. **没有管理接口**：调整某人配额目前要直接改库（`UPDATE users SET token_quota = ... WHERE id = ...`）。
 3. 只统计 **token**，不按金额（金额随厂商价格变动，见 §6.12 的 `model-prices`）。
+
+**周期重置（P2-8 遗留，`docs/sql/007`）**：
+
+`token_used` 原本只增不减，配了额度的用户用完就永久被拒。现在支持 `NONE` / `DAILY` / `MONTHLY`：
+
+| 项 | 说明 |
+|---|---|
+| 周期来源 | 先读 `users.token_period`（单个用户可覆盖），为空则用 `nexus.agent.quota.period`（默认 `NONE`） |
+| 列 | `users.token_period`（varchar，默认 `'NONE'`）+ `users.token_period_start`（timestamp），见 `007` |
+| 重置方式 | **惰性**：不跑定时任务，在 `assertWithinQuota` / `getQuota` 里顺手判断 |
+| 重置语句 | 一条带 WHERE 的原子 UPDATE（`UserMapper.xml#resetQuotaPeriod`），并发只命中一个，天然幂等 |
+| 失败降级 | 缺列（没跑 `007`）时**按累计用量判定**（保守，不放行）；周期值非法时按 `NONE` |
+| 时区 | 服务端默认时区（DAILY = 当天 00:00，MONTHLY = 当月 1 号 00:00） |
+
+> **为什么不跑定时任务**：`@Scheduled` 挂了（或实例没起来）会导致「所有人配额都不刷新」，
+> 且多实例部署还要抢锁。惰性重置把这个故障模式整个消掉了 ——
+> 代价只是长期不说话的用户不会被清零（而他也没在消耗额度）。
+
+**用量查询**：`GET /api/user/quota` → `QuotaVO`（`quota`/`used`/`remaining`/`unlimited`/`period`/`periodStart`/`degraded`）。
+用户身份取自 `UserContextHolder`，**不接受入参**（否则就是越权看别人用量）。
+查询失败返回 `degraded=true` 而不是抛异常 —— 配额是附加信息，不该让没跑迁移的环境连设置页都打不开。
 
 ### 6.14 流式增量合并：让输出不"卡"（P2-12）
 
@@ -812,6 +833,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | POST/GET | `/api/user/api-config` | `UserController` | 增改 / 查 用户 LLM 配置 |
 | POST/GET | `/api/user/mcp-config` | `UserController` | 增改 / 查 MCP Token |
 | GET/DELETE | `/api/user/user-memory[/{id}]` | `UserController` | 长期记忆 查 / 删 |
+| GET | `/api/user/quota` | `UserController` | 当前用户 token 配额与用量（P2-8 遗留，见 §6.13）。失败返回 `degraded=true`，不抛异常 |
 | POST | `/api/file` | `FileController` | 上传文件（`files[]`+`bizType`） |
 | GET | `/api/artifact?sessionId=` | `ArtifactController` | 列出某会话里 AI 交付的产物（P2-10，供前端"本会话文件"面板） |
 | DELETE | `/api/artifact/{id}` | `ArtifactController` | 删除产物：**先删记录、再尽力删 OSS 对象**（P2-10） |
@@ -948,6 +970,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | 2026-09-30 | **P2-7 完成**：长期记忆检索重写（**决策 D4 拍板 = pg_trgm**） | 新增 `utils/MemoryQueryParser`（+ `MemoryQueryParserTest` 12 个）、`UserMemoryServiceImplTest`（18 个）；`UserMemoryServiceImpl` 重写检索与写入（多关键词 OR + Java 排序/去重 + pg_trgm 兜底 + 写入两级去重）；`UserMemoryMapper`/XML 换成 5 条专用语句；**删除坏死的向量路径**（`search`/`SearchMemoryRequest`/`MemorySearchResult`/`searchMemory`，同步删 `ModelTest.testEmbeddingSearch`）；`MemoryTool` 输出改逐行 `- xxx`；`AgentProperties.Memory` 加 6 项；新增 `docs/sql/006_add_user_memory_trgm_index.sql` | 新增 §6.15；⚠️ **需执行 `006`**（`pg_trgm` 扩展 + GIN 索引）才有模糊兜底；**不执行也能正常跑**（自动降级为纯字面匹配，只 WARN 一次）。修掉的四个硬伤见 §6.15 表格 |
 | 2026-09-30 | **P2-5 完成**：SSE 契约 v2（事件名统一小写 + `seq`/`runId` 信封 + `run` 首帧） | 新增 `em/SseEventType`（事件名枚举，杜绝字面量漂移）、`vo/SseEvent`（统一信封）、**`docs/sse-contract.md`（权威契约文档）**、`SseContractTest`（10 个单测）；`SseResponseConverter` 所有事件改走唯一的 `dispatch(SseEvent)` 出口并写入 SSE 原生 `id:`；`ChatServiceImpl` 建好 writer 后调 `writer.start()` | ⚠️ **破坏性变更**：① 事件名 `TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` → 小写；② 所有 data 多一层信封（原载荷移到 `data`）；③ `session_id` 事件取消（并入首帧 `run`）；④ `finish` 的 data 由 `"DONE"` 改 `{"status":"DONE"}`；⑤ `error` 的 `runId` 提到信封层。当前无存量前端，前端由我们在 P3-1 写，故一次改干净；迁移对照表见契约文档 §6。⬜ **服务端回放未做**（需事件持久化），断线后按 `sessionId` 重拉历史，已写进契约文档 §5。README 文档索引同步（原指向已删除的 `frontend-guide.md`） |
 | 2026-09-30 | **P2-13 完成**：知识库向量口径统一 + **修掉 RAG 跨用户越权** | `KnowledgeBaseFileServiceImpl`（注入系统 `EmbeddingModel`、**删除** `getEmbeddingModel()`，顺带修 `failReason` 跨文件污染）；`KnowledgeBaseFileService.embedding` 去掉 `configId`/`model` 参数；`KnowledgeFileDTO` 两字段标 `@Deprecated` 且**不再必填**；`KnowledgeBaseServiceImpl` 调用同步；`RagTool.ragSearch` 检索加 `user_id` 过滤（无用户上下文时拒绝检索）；新增 `RagToolTest`（4 个）+ `KnowledgeBaseFileServiceImplTest`（4 个） | ⚠️ **行为变更**：① 向量模型固定为系统模型，用户自选向量模型能力移除（自选会让入库/检索向量空间不一致 → 检索结果完全不相关且不报错）；② `POST` 上传知识库不再要求 `configId`/`model`；③ RAG 只检索**本人**知识库（此前是全表检索，用户 A 能命中用户 B 的内容）。过滤用 `::text` 比较，历史数据里 `user_id` 存成 JSON 数字或字符串都能命中。测试 158（146 通过 + 12 人工跳过），0 失败 |
+| 2026-09-30 | **P2-8 遗留完成**：配额周期重置 + 用量查询接口 | 新增 `em/QuotaPeriod`（周期枚举，容错解析）、`vo/QuotaVO`、`docs/sql/007_add_user_token_quota_period.sql`（`users` 加 `token_period`/`token_period_start`）；`User` 加两字段；`UserMapper.java`/`.xml` 加 `resetQuotaPeriod`（带 WHERE 的原子 UPDATE）；`AgentProperties.Quota` 加 `period`；`QuotaServiceImpl` 抽出 `resetPeriodIfDue`/`periodOf`；`UserController` 加 `GET /api/user/quota`；新增 `QuotaPeriodTest`（7 个）+ `QuotaServiceTest` 扩到 29 个 | ✅ **惰性重置**：不跑 `@Scheduled`（挂了会导致全员配额不刷新、多实例还要抢锁），改为校验/查询时顺手判断；并发只命中一个，天然幂等。✅ `007` 未执行时**降级为按累计用量判定**（保守，不放行），周期值非法按 `NONE` —— 行为与 `003` 完全一致。✅ 查询接口失败返回 `degraded=true` 而不抛异常；身份取自 `UserContextHolder`，**不接受入参**（防越权）。⚠️ **需执行 `007`** 才能用到周期重置；两个 yml 补 `period: NONE`。测试 190（178 通过 + 12 人工跳过），0 失败。§6.13 局限 ① 已划掉 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -1185,6 +1208,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.model.providers.<baseUrl 片段>.thinking/.search` | 内置 2 条 | 服务商能力表（见 §6.3）。未命中者一律不下发额外参数；同名项覆盖内置 |
 | `nexus.agent.quota.enabled` | `true` | 是否启用 token 配额校验（见 §6.13）。关闭后不再拦截，但**用量仍会累加** |
 | `nexus.agent.quota.default-quota` | `0` | 新注册用户的默认 token 配额；`<=0` 表示不限制（存量用户不受影响，见 §6.13） |
+| `nexus.agent.quota.period` | `NONE` | 配额重置周期：`NONE`（累计，默认）/ `DAILY` / `MONTHLY`。单个用户可在库里用 `users.token_period` 覆盖。**需先执行 `docs/sql/007`**（见 §6.13） |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，
