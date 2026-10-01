@@ -250,6 +250,7 @@ nexus-agent (parent pom)
 | 文档 | 内容 |
 |---|---|
 | [AGENTS.md](./AGENTS.md) | **开发入口**：依赖版本、文件地图、接口一览、核心机制、技术栈、技术债清单、开发规范 |
+| [docs/前端开发指南.md](./docs/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91%E6%8C%87%E5%8D%97.md) | **写前端前先读**：环境准备（⚠️ 后端未配 CORS）、鉴权（`token` 头）、统一响应、全部接口的请求/响应结构、SSE 前端视角、页面清单、**极简黑白色板与组件规范**、联调顺序、上线 Checklist |
 | [docs/sse-contract.md](./docs/sse-contract.md) | **SSE 事件契约（v2，权威）**：统一信封、7 个事件的载荷、seq/runId 语义、解析示例、v1→v2 迁移 |
 | [重构计划.md](./重构计划.md) | 分阶段重构计划、任务表、验收标准、里程碑 |
 | [skills/README.md](./skills/README.md) | 技能（Skill）目录约定、SKILL.md 写法、`scripts/` 与文档资源的区别 |

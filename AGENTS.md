@@ -709,8 +709,11 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 自动滚动节流）已写进 **`docs/sse-contract.md §7`**，可直接交给前端同学。
 
 > 📌 `docs/frontend-guide.md` 曾在 P2-12 产出，后被用户删除（当时前端暂缓）。
-> D2 已改判为"做前端"，该文档将在 **P3-1 重新产出**；在那之前，前端相关的权威说明就是
-> **`docs/sse-contract.md`** + 本文 §7（API 一览）与 §6.2。
+> **2026-10-01 已重新产出，且范围扩大为完整对接文档：[`docs/前端开发指南.md`](./docs/前端开发指南.md)。**
+> 用户拍板：**前端由用户自己从零写，助手不写前端代码**，本仓库只负责提供文档 ——
+> 所以那一份就是前端的唯一权威入口（环境/CORS、鉴权、全接口结构、SSE 前端视角、
+> 页面清单与三轮迭代范围、极简黑白色板与组件规范、联调顺序、上线 Checklist、后端未做清单）。
+> SSE 帧结构的权威说明仍在 `docs/sse-contract.md`，本文 §7（API 一览）与 §6.2 是简表索引。
 
 ---
 
@@ -1049,6 +1052,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-09-30 | **P2-8 遗留完成**：配额周期重置 + 用量查询接口 | 新增 `em/QuotaPeriod`（周期枚举，容错解析）、`vo/QuotaVO`、`docs/sql/007_add_user_token_quota_period.sql`（`users` 加 `token_period`/`token_period_start`）；`User` 加两字段；`UserMapper.java`/`.xml` 加 `resetQuotaPeriod`（带 WHERE 的原子 UPDATE）；`AgentProperties.Quota` 加 `period`；`QuotaServiceImpl` 抽出 `resetPeriodIfDue`/`periodOf`；`UserController` 加 `GET /api/user/quota`；新增 `QuotaPeriodTest`（7 个）+ `QuotaServiceTest` 扩到 29 个 | ✅ **惰性重置**：不跑 `@Scheduled`（挂了会导致全员配额不刷新、多实例还要抢锁），改为校验/查询时顺手判断；并发只命中一个，天然幂等。✅ `007` 未执行时**降级为按累计用量判定**（保守，不放行），周期值非法按 `NONE` —— 行为与 `003` 完全一致。✅ 查询接口失败返回 `degraded=true` 而不抛异常；身份取自 `UserContextHolder`，**不接受入参**（防越权）。⚠️ **需执行 `007`** 才能用到周期重置；两个 yml 补 `period: NONE`。测试 190（178 通过 + 12 人工跳过），0 失败。§6.13 局限 ① 已划掉 |
 | 2026-09-30 | **P3-4 完成**：API 文档（SpringDoc 自动生成 + 手写 SSE 契约） | 父 `pom.xml` 加 `springdoc.version=2.8.13`（dependencyManagement）+ web 模块引 `springdoc-openapi-starter-webmvc-ui`；新增 `nexus-agent-web/.../config/OpenApiConfig`（元信息 + `token` 请求头安全方案 + 指向 `docs/sse-contract.md`）、`OpenApiConfigTest`（4 个）；8 个 Controller 全部补 `@Tag`，关键接口补 `@Operation`，4 个免鉴权接口加 `@SecurityRequirements`；`WebInterceptorConfig` 白名单加 swagger 路径；`application.yml` 默认开、`application-prod.yml` 默认关 | ⚠️ **安全取舍**：Swagger 路径免鉴权（否则页面自身不带 token 打不开），因此**是否暴露只由 `springdoc.*.enabled` 决定**，prod 默认 `false`。⚠️ SSE 接口**不在** OpenAPI 里描述帧结构（OpenAPI 表达不了同一连接内的事件序列），只在 `@Operation` 里把人引到手写契约。⬜ **待用户验证**：重启后 `/v3/api-docs` 应返回 200、`/swagger-ui.html` 可打开；若 SpringDoc 与 Boot 3.5 有兼容问题导致启动失败，把两个 `enabled` 设为 `false` 即可降级。新增 §6.17；README 补「API 文档」章节；测试 194（182 通过 + 12 人工跳过），0 失败 |
 | 2026-09-30 | **P3-3 完成**：部署形态固化（修 build+volumes 混用、应用镜像、健康检查、优雅停机） | 新增根目录 `Dockerfile`（maven 多阶段 → `temurin:21-jre`，非 root + `HEALTHCHECK` + `exec java` 保 PID 1）、`.dockerignore`、`docker-compose.yml`（pgvector/redis/box/app 一键起，depends_on 走健康检查）、`.env.example`（**应用**的环境变量模板）；`nexus_agent_box/docker-compose.yml` **去掉源码挂载并加 healthcheck**，热重载移到新建的 `docker-compose.override.yml`（Compose 自动合并）；`nexus_agent_box/Dockerfile` 装 curl 供健康检查；`application.yml` 加 `server.shutdown=graceful` + `timeout-per-shutdown-phase=30s` + actuator（只暴露 health/info、`show-details: never`）；`WebInterceptorConfig` 白名单加 `/actuator/health`、`/actuator/info`；`.gitignore` 忽略 `/.env` 与 `/nexus_agent_box/.env` | ✅ **修掉的坑**：`build: .` + 挂载源码混用 → 跑的代码 ≠ 镜像里的代码（同一镜像不同行为、"改了没生效"最难排查），现拆成「主文件以镜像为准 + override 只服务开发」。⚠️ **安全**：actuator 只开 health/info（`env` 会把库密码与 API Key 原样吐出），health 免鉴权故 `show-details: never`。⚠️ **容器里的坑**：镜像里没有 `application-dev.yml` → 必须 `SPRING_PROFILES_ACTIVE=prod`；互访用 compose 服务名而非 localhost（写 localhost 会连到自己）。⬜ **未在真机验证**：本机无 Docker，`docker build` / `compose up` 未实跑，首次使用请先 `docker compose config` 与 `docker build` 各跑一遍。新增 §6.18；README 补「部署」章节；测试仍为 194，0 失败 |
+| 2026-10-01 | **P3-1 转向**：前端由用户自己写，本仓库产出 `docs/前端开发指南.md` | 新增 `docs/前端开发指南.md`（12 节）：环境准备（⚠️ 后端未配 CORS → 必须 dev proxy / 同源）、鉴权 `token` 头、统一响应 `Result`、全部 37 个接口的请求/响应结构、SSE 前端视角（6 个必踩坑 + 状态机）、页面与路由清单 + 三轮迭代范围、**极简黑白色板与组件规范**、联调顺序、上线 Checklist、后端未做清单；`docs/sse-contract.md` §4 修正（401 实际返回 JSON `Result` 而非纯文本 `NOT_LOGIN`，并补 CORS 提醒）；README 文档索引登记；`重构计划.md` P3-1 状态改为进行中 | ⚠️ **用户拍板**：不写前端代码，只出文档。⚠️ **发现的硬约束**：全仓库搜不到任何 CORS 配置，前后端不同源会被浏览器拦掉且 F12 看不到响应（极易误判为接口挂了）—— 文档给了 proxy / Nginx / 后端配置类三种解法，并**未擅自改后端**（属安全面变更）。⬜ **待用户确认 3 件事**：是否加 CORS 配置类、skills 无列表接口首版是否不做、是否补「会话重命名 / 搜索」接口。纯文档改动，未跑测试 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
