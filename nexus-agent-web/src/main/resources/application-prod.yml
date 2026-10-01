@@ -75,8 +75,14 @@ nexus:
       # 需要前后端分离部署时，把它改成 true 并列出**精确域名**（不要写 '*'）：
       #   allowed-origins: https://app.example.com
       # 同源部署（Nginx 把前端静态资源与 /api 挂在同一个域名下）就完全不用开。
-      enabled: false
-      allowed-origins:
+      #
+      # ⚠️ 2026-10-01 提醒（踩过的坑）：**prod profile 会覆盖 application.yml 的同名配置**。
+      #    在 application.yml 里加 allowed-origins 但这里 `enabled: false` 的话，
+      #    `CorsConfig` 整个类都不会注册（`@ConditionalOnProperty`），白名单写了也不生效，
+      #    表现为「明明配了跨域，浏览器还是把所有请求拦掉」。要跨域必须**在这里**开。
+      #    下面按「前端单独跑在 5173」的部署形态给出示例，换成域名/同源时相应改这两行。
+      enabled: true
+      allowed-origins: http://120.235.30.202:5173
     sse:
       # SSE 连接超时。必须大于最慢一次模型调用的耗时，否则复杂任务会被提前掐断
       timeout: 120s
