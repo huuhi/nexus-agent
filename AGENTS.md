@@ -194,7 +194,8 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 |---|---|---|
 | `DEEPSEEK` | 默认流式对话模型 Key | `application-prod.yml` |
 | `MOONSHOT` | 默认同步模型 Key（**标题生成**用，见 §6.6） | `application-prod.yml` |
-| `AI_KEY` | DashScope 向量模型 Key | `application-prod.yml` |
+| `AI_KEY`（prod yml 现为 `ALI_AI_KEY`） | DashScope 向量模型 Key | `application-prod.yml` |
+| `DATABASE` / `REDIS_PWD` | PostgreSQL / Redis 密码（2026-10-01 从写死改为占位符） | `application-prod.yml` |
 | `SERVICE_IP` | PostgreSQL / Redis 主机（**注意：不是 `DOCKER_IP`**，历史上文档与 prod.yml 里写错过，以 `application-dev.yml` 为准） | `application-prod.yml` |
 | `MAIL_USERNAME` / `MAIL_PASSWORD` | QQ SMTP 验证码 | `application-prod.yml` |
 | `JWT_SECRET` | Base64 编码的 HMAC-SHA256 密钥。**不设置会随机生成 → 重启后所有 token 失效** | `JwtUtil` |
@@ -207,9 +208,15 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 ❗**两套 OSS 变量名不一样，别填反**：两侧都叫 `EnvironmentVariableCredentialsProvider`，
 但是**两个不同的 SDK** —— Java（aliyun-sdk-oss）只读 `OSS_*`，Python（oss2）只读 `ALIBABA_CLOUD_*`。
 
-完整清单与填法见 [`.env.example`](./.env.example)（还有 `scripts/check-env.sh` 可自查缺项/占位符/写法，
-密钥打码输出）。⚠️ **Spring Boot 不会自动读 `.env`**：走 compose 由 `env_file` 注入没问题，
-直接 `java -jar` 前必须 `set -a; . ./.env; set +a`，否则启动自检 fail-fast。
+❗**prod yml 里所有 `${XXX}` 都是"缺了起不来"，不是建议项**：它们**没有默认值**，
+Spring 在建 Bean 时解析不到会抛 `Could not resolve placeholder 'XXX'` → **启动失败**。
+（写成 `${XXX:默认值}` 的才是有兜底的。改变量名时两边要同步，
+`scripts/check-env.sh` 直接从 yml 抽占位符，不会漂移。）
+
+完整清单与填法见 [`.env.example`](./.env.example)，另可用 `scripts/check-env.sh` 自查
+缺项 / 占位符 / 写法（密钥**打码输出**，退出码 0/1）。
+⚠️ **Spring Boot 不会自动读 `.env`**：走 compose 由 `env_file` 注入没问题，
+直接 `java -jar` 前必须 `set -a; . ./.env; set +a`，否则所有变量为空、启动必失败。
 
 ---
 
@@ -539,6 +546,12 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 |---|---|---|
 | 必需 | **默认 fail-fast 阻止启动**（`nexus.agent.startup.fail-fast=false` 可降级为 WARN） | `spring.datasource.url`、对话模型 api-key、`API_KEY_SECRET` |
 | 建议 | 只 WARN，**明确写出哪项能力会不可用** | `JWT_SECRET`、`AI_KEY`、`MOONSHOT`、Redis 主机、SMTP 账号/密码 |
+
+⚠️ **prod 下"建议"级基本轮不到它报**：`application-prod.yml` 里这些值写成 `${MOONSHOT}` 之类
+且**没有默认值**，占位符解析发生在建 Bean 时（比 `@PostConstruct` 更早），
+所以真缺了会先抛 `Could not resolve placeholder` 直接起不来，而不是等到这里 WARN。
+换句话说：**prod 部署时上面两级的区分意义不大，缺哪个都是起不来**；
+这个"两级"主要服务于 dev（yml 里写的是真实值，缺的是另一批东西）。
 
 **它解决什么**：根因 R2/R3 —— 原来缺配置时是「一次只报一个占位符错误」或**完全静默**
 （`JWT_SECRET` 缺失会随机生成密钥，重启后 token 全失效却没有任何提示）。
@@ -1125,7 +1138,8 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-10-01 | **补两个会话接口（P3-1）**：重命名 + 搜索 | `PUT /api/history/{sessionId}/title`（body `{title}`，最长 100）与 `GET /api/history/search?keyword=`；新增 `RenameSessionDTO`、`ChatSessionSearchVO`、`ChatMemorySearchHit`；`ChatHistoryListMapper#updateTitleBySessionAndUserId`（**带 user_id**，顺带刷 update_time）；`ChatMemoryMapper.xml#searchHits`（jsonb 抽正文 + ILIKE）；`ChatHistoryListServiceImpl#rename/search`（合并标题与正文命中、去重、排序）；`AgentProperties` 新增 `history.*` 三个参数 | ⚠️ **三个不这么做就出事的点**：① 改标题 SQL 不带 `user_id` = 越权写别人会话；② 搜索不能直接 `content::text ilike` —— `content` 是 jsonb，会把 `type`/`text`/`USER` 这些**JSON 键名**当成正文，用户搜 `type` 会命中全部会话；③ `escape '\'` 必须与 `toLikePattern` 的转义成对出现，少任何一方，用户搜一个 `%` 就退化成匹配全部。⚠️ **索引**：匹配表达式含 `jsonb_array_elements`（set-returning），PG 要求索引表达式 immutable，**建不了表达式索引** → 目前全表扫描，加速路径记在 `docs/sql/README.md`「尚未处理」（**未新增 008**）。新增 `ChatHistoryListServiceImplTest`（20）。新增 §6.19；§5.2 文件地图、§7 API 一览、§15 配置表同步；`docs/前端开发指南.md` §4/§5.2/§7/§9/§11/§12 同步（原「待拍板」第 2 条关闭） |
 | 2026-10-01 | **上线前复核：更正 `007` 的严重性** —— 不是「可选」，是**必须执行** | `docs/sql/README.md`（007 状态改为必须 + 文件表加 ⚠️ + 复核查询加第 6 条）、`AGENTS.md` §6.13（「失败降级」限定为仅 `resetQuotaPeriod` 那条 UPDATE，并加醒目警告段 + P2-8 行补更正）、`docs/后端变更review.md`、`重构计划.md` | ❗**我之前的结论是错的**：原以为「007 不跑也能用，只是没有周期重置」。实际 `User.tokenPeriod`/`tokenPeriodStart` 是普通字段，**MyBatis-Plus 自动生成的 SQL 会带上这两列**，缺列时表现为「应用能启动，**一登录就 500**」。通用教训：判断"迁移没跑能不能用"必须区分**手写 SQL 的降级**（可以 try-catch）与 **MP 自动生成 SQL**（无法降级） |
 | 2026-10-01 | **修：用户加的 CORS 白名单在 prod 不生效** | `nexus-agent-web/src/main/resources/application-prod.yml` 改为 `enabled: true` + `allowed-origins: http://120.235.30.202:5173`（注释里写明原因） | ❗**坑**：`application-prod.yml` 会**覆盖** `application.yml` 的同名配置；而 `CorsConfig` 是 `@ConditionalOnProperty`，`enabled: false` 时**整个配置类不注册** —— 在 `application.yml` 里加了白名单也完全不生效，且不报错 |
-| 2026-10-01 | **环境变量导出为文件（P3-3 收尾）**：`.env.example` 补全 + 新增部署前自查脚本 | `.env.example` 重写为四节（必需 `SERVICE_IP`/`DEEPSEEK`/`API_KEY_SECRET`；建议 `JWT_SECRET`/`AI_KEY`/`MOONSHOT`/`MAIL_*`/**`OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；可选 `BASE_URL`/`SPRING_PROFILES_ACTIVE`/`JAVA_OPTS`；填值注意）；新增 `scripts/check-env.sh`；新增 `.gitattributes`（`*.sh`/`Dockerfile`/`*.yml`/`*.yaml`/`.env.example` 强制 LF）；`README.md` 部署章节加「§0 先填环境变量再自查」+ 目录结构/文档索引登记；`AGENTS.md` §4.1 加 OSS 行、§5.2 补两行（顺带删掉重复的「向量库 Bean」行）、§6.18 加「Spring Boot 不会自动读 .env」段 | ❗**补上的最大缺口**：旧的 `.env.example` **完全没有 OSS 两项**。Java 侧 `AliOssUtil` 走阿里云 SDK 的 `EnvironmentVariableCredentialsProvider`，**只认 `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；沙盒侧 oss2 认 `ALIBABA_CLOUD_*` —— 两侧类名同名但读的变量不同，极易填反。不填的表现是「启动不报错、一上传就失败」。❗ **Spring Boot 不会自动读 `.env`**：compose 的 `env_file` 是 Docker 的能力，直接 `java -jar` 必须 `set -a; . ./.env; set +a`。`check-env.sh` 查缺项/占位符/写法（`export` 前缀、`KEY = value`、CRLF），密钥**打码输出**，退出码 0/1；已用 mock `.env` 实跑验证三种分支。纯文档+脚本改动，未跑 Java 测试 |
+| 2026-10-01 | **环境变量导出为文件（P3-3 收尾）**：`.env.example` 补全 + 新增部署前自查脚本 | `.env.example` 重写为四节（必需 = prod yml 的 `${}` 占位符 + 代码读的 `API_KEY_SECRET`；建议 `JWT_SECRET`/`OSS_*`；可选 `BASE_URL`/`SPRING_PROFILES_ACTIVE`/`JAVA_OPTS`；填值注意）；新增 `scripts/check-env.sh`；新增 `.gitattributes`（`*.sh`/`Dockerfile`/`*.yml`/`*.yaml`/`.env.example` 强制 LF）；`README.md` 部署章节加「§0 先填环境变量再自查」+ 目录结构/文档索引登记；`AGENTS.md` §4.1 加 OSS 行、§5.2 补两行（顺带删掉重复的「向量库 Bean」行）、§6.18 加「Spring Boot 不会自动读 .env」段 | ❗**补上的最大缺口**：旧的 `.env.example` **完全没有 OSS 两项**。Java 侧 `AliOssUtil` 走阿里云 SDK 的 `EnvironmentVariableCredentialsProvider`，**只认 `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；沙盒侧 oss2 认 `ALIBABA_CLOUD_*` —— 两侧类名同名但读的变量不同，极易填反。不填的表现是「启动不报错、一上传就失败」。❗ **Spring Boot 不会自动读 `.env`**：compose 的 `env_file` 是 Docker 的能力，直接 `java -jar` 必须 `set -a; . ./.env; set +a`。`check-env.sh` 查缺项/占位符/写法（`export` 前缀、`KEY = value`、CRLF），密钥**打码输出**，退出码 0/1；已用 mock `.env` 实跑验证三种分支。纯文档+脚本改动，未跑 Java 测试 |
+| 2026-10-01 | **环境变量清单订正**：对齐 prod yml 新增的 3 个变量，并更正"哪些算必需" | `.env.example` 重写（必需 = prod yml 的 `${}` 占位符：`SERVICE_IP`/`DATABASE`/`REDIS_PWD`/`DEEPSEEK`/`MOONSHOT`/`ALI_AI_KEY`/`MAIL_*` + 代码读的 `API_KEY_SECRET`；建议只剩 `JWT_SECRET`/`OSS_*`）；`scripts/check-env.sh` 改为**从 `application-prod.yml` 现抽 `${}` 占位符**作为必需清单（yml 找不到时退回内置清单）；`AGENTS.md` §4.1 加 `DATABASE`/`REDIS_PWD` 并把 `AI_KEY` 标为现名 `ALI_AI_KEY`、§6.10 补 prod 下说明 | ❗**更正我自己上一行的错误分类**：原把 `MOONSHOT`/`AI_KEY`/`MAIL_*` 写成"建议（不填也能启动）"。实际 `application-prod.yml` 里它们写作 `${XXX}` 且**没有默认值**，Spring 建 Bean 时解析不到会抛 `Could not resolve placeholder` → **启动失败**，比 `StartupConfigValidator` 的 `@PostConstruct` 更早。所以 prod 部署时**缺哪个都是起不来**。❗ 变量清单改为**动态抽取**而非写死，避免在 yml 改名后漏查漂移。用真实 prod yml 实跑三个分支验证：缺项（EXIT=1）/ yml 缺失兜底 / 全齐（EXIT=0）|
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 

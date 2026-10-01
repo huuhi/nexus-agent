@@ -227,6 +227,8 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | 启动日志出现 `配置自检未通过：缺少 N 项必需配置` | 按日志里列出的清单逐项补齐（每项都写了「配置项 / 后果」） |
 | 启动日志出现 `建议配置缺失` 横幅 | 只是某项能力不可用（RAG / 标题生成 / 邮箱验证码等），应用仍可启动，按需补 |
 | 占位符解析失败 / datasource 报错 | 没建 `application-dev.yml`，或占位符没替换完 |
+| `Could not resolve placeholder 'XXX'` | **prod 下环境变量没设全**。`application-prod.yml` 里的 `${XXX}` **没有默认值**，缺一个就起不来。跑 `bash scripts/check-env.sh` 看缺哪项 |
+| 直接 `java -jar` 后所有配置都报缺失 | Spring Boot **不会**自动读 `.env`，先 `set -a; . ./.env; set +a` |
 | `relation "sys_file" does not exist` | 没执行基线 SQL，或执行的是旧的、不完整的结构 |
 | `type "vector" does not exist` | PostgreSQL 没装 pgvector 扩展 |
 | `缺少环境变量 API_KEY_SECRET` | 见上方第 3 步 |

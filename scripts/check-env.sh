@@ -4,12 +4,16 @@
 # ----------------------------------------------------------------------------
 #  用法（在服务器上，项目根目录执行）：
 #      bash scripts/check-env.sh
-#      bash scripts/check-env.sh /path/to/.env /path/to/box.env   # 指定路径
+#      bash scripts/check-env.sh /path/to/.env /path/to/box.env [path/to/application-prod.yml]
 #
 #  它会告诉你：
-#    · 必需项缺了哪些（缺了应用会 fail-fast 起不来）
+#    · 必需项缺了哪些（缺了应用起不来 —— yml 里的 ${XXX} 没有默认值，
+#      Spring 会抛 Could not resolve placeholder）
 #    · 哪些还留着 <<...>> 占位符没替换
-#    · 写法问题（"KEY = value" 带空格、写了 export 前缀）
+#    · 写法问题（"KEY = value" 带空格、写了 export 前缀、CRLF 行尾）
+#
+#  「哪些算必需」是**从 application-prod.yml 里现抽 ${} 占位符**得来的
+#  （外加代码里直接读的 API_KEY_SECRET），所以 yml 改了变量名不会漏查。
 #
 #  退出码：0 = 必需项齐全；1 = 有必需项缺失
 # ============================================================================
@@ -18,6 +22,7 @@ set -uo pipefail
 
 APP_ENV="${1:-.env}"
 BOX_ENV="${2:-nexus_agent_box/.env}"
+PROD_YML="${3:-nexus-agent-web/src/main/resources/application-prod.yml}"
 
 if [ -t 1 ]; then
     RED=$'\033[31m'; YEL=$'\033[33m'; GRN=$'\033[32m'; DIM=$'\033[2m'; RST=$'\033[0m'
@@ -94,16 +99,38 @@ check_syntax() {
     fi
 }
 
+# 从 application-prod.yml 里抽出所有 ${XXX} 占位符 —— 这些**缺一个应用就起不来**。
+# 为什么要动态抽：写死清单会和 yml 漂移（改个变量名就漏查），而这里正是唯一的事实来源。
+#（yml 里写成 ${XXX:默认值} 的**不算**必需，有默认值兜底。）
+extract_required_from_yml() {
+    sed -n 's/.*\${\([A-Za-z_][A-Za-z0-9_]*\)}.*/\1/p' "$PROD_YML" | sort -u
+}
+
 echo "=============================================================="
 echo " 环境变量自查"
 echo "=============================================================="
 echo
-echo "── 应用（${APP_ENV}）── 必需项 ──"
-for k in SERVICE_IP DEEPSEEK API_KEY_SECRET; do check "$APP_ENV" "$k" required; done
+
+# 必备清单 = yml 占位符 + 代码里直接 System.getenv 的那些（yml 里看不到）
+reqs=(API_KEY_SECRET)
+if [ -f "$PROD_YML" ]; then
+    while IFS= read -r k; do [ -n "$k" ] && reqs+=("$k"); done < <(extract_required_from_yml)
+    src="${PROD_YML} 的 \${} 占位符 + 代码里的 API_KEY_SECRET"
+else
+    reqs+=(SERVICE_IP DATABASE REDIS_PWD DEEPSEEK MOONSHOT ALI_AI_KEY MAIL_USERNAME MAIL_PASSWORD)
+    src="内置清单（没找到 ${PROD_YML}，路径不对？）"
+fi
+
+if [ ! -f "$APP_ENV" ]; then
+    printf "${RED}%s 不存在${RST} —— 先 cp .env.example %s 再填真实值\n" "$APP_ENV" "$APP_ENV"
+    exit 1
+fi
+
+echo "── 应用（${APP_ENV}）── 必需项（取自 ${src}）──"
+for k in "${reqs[@]}"; do check "$APP_ENV" "$k" required; done
 echo
 echo "── 应用（${APP_ENV}）── 建议项 ──"
-for k in JWT_SECRET AI_KEY MOONSHOT MAIL_USERNAME MAIL_PASSWORD \
-         OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do check "$APP_ENV" "$k" recommended; done
+for k in JWT_SECRET OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET; do check "$APP_ENV" "$k" recommended; done
 echo
 echo "── 沙盒服务（${BOX_ENV}）── 必需项 ──"
 for k in E2B_API_KEY ALIBABA_CLOUD_ACCESS_KEY_ID ALIBABA_CLOUD_ACCESS_KEY_SECRET; do
@@ -130,5 +157,7 @@ if [ "$fail" -eq 0 ]; then
     printf "${GRN}必需项齐全，可以启动。${RST}\n"
     exit 0
 fi
-printf "${RED}有必需项缺失，应用会 fail-fast 拒绝启动（或起得来但关键功能不可用）。${RST}\n"
+printf "${RED}有必需项缺失 —— 应用会启动失败。${RST}\n"
+printf "${DIM}yml 里的 \${XXX} 没有默认值：解析不到会让 Spring 抛 Could not resolve placeholder；${RST}\n"
+printf "${DIM}API_KEY_SECRET 等代码里读的则会被引擎自检拦下（fail-fast）。${RST}\n"
 exit 1
