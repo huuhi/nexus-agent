@@ -18,7 +18,7 @@
 | `004_add_sys_file_session_id.sql` | `sys_file` 新增 `session_id` 列（P2-10 产物按会话归属）。幂等可重放，无破坏性 |
 | `005_add_sys_file_session_index.sql` | `sys_file` 增加 `(session_id, user_id)` 索引（P2-10 产物列表查询）。幂等可重放，无破坏性 |
 | `006_add_user_memory_trgm_index.sql` | `CREATE EXTENSION pg_trgm` + `user_memory.content` 的 `gin_trgm_ops` 索引（P2-7 长期记忆检索，决策 D4）。**不加列、不动数据**，幂等可重放 |
-| `007_add_user_token_quota_period.sql` | `users` 新增 `token_period` / `token_period_start` 两列（P2-8 遗留，配额按日/月重置）。默认值 `'NONE'`，**存量行为不变**；幂等可重放 |
+| `007_add_user_token_quota_period.sql` | `users` 新增 `token_period` / `token_period_start` 两列（P2-8 遗留，配额按日/月重置）。默认值 `'NONE'`，**存量行为不变**；幂等可重放。⚠️ **必须执行**（缺列会让登录/注册等查用户的接口 500，见下方） |
 
 > 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005` → `006` → `007`（最终 11 张表）。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
@@ -51,9 +51,15 @@ Navicat：右键目标库 → 运行 SQL 文件 → 选择 `001_baseline.sql`。
 > ⬜ `006` **待执行**：它只加扩展与索引，**不加列** ——
 > 不执行也能正常启动（Java 侧会捕获 `similarity()` 的报错并永久降级为纯字面匹配），
 > 只是失去长期记忆的模糊兜底能力。
-> ⬜ `007` **待执行**：不执行也能正常启动 —— 缺列时 `QuotaPeriod.of(null)` 会按 `NONE`
-> 处理（等同 `003` 的累计语义），周期重置降级为"不重置"，`GET /api/user/quota` 返回
-> `degraded=true`。**要用到每日/每月重置就必须执行它。**
+> ⚠️ `007` **必须执行，不能跳过**：`User` 实体的 `tokenPeriod` / `tokenPeriodStart`
+> 是**普通字段**（没有 `@TableField(exist = false)`），MyBatis-Plus 自动生成的
+> `selectById` / `query().eq("email", ...)` / `insert` 都会带上 `token_period`、
+> `token_period_start` 两列。缺列时**登录、注册、任何查用户的接口都会 500**
+> （`column "token_period" does not exist`）—— 应用**能启动**，但一登录就挂，
+> 这类问题最难排查，所以别抱侥幸。
+> （`resetQuotaPeriod` 那条 UPDATE 有异常兜底、会安静降级，但 MP 的自动 SQL 没有。）
+>
+> ✅ 执行后：周期重置生效。执行前也可以用（配 `period: NONE` 即等同 `003` 的累计语义）。
 
 由于脚本**没有吞异常**（第 3/4/5 节的 `ALTER TABLE ... ADD CONSTRAINT` 与 `CREATE INDEX`
 任一条失败都会中断并报错），因此「0 错误」同时说明：
@@ -90,6 +96,11 @@ select indexname from pg_indexes where schemaname='public' order by 1;
 select attname, format_type(atttypid, atttypmod) as type
 from pg_attribute where attrelid='public.knowledge_embedding'::regclass
   and attname='embedding';
+
+-- 6) 配额周期两列，应返回 2 行（没跑 007 会是 0 行 → 登录会 500）
+select column_name from information_schema.columns
+where table_schema='public' and table_name='users'
+  and column_name in ('token_period','token_period_start');
 ```
 
 ## 这份基线是怎么来的（重要）

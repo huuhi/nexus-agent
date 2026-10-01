@@ -410,7 +410,7 @@ Filter userFilter = metadataKey("user_id").isEqualTo(String.valueOf(userId));
 | 项 | 状态 | 说明 |
 |---|---|---|
 | `docs/sql/006`（pg_trgm） | ⬜ 待执行 | 不执行也能跑，只是失去长期记忆的模糊兜底 |
-| `docs/sql/007`（配额周期列） | ⬜ 待执行 | 不执行也能跑，只是没有周期重置 |
+| `docs/sql/007`（配额周期列） | ⬜ **必须执行** | ⚠️ 2026-10-01 更正：原先写「不执行也能跑」是**错的**。实体 `User.tokenPeriod/tokenPeriodStart` 是普通字段，MyBatis-Plus 自动生成的查用户 SQL 都会带上这两列 —— **缺列会让登录/注册/所有查用户的接口直接 500**（`column "token_period" does not exist`）。应用能启动但一登录就挂，务必先执行 |
 | SpringDoc 实跑 | ⬜ 待验证 | 重启后确认 `/v3/api-docs` 200、`/swagger-ui.html` 可开。若与 Boot 3.5 有兼容问题，设两个 `enabled=false` 即降级 |
 | Docker 镜像与 compose | ⬜ **未真机验证** | 本机没有 Docker。首次请先 `docker compose config` + `docker build -t nexus-agent:local .` |
 | E2B 模板预装 Office 库 | ⬜ 待执行 | `python-docx` / `openpyxl` / `python-pptx` |
