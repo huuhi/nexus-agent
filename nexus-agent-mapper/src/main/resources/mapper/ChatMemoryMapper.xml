@@ -82,4 +82,57 @@
         ) t
         order by t.create_at, t.id
     </select>
+
+    <!-- ===================================================================
+      会话搜索（P3-1 补）—— 把一条消息的「正文」抽成纯文本再做 ILIKE。
+
+      content 是 jsonb，存的是 langchain4j 一条 ChatMessage 的序列化结果，
+      不同消息类型里正文的位置不一样：
+        · AiMessage / SystemMessage / ToolExecutionResultMessage → 顶层 "text"
+        · UserMessage                                            → "contents": [{"text": "..."}]
+
+      ⚠️ 因此**不能直接写 content::text ilike** —— 那样会把 JSON 的键名
+      （"type"、"text"、"USER"、"AI" …）也当成正文，用户搜 type 会命中全部会话。
+      下面的表达式把两种位置都抽出来拼平，只匹配真正的对话内容。
+
+      ⚠️ jsonb_array_elements 遇到非数组会报错，所以先用 jsonb_typeof 判断；
+      没有 contents 键时 content->'contents' 是 SQL NULL，走 else 分支返回空数组。
+      =================================================================== -->
+    <sql id="MessageTextExpr">
+        coalesce(m.content-&gt;&gt;'text', '') || ' ' ||
+        coalesce((select string_agg(e-&gt;&gt;'text', ' ')
+                  from jsonb_array_elements(
+                          case when jsonb_typeof(m.content-&gt;'contents') = 'array'
+                               then m.content-&gt;'contents'
+                               else '[]'::jsonb end) e), '')
+    </sql>
+
+    <resultMap id="SearchHitResultMap" type="com.huzhijian.nexusagentweb.domain.ChatMemorySearchHit">
+        <result property="sessionId" column="session_id" jdbcType="VARCHAR"/>
+        <result property="snippet" column="snippet" jdbcType="VARCHAR"/>
+        <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
+    </resultMap>
+
+    <!--
+      说明几点：
+      1) session_id 显式 ::text —— 列是 uuid，转成 text 后 resultMap 用 VARCHAR 接，
+         避免「用 Timestamp 处理器读 uuid 列」那类类型错配。
+      2) escape '\' 必须有：pattern 里的 % 和 _ 已在 Java 侧转义成 \% \_，
+         但没有 escape 子句时 PostgreSQL 不认 \%（默认没有转义符），
+         用户搜一个 "%" 就会退化成「匹配全部」。
+      3) 排除 SYSTEM 消息：那是系统提示词，不属于用户能看见的对话内容，
+         搜出来会让结果莫名其妙。
+      4) limit 兜底：命中消息可能成千上万，只取最近的一批去聚合。
+    -->
+    <select id="searchHits" resultMap="SearchHitResultMap">
+        select m.session_id::text as session_id,
+               <include refid="MessageTextExpr"/> as snippet,
+               m.create_at       as create_at
+        from chat_memory m
+        where m.user_id = #{userId}
+          and m.content-&gt;&gt;'type' &lt;&gt; 'SYSTEM'
+          and <include refid="MessageTextExpr"/> ilike #{pattern} escape '\'
+        order by m.create_at desc, m.id desc
+        limit #{limit}
+    </select>
 </mapper>

@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
+import com.huzhijian.nexusagentweb.domain.ChatMemorySearchHit;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 
 import java.util.List;
@@ -41,6 +42,18 @@ public interface ChatMemoryService extends IService<ChatHistory> {
 //    List<MessageVO> getHistory(String sessionId);
 
     int getCountBySessionID(String sessionId);
+
+    /**
+     * 按关键词搜索消息正文，返回**消息粒度**的命中（P3-1 补，会话搜索的底层查询）。
+     * <p>
+     * ⚠️ 必须带 userId：会话 ID 是客户端可见的 UUID，只传关键词等于能搜到别人的聊天记录。
+     * 聚合、排序、拼片段都在 {@code ChatHistoryListServiceImpl#search} 里做。
+     *
+     * @param pattern 已转义的 LIKE 模式（形如 {@code %关键词%}），由调用方拼好；
+     *                SQL 里带 {@code escape '\'}，所以 {@code %} / {@code _} / {@code \} 必须先转义
+     * @param limit   最多返回多少条命中消息
+     */
+    List<ChatMemorySearchHit> searchHits(Long userId, String pattern, int limit);
 
     List<MessageVO> getHistoryBySessionId(String sessionId);
 

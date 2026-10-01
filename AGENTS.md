@@ -247,6 +247,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 鉴权 | `nexus-agent-service/.../interceptor/LoginCheckInterceptor.java` |
 | MCP | `nexus-agent-service/.../service/impl/McpInformationServiceImpl.java` |
 | 知识库**入库**（切分 + 向量化） | `nexus-agent-service/.../service/impl/KnowledgeBaseFileServiceImpl.java` |
+| 会话列表 / 重命名 / 搜索 | `nexus-agent-service/.../service/impl/ChatHistoryListServiceImpl.java`（合并与排序）+ `nexus-agent-mapper/.../ChatHistoryListMapper.java`（改标题）+ `ChatMemoryMapper.xml#searchHits`（按正文搜）。见 §6.19 |
 | 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java`（**维度取自 `embeddingModel.dimension()`**，改模型要同步 `vector(N)` 与 HNSW 索引） |
 | 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java` |
 
@@ -892,6 +893,36 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 ---
 
+### 6.19 会话重命名与搜索（P3-1 补）
+
+**重命名** `PUT /api/history/{sessionId}/title`，body `{title}`：
+
+- 更新 SQL **必须带 `user_id`**（`ChatHistoryListMapper#updateTitleBySessionAndUserId`）。
+  只按 `session_id` 更新 = 改个参数就能改别人会话的标题（越权写）。
+- `sessionId` 在 Java 侧先用 `UUID.fromString` 验一遍：它会被拼进 `::uuid`，
+  非法值会让 PostgreSQL 抛异常变成 500，提前拦掉才有可读的提示。
+- 顺带 `update_time=now()`：列表按 `update_time` 倒序，不更新用户会以为改名没生效。
+
+**搜索** `GET /api/history/search?keyword=`：
+
+- 两段命中：**① 会话标题**（内存里过滤，`title` 可能为 null）+ **② 消息正文**（SQL）。
+  合并时标题命中优先，且**同一会话只出现一次**（`matchType=TITLE` / `CONTENT`）。
+- 正文匹配走 `ChatMemoryMapper.xml#searchHits`。`content` 是 **jsonb**
+  （langchain4j 一条 `ChatMessage` 的序列化结果），不同消息类型正文位置不同：
+  `AiMessage`/`SystemMessage`/`ToolExecutionResultMessage` 在顶层 `text`，
+  `UserMessage` 在 `contents[].text`。
+  **不能直接写 `content::text ilike`** —— 那样会把 JSON 的键名
+  （`type`、`text`、`USER`…）当成正文，用户搜 `type` 会命中全部会话。
+- **`escape '\'` 与转义必须成对**：关键词里的 `%` `_` `\` 由
+  `ChatHistoryListServiceImpl#toLikePattern` 转义，SQL 里带 `escape '\'`。
+  少了任何一方，用户搜一个 `%` 就退化成「匹配全部」。
+- 排除 `type='SYSTEM'` 的消息（系统提示词不是用户看得见的对话内容）。
+- **索引**：匹配表达式含 `jsonb_array_elements`（set-returning），
+  PostgreSQL 要求索引表达式 immutable，**建不了表达式索引** → 目前是全表扫描。
+  加速路径与代价记在 `docs/sql/README.md` 的「尚未处理」里。
+
+---
+
 ## 7. API 一览（真实前缀是 `/api`）
 
 | 方法 | 路径 | Controller | 说明 |
@@ -901,6 +932,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | GET | `/api/history` | `ChatHistoryController` | 会话列表 |
 | GET | `/api/history/{sessionId}` | `ChatHistoryController` | 会话消息 |
 | DELETE | `/api/history?sessionId=` | `ChatHistoryController` | 删除会话 |
+| PUT | `/api/history/{sessionId}/title` | `ChatHistoryController` | 会话重命名（P3-1 补）。只能改自己的；不是本人 → `NotFoundException` |
+| GET | `/api/history/search?keyword=` | `ChatHistoryController` | 会话搜索（P3-1 补）：标题 + 消息正文，合并去重。见 §6.19 |
 | POST | `/api/user/login` | `UserController` | 登录（免鉴权） |
 | POST | `/api/user/register` | `UserController` | 注册（免鉴权） |
 | PUT | `/api/user/password` | `UserController` | 设置/重置密码（免鉴权） |
@@ -1054,6 +1087,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-09-30 | **P3-3 完成**：部署形态固化（修 build+volumes 混用、应用镜像、健康检查、优雅停机） | 新增根目录 `Dockerfile`（maven 多阶段 → `temurin:21-jre`，非 root + `HEALTHCHECK` + `exec java` 保 PID 1）、`.dockerignore`、`docker-compose.yml`（pgvector/redis/box/app 一键起，depends_on 走健康检查）、`.env.example`（**应用**的环境变量模板）；`nexus_agent_box/docker-compose.yml` **去掉源码挂载并加 healthcheck**，热重载移到新建的 `docker-compose.override.yml`（Compose 自动合并）；`nexus_agent_box/Dockerfile` 装 curl 供健康检查；`application.yml` 加 `server.shutdown=graceful` + `timeout-per-shutdown-phase=30s` + actuator（只暴露 health/info、`show-details: never`）；`WebInterceptorConfig` 白名单加 `/actuator/health`、`/actuator/info`；`.gitignore` 忽略 `/.env` 与 `/nexus_agent_box/.env` | ✅ **修掉的坑**：`build: .` + 挂载源码混用 → 跑的代码 ≠ 镜像里的代码（同一镜像不同行为、"改了没生效"最难排查），现拆成「主文件以镜像为准 + override 只服务开发」。⚠️ **安全**：actuator 只开 health/info（`env` 会把库密码与 API Key 原样吐出），health 免鉴权故 `show-details: never`。⚠️ **容器里的坑**：镜像里没有 `application-dev.yml` → 必须 `SPRING_PROFILES_ACTIVE=prod`；互访用 compose 服务名而非 localhost（写 localhost 会连到自己）。⬜ **未在真机验证**：本机无 Docker，`docker build` / `compose up` 未实跑，首次使用请先 `docker compose config` 与 `docker build` 各跑一遍。新增 §6.18；README 补「部署」章节；测试仍为 194，0 失败 |
 | 2026-10-01 | **P3-1 转向**：前端由用户自己写，本仓库产出 `docs/前端开发指南.md` | 新增 `docs/前端开发指南.md`（12 节）：环境准备（⚠️ 后端未配 CORS → 必须 dev proxy / 同源）、鉴权 `token` 头、统一响应 `Result`、全部 37 个接口的请求/响应结构、SSE 前端视角（6 个必踩坑 + 状态机）、页面与路由清单 + 三轮迭代范围、**极简黑白色板与组件规范**、联调顺序、上线 Checklist、后端未做清单；`docs/sse-contract.md` §4 修正（401 实际返回 JSON `Result` 而非纯文本 `NOT_LOGIN`，并补 CORS 提醒）；README 文档索引登记；`重构计划.md` P3-1 状态改为进行中 | ⚠️ **用户拍板**：不写前端代码，只出文档。⚠️ **教训（已更正）**：这里原写「全仓库搜不到任何 CORS 配置」是**错的**——只 grep 了 `addCorsMappings|@CrossOrigin|allowedOrigin`，漏掉了走 `CorsFilter` 的 `CorsConfig`。实际**一直有**跨域配置，且是 `allowedOriginPatterns("*")` + `allowCredentials(true)`（对任意网站开放）。排查跨域请直接 grep `cors`（不区分大小写）。该配置已于同日修复为配置驱动 + prod 默认关。⬜ **待用户确认 3 件事**：是否加 CORS 配置类、skills 无列表接口首版是否不做、是否补「会话重命名 / 搜索」接口。纯文档改动，未跑测试 |
 | 2026-10-01 | **后端三处修复**：① YAML 重复键阻断启动 ② 跨域对任意网站开放 ③ 登录拦截器不清 ThreadLocal | ① `application.yml` 合并重复的 `spring:` 顶层键（原写法让 Boot 抛 `found duplicate key spring`，**应用起不来**，且 `spring.profiles.active=dev` 与 `spring.threads.virtual.enabled=true` 会被静默丢弃）；② `CorsConfig` 由 `allowedOriginPatterns("*")` + `allowCredentials(true)` 改为**配置驱动**：`nexus.agent.cors.enabled`（prod 默认 false、dev 默认 true）+ `allowed-origins`（dev 默认 `localhost:5173`），放行 `token`/`Content-Type` 头、不开 credentials、为空则不注册任何规则（**不**退化成放行所有）、配 `*` 打 WARN；③ `LoginCheckInterceptor` 补 `afterCompletion` → `UserContextHolder.removeUserId()` | ⚠️ ①②是**安全/可用性**问题：①会让应用完全起不来（P3-3 引入，未重启过所以没暴露）；②等于把接口对任意网站开放。③在开着虚拟线程时不会立刻炸，属**消除隐患**：一旦线程被复用，下一个请求会读到上一个用户的 userId（越权且极难复现）。新增 `ApplicationYmlTest`（4）、`CorsConfigTest`（5）、`LoginCheckInterceptorTest`（3）。测试 **206**（194 通过 + 12 人工跳过），0 失败。§15 补两项 cors 配置；`docs/前端开发指南.md` §0/§1.2/§11/§12 与 `docs/sse-contract.md` §4 一并更正 CORS 描述 |
+| 2026-10-01 | **补两个会话接口（P3-1）**：重命名 + 搜索 | `PUT /api/history/{sessionId}/title`（body `{title}`，最长 100）与 `GET /api/history/search?keyword=`；新增 `RenameSessionDTO`、`ChatSessionSearchVO`、`ChatMemorySearchHit`；`ChatHistoryListMapper#updateTitleBySessionAndUserId`（**带 user_id**，顺带刷 update_time）；`ChatMemoryMapper.xml#searchHits`（jsonb 抽正文 + ILIKE）；`ChatHistoryListServiceImpl#rename/search`（合并标题与正文命中、去重、排序）；`AgentProperties` 新增 `history.*` 三个参数 | ⚠️ **三个不这么做就出事的点**：① 改标题 SQL 不带 `user_id` = 越权写别人会话；② 搜索不能直接 `content::text ilike` —— `content` 是 jsonb，会把 `type`/`text`/`USER` 这些**JSON 键名**当成正文，用户搜 `type` 会命中全部会话；③ `escape '\'` 必须与 `toLikePattern` 的转义成对出现，少任何一方，用户搜一个 `%` 就退化成匹配全部。⚠️ **索引**：匹配表达式含 `jsonb_array_elements`（set-returning），PG 要求索引表达式 immutable，**建不了表达式索引** → 目前全表扫描，加速路径记在 `docs/sql/README.md`「尚未处理」（**未新增 008**）。新增 `ChatHistoryListServiceImplTest`（20）。新增 §6.19；§5.2 文件地图、§7 API 一览、§15 配置表同步；`docs/前端开发指南.md` §4/§5.2/§7/§9/§11/§12 同步（原「待拍板」第 2 条关闭） |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
@@ -1295,6 +1329,9 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.quota.enabled` | `true` | 是否启用 token 配额校验（见 §6.13）。关闭后不再拦截，但**用量仍会累加** |
 | `nexus.agent.quota.default-quota` | `0` | 新注册用户的默认 token 配额；`<=0` 表示不限制（存量用户不受影响，见 §6.13） |
 | `nexus.agent.quota.period` | `NONE` | 配额重置周期：`NONE`（累计，默认）/ `DAILY` / `MONTHLY`。单个用户可在库里用 `users.token_period` 覆盖。**需先执行 `docs/sql/007`**（见 §6.13） |
+| `nexus.agent.history.search-max-rows` | `300` | 会话搜索最多扫多少条**命中消息**（P3-1，见 §6.19）。单位是消息不是会话，防止热门关键词扫出几十万行
+| `nexus.agent.history.search-max-sessions` | `30` | 搜索最终最多返回多少个**会话**
+| `nexus.agent.history.snippet-radius` | `40` | 命中片段在关键词前后各保留的字符数
 | `springdoc.api-docs.enabled` | `true`（prod `false`） | 是否暴露 `/v3/api-docs`（P3-4）。⚠️ 文档路径**免鉴权**，关掉它才是关掉暴露（见 §6.17） |
 | `springdoc.swagger-ui.enabled` | `true`（prod `false`） | 是否启用 `/swagger-ui.html` |
 

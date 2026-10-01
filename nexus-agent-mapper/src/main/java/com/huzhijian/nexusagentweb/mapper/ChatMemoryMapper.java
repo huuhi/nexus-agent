@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
+import com.huzhijian.nexusagentweb.domain.ChatMemorySearchHit;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -52,6 +53,20 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
     void delAllByMemoryId(Object sessionId);
 
     boolean insertBatch(List<ChatHistory> list,Long userId);
+
+    /**
+     * 会话搜索：按关键词匹配消息正文，返回**消息粒度**的命中（P3-1 补）。
+     * <p>
+     * ⚠️ 必须带 {@code user_id}：sessionId 是客户端能看到的 UUID，
+     * 少了这一条就等于「改个参数能搜到别人的聊天记录」。
+     *
+     * @param userId  当前登录用户
+     * @param pattern 已转义的 LIKE 模式（形如 {@code %关键词%}），由 Service 层拼好
+     * @param limit   最多扫多少条命中消息（防大结果集，聚合在 Service 层做）
+     */
+    List<ChatMemorySearchHit> searchHits(@Param("userId") Long userId,
+                                         @Param("pattern") String pattern,
+                                         @Param("limit") int limit);
 
     @Select("select count(session_id) from chat_memory where session_id=#{sessionId}::uuid")
     int getCountByMemoryId(String sessionId);

@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
+import com.huzhijian.nexusagentweb.domain.ChatMemorySearchHit;
 import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.mapper.ChatMemoryMapper;
@@ -87,6 +88,12 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     @Override
     public int getCountBySessionID(String sessionId) {
         return mapper.getCountByMemoryId(sessionId);
+    }
+
+    @Override
+    public List<ChatMemorySearchHit> searchHits(Long userId, String pattern, int limit) {
+        // userId 由调用方保证非空（会话搜索走的是已登录接口）；pattern/limit 也已在那边收敛过
+        return mapper.searchHits(userId, pattern, limit);
     }
 
     @Override

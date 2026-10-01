@@ -38,6 +38,7 @@ public class AgentProperties {
     private Observability observability = new Observability();
     private Model model = new Model();
     private Quota quota = new Quota();
+    private History history = new History();
 
     @Data
     public static class Sse {
@@ -346,5 +347,27 @@ public class AgentProperties {
          * 周期按**服务端默认时区**计算。
          */
         private QuotaPeriod period = QuotaPeriod.NONE;
+    }
+
+    @Data
+    public static class History {
+        /**
+         * 会话搜索：最多扫多少条**命中消息**（P3-1 补）。
+         * <p>
+         * 注意单位是「消息」不是「会话」——SQL 先按时间倒序取一批命中消息，
+         * 再在内存里按会话聚合。之所以要在 SQL 层就截断：
+         * 热门关键词（比如搜「的」）能在大库里命中几十万行，不截断会拖垮数据库。
+         */
+        private int searchMaxRows = 300;
+
+        /**
+         * 会话搜索：最终最多返回多少个**会话**。
+         */
+        private int searchMaxSessions = 30;
+
+        /**
+         * 会话搜索：命中片段在关键词前后各保留多少个字符。
+         */
+        private int snippetRadius = 40;
     }
 }

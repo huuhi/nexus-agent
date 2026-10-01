@@ -159,6 +159,7 @@ from pg_attribute where attrelid='public.knowledge_embedding'::regclass
 | ~~`UserMemoryMapper.xml` 的 `search` 是坏的~~ ✅ 已处理（P2-7） | 该向量检索是**死代码**（`searchMemory` 从未被调用），且 SELECT 了 `user_memory` 中不存在的 `category`/`embedding` 列 —— 一调用必然报错。决策 D4 定为**先做 pg_trgm**（不加 `embedding` 列），故整条向量路径已删除：`UserMemoryMapper.search`、`SearchMemoryRequest`、`MemorySearchResult`、`UserMemoryService.searchMemory`。将来要上 pgvector 可 `git show` 找回，或按 `006` 注释里的方式重写 | — |
 | ~~`skill_mcp_information` 表虽已补，但功能未接通~~ ✅ 已处理（P2-1） | 旧方案（DB 注册表 + `SkillMcpInformationServiceImpl`）整体废弃：实体/Mapper/Service 已删除，表由 `002_drop_skill_mcp_information.sql` 删除。Skill 改为本地目录扫描（`skills/` 目录 + `SkillLoader`），`ChatDTO.skills` 已真实生效 |
 | `knowledge_base_file.file_name` 目前是冗余列 | 详情接口实际用 `fileService.queryFileByids(...)`（即 `sys_file`）取文件名 | 观察后决定是否删列 |
+| 会话搜索走全表扫描（P3-1） | `chat_memory` 的正文匹配表达式含 `jsonb_array_elements`（**set-returning function**），PostgreSQL 要求索引表达式 immutable，因此**建不了表达式索引** —— 按「无真实查询不加索引」与「加了也用不上就不加」的约定，暂不新增 `008`。单用户消息量级下 `ILIKE` 扫描足够。要加速的唯一干净路径：加一个声明为 `immutable` 的 SQL 函数 `chat_message_text(jsonb)` 把正文抽平，对 `chat_message_text(content)` 建 `gin_trgm_ops` 索引，并把 `ChatMemoryMapper.xml#searchHits` 的表达式改成完全相同的调用（否则索引不会被 planner 选中） | 观察数据量 |
 
 ## 从 Navicat 重新导出时的注意事项
 
