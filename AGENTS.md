@@ -200,8 +200,16 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 | `JWT_SECRET` | Base64 编码的 HMAC-SHA256 密钥。**不设置会随机生成 → 重启后所有 token 失效** | `JwtUtil` |
 | `API_KEY_SECRET` | 用户 API Key 加密主密钥。**不设置会 NPE** | `EncryptorFactory` |
 | `BASE_URL` | 沙盒服务地址，默认 `http://localhost:8000` | `WebClientConfig` |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | **Java 侧**阿里云 OSS（头像 / 附件上传、产物删除）。**不设置启动不报错，一上传就失败** | `AliOssUtil`（`CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider()`） |
 | `E2B_API_KEY` | E2B 云沙盒鉴权 | `nexus_agent_box`（`.env`） |
-| `ALIBABA_CLOUD_ACCESS_KEY_ID` / `..._SECRET` | 沙盒回传 OSS 用（`EnvironmentVariableCredentialsProvider`） | `app/utils/oss_utils.py` |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID` / `..._SECRET` | **沙盒侧**回传 OSS 用 | `app/utils/oss_utils.py` |
+
+❗**两套 OSS 变量名不一样，别填反**：两侧都叫 `EnvironmentVariableCredentialsProvider`，
+但是**两个不同的 SDK** —— Java（aliyun-sdk-oss）只读 `OSS_*`，Python（oss2）只读 `ALIBABA_CLOUD_*`。
+
+完整清单与填法见 [`.env.example`](./.env.example)（还有 `scripts/check-env.sh` 可自查缺项/占位符/写法，
+密钥打码输出）。⚠️ **Spring Boot 不会自动读 `.env`**：走 compose 由 `env_file` 注入没问题，
+直接 `java -jar` 前必须 `set -a; . ./.env; set +a`，否则启动自检 fail-fast。
 
 ---
 
@@ -249,7 +257,8 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 知识库**入库**（切分 + 向量化） | `nexus-agent-service/.../service/impl/KnowledgeBaseFileServiceImpl.java` |
 | 会话列表 / 重命名 / 搜索 | `nexus-agent-service/.../service/impl/ChatHistoryListServiceImpl.java`（合并与排序）+ `nexus-agent-mapper/.../ChatHistoryListMapper.java`（改标题）+ `ChatMemoryMapper.xml#searchHits`（按正文搜）。见 §6.19 |
 | 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java`（**维度取自 `embeddingModel.dimension()`**，改模型要同步 `vector(N)` 与 HNSW 索引） |
-| 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java` |
+| 环境变量清单 / 部署前自查 | `.env.example`（清单 + 填法）+ `scripts/check-env.sh`（查缺项 / 占位符 / 写法，密钥打码）。见 §4.1 与 §6.18 |
+| 行尾（CRLF） | `.gitattributes` —— `*.sh` / `Dockerfile` / `*.yml` 强制 LF，避免上 Linux 报 `bad interpreter: /bin/bash^M` |
 
 ---
 
@@ -866,8 +875,26 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | `.dockerignore` | 排除 `.git`、`target/`、本地 `application-dev.yml`、`docs/` |
 | `docker-compose.yml` | 一键起全套：pgvector / redis / box / app（含 depends_on 健康检查） |
 | `.env.example` | **应用**的环境变量模板（与 `nexus_agent_box/.env.example` 是两份，别混） |
+| `scripts/check-env.sh` | 部署前自查 `.env`：必需项是否填、占位符是否漏改、写法是否正确。退出码 0/1，密钥打码输出 |
+| `.gitattributes` | 强制 `*.sh` / `Dockerfile` / `*.yml` / `*.yaml` / `.env.example` 为 LF 行尾 |
 | `nexus_agent_box/docker-compose.yml` | 沙盒服务，**以镜像为准** |
 | `nexus_agent_box/docker-compose.override.yml` | 开发用（自动合并）：把源码挂回去热重载 |
+
+**⚠️ Spring Boot 不会自动读 `.env`**（最常见的一次启动失败）
+
+`env_file` / `--env-file` 是 Docker 的能力，不是 Spring 的。所以：
+
+- `docker compose up` / `docker run --env-file .env` → Docker 把变量注入容器进程，**没问题**；
+- 直接 `java -jar` → **必须自己 export**，否则所有变量为空、启动自检 fail-fast 拒绝启动：
+
+  ```bash
+  set -a; . ./.env; set +a
+  exec java $JAVA_OPTS -jar nexus-agent-web.jar
+  # systemd 用 EnvironmentFile=/path/to/.env，别写成 Environment=
+  ```
+
+- `.env` 里**不要**写 `export ` 前缀：docker compose 的 `env_file` 不认，
+  那样 key 名会变成 `export`、值整行错乱。`scripts/check-env.sh` 会查这一项。
 
 **修掉的坑：build + volumes 混用**
 原 `nexus_agent_box/docker-compose.yml` 同时写了 `build: .` 和把源码目录挂进容器，
@@ -1096,6 +1123,9 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-10-01 | **P3-1 转向**：前端由用户自己写，本仓库产出 `docs/前端开发指南.md` | 新增 `docs/前端开发指南.md`（12 节）：环境准备（⚠️ 后端未配 CORS → 必须 dev proxy / 同源）、鉴权 `token` 头、统一响应 `Result`、全部 37 个接口的请求/响应结构、SSE 前端视角（6 个必踩坑 + 状态机）、页面与路由清单 + 三轮迭代范围、**极简黑白色板与组件规范**、联调顺序、上线 Checklist、后端未做清单；`docs/sse-contract.md` §4 修正（401 实际返回 JSON `Result` 而非纯文本 `NOT_LOGIN`，并补 CORS 提醒）；README 文档索引登记；`重构计划.md` P3-1 状态改为进行中 | ⚠️ **用户拍板**：不写前端代码，只出文档。⚠️ **教训（已更正）**：这里原写「全仓库搜不到任何 CORS 配置」是**错的**——只 grep 了 `addCorsMappings|@CrossOrigin|allowedOrigin`，漏掉了走 `CorsFilter` 的 `CorsConfig`。实际**一直有**跨域配置，且是 `allowedOriginPatterns("*")` + `allowCredentials(true)`（对任意网站开放）。排查跨域请直接 grep `cors`（不区分大小写）。该配置已于同日修复为配置驱动 + prod 默认关。⬜ **待用户确认 3 件事**：是否加 CORS 配置类、skills 无列表接口首版是否不做、是否补「会话重命名 / 搜索」接口。纯文档改动，未跑测试 |
 | 2026-10-01 | **后端三处修复**：① YAML 重复键阻断启动 ② 跨域对任意网站开放 ③ 登录拦截器不清 ThreadLocal | ① `application.yml` 合并重复的 `spring:` 顶层键（原写法让 Boot 抛 `found duplicate key spring`，**应用起不来**，且 `spring.profiles.active=dev` 与 `spring.threads.virtual.enabled=true` 会被静默丢弃）；② `CorsConfig` 由 `allowedOriginPatterns("*")` + `allowCredentials(true)` 改为**配置驱动**：`nexus.agent.cors.enabled`（prod 默认 false、dev 默认 true）+ `allowed-origins`（dev 默认 `localhost:5173`），放行 `token`/`Content-Type` 头、不开 credentials、为空则不注册任何规则（**不**退化成放行所有）、配 `*` 打 WARN；③ `LoginCheckInterceptor` 补 `afterCompletion` → `UserContextHolder.removeUserId()` | ⚠️ ①②是**安全/可用性**问题：①会让应用完全起不来（P3-3 引入，未重启过所以没暴露）；②等于把接口对任意网站开放。③在开着虚拟线程时不会立刻炸，属**消除隐患**：一旦线程被复用，下一个请求会读到上一个用户的 userId（越权且极难复现）。新增 `ApplicationYmlTest`（4）、`CorsConfigTest`（5）、`LoginCheckInterceptorTest`（3）。测试 **206**（194 通过 + 12 人工跳过），0 失败。§15 补两项 cors 配置；`docs/前端开发指南.md` §0/§1.2/§11/§12 与 `docs/sse-contract.md` §4 一并更正 CORS 描述 |
 | 2026-10-01 | **补两个会话接口（P3-1）**：重命名 + 搜索 | `PUT /api/history/{sessionId}/title`（body `{title}`，最长 100）与 `GET /api/history/search?keyword=`；新增 `RenameSessionDTO`、`ChatSessionSearchVO`、`ChatMemorySearchHit`；`ChatHistoryListMapper#updateTitleBySessionAndUserId`（**带 user_id**，顺带刷 update_time）；`ChatMemoryMapper.xml#searchHits`（jsonb 抽正文 + ILIKE）；`ChatHistoryListServiceImpl#rename/search`（合并标题与正文命中、去重、排序）；`AgentProperties` 新增 `history.*` 三个参数 | ⚠️ **三个不这么做就出事的点**：① 改标题 SQL 不带 `user_id` = 越权写别人会话；② 搜索不能直接 `content::text ilike` —— `content` 是 jsonb，会把 `type`/`text`/`USER` 这些**JSON 键名**当成正文，用户搜 `type` 会命中全部会话；③ `escape '\'` 必须与 `toLikePattern` 的转义成对出现，少任何一方，用户搜一个 `%` 就退化成匹配全部。⚠️ **索引**：匹配表达式含 `jsonb_array_elements`（set-returning），PG 要求索引表达式 immutable，**建不了表达式索引** → 目前全表扫描，加速路径记在 `docs/sql/README.md`「尚未处理」（**未新增 008**）。新增 `ChatHistoryListServiceImplTest`（20）。新增 §6.19；§5.2 文件地图、§7 API 一览、§15 配置表同步；`docs/前端开发指南.md` §4/§5.2/§7/§9/§11/§12 同步（原「待拍板」第 2 条关闭） |
+| 2026-10-01 | **上线前复核：更正 `007` 的严重性** —— 不是「可选」，是**必须执行** | `docs/sql/README.md`（007 状态改为必须 + 文件表加 ⚠️ + 复核查询加第 6 条）、`AGENTS.md` §6.13（「失败降级」限定为仅 `resetQuotaPeriod` 那条 UPDATE，并加醒目警告段 + P2-8 行补更正）、`docs/后端变更review.md`、`重构计划.md` | ❗**我之前的结论是错的**：原以为「007 不跑也能用，只是没有周期重置」。实际 `User.tokenPeriod`/`tokenPeriodStart` 是普通字段，**MyBatis-Plus 自动生成的 SQL 会带上这两列**，缺列时表现为「应用能启动，**一登录就 500**」。通用教训：判断"迁移没跑能不能用"必须区分**手写 SQL 的降级**（可以 try-catch）与 **MP 自动生成 SQL**（无法降级） |
+| 2026-10-01 | **修：用户加的 CORS 白名单在 prod 不生效** | `nexus-agent-web/src/main/resources/application-prod.yml` 改为 `enabled: true` + `allowed-origins: http://120.235.30.202:5173`（注释里写明原因） | ❗**坑**：`application-prod.yml` 会**覆盖** `application.yml` 的同名配置；而 `CorsConfig` 是 `@ConditionalOnProperty`，`enabled: false` 时**整个配置类不注册** —— 在 `application.yml` 里加了白名单也完全不生效，且不报错 |
+| 2026-10-01 | **环境变量导出为文件（P3-3 收尾）**：`.env.example` 补全 + 新增部署前自查脚本 | `.env.example` 重写为四节（必需 `SERVICE_IP`/`DEEPSEEK`/`API_KEY_SECRET`；建议 `JWT_SECRET`/`AI_KEY`/`MOONSHOT`/`MAIL_*`/**`OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；可选 `BASE_URL`/`SPRING_PROFILES_ACTIVE`/`JAVA_OPTS`；填值注意）；新增 `scripts/check-env.sh`；新增 `.gitattributes`（`*.sh`/`Dockerfile`/`*.yml`/`*.yaml`/`.env.example` 强制 LF）；`README.md` 部署章节加「§0 先填环境变量再自查」+ 目录结构/文档索引登记；`AGENTS.md` §4.1 加 OSS 行、§5.2 补两行（顺带删掉重复的「向量库 Bean」行）、§6.18 加「Spring Boot 不会自动读 .env」段 | ❗**补上的最大缺口**：旧的 `.env.example` **完全没有 OSS 两项**。Java 侧 `AliOssUtil` 走阿里云 SDK 的 `EnvironmentVariableCredentialsProvider`，**只认 `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；沙盒侧 oss2 认 `ALIBABA_CLOUD_*` —— 两侧类名同名但读的变量不同，极易填反。不填的表现是「启动不报错、一上传就失败」。❗ **Spring Boot 不会自动读 `.env`**：compose 的 `env_file` 是 Docker 的能力，直接 `java -jar` 必须 `set -a; . ./.env; set +a`。`check-env.sh` 查缺项/占位符/写法（`export` 前缀、`KEY = value`、CRLF），密钥**打码输出**，退出码 0/1；已用 mock `.env` 实跑验证三种分支。纯文档+脚本改动，未跑 Java 测试 |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 

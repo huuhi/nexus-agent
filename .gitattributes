@@ -1,0 +1,13 @@
+# 让 shell 脚本在**任何**平台 checkout 出来都是 LF 行尾。
+# 否则 Windows 上编辑/提交后变成 CRLF，放到 Linux 服务器执行会报
+# `bad interpreter: /bin/bash^M`（或值里静默带上 \r，比报错更难查）。
+*.sh text eol=lf
+
+# 它自己也强制 LF（本机 autocrlf=true 时，不写这一行 .gitattributes 自己会存成 CRLF）
+.gitattributes text eol=lf
+
+# Docker / 配置文件一律 LF（容器内是 Linux）
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.env.example text eol=lf

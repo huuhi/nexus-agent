@@ -63,13 +63,19 @@ cp nexus_agent_box/.env.example nexus_agent_box/.env
 # 填入 E2B_API_KEY 等
 ```
 
-### 3. 还需要 3 个环境变量（不在 yml 里）
+### 3. 还需要 5 个环境变量（不在 yml 里）
 
 | 变量 | 是否必需 | 说明 |
 |---|---|---|
 | `JWT_SECRET` | 建议设置 | Base64 的 HMAC-SHA256 密钥。**不设置会随机生成 → 每次重启后所有 token 失效**。生成：`openssl rand -base64 32` |
 | `API_KEY_SECRET` | **必需** | 用户 API Key 的加密主密钥。不设置则首次保存配置时报错；**设置后不要更改**，否则已加密的密钥无法解密 |
 | `BASE_URL` | 可选 | 沙盒服务地址，默认 `http://localhost:8000` |
+| `OSS_ACCESS_KEY_ID` | 建议设置 | 阿里云 OSS。不设置启动不报错，但**一上传头像/文件就失败** |
+| `OSS_ACCESS_KEY_SECRET` | 建议设置 | 同上 |
+
+> Java 侧用的是阿里云 SDK 的 `EnvironmentVariableCredentialsProvider`，它**只认 `OSS_` 前缀**这两个名字；
+> 沙盒服务（Python / oss2）用的是 `ALIBABA_CLOUD_` 前缀 —— 两套名字不一样，别填反。
+> 完整清单与说明见 [`.env.example`](./.env.example)。
 
 ### 4. 启动沙盒服务（独立进程，8000 端口）
 
@@ -94,6 +100,30 @@ mvn clean package -DskipTests && java -jar nexus-agent-web/target/nexus-agent-we
 ---
 
 ## 部署（P3-3）
+
+### 0. 先把环境变量填好（跑之前先自查一次）
+
+所有环境变量的清单、默认值、填法都在 [`.env.example`](./.env.example) 里，复制后替换占位符即可：
+
+```bash
+cp .env.example .env                                   # 应用（Java）
+cp nexus_agent_box/.env.example nexus_agent_box/.env   # 沙盒服务（Python）
+vim .env                                               # 把所有 <<...>> 换成真实值
+bash scripts/check-env.sh                              # 自查：缺什么、有没有漏改的占位符
+```
+
+`scripts/check-env.sh` 会检查必需项是否填了、占位符有没有漏改、写法有没有问题
+（`export` 前缀、`KEY = value` 带空格、CRLF 行尾 —— 后两个会让变量**静默失效**，最难查），
+密钥只打码显示，不会整段打出来。退出码 `0` = 可以启动，`1` = 有必需项缺失。
+
+⚠️ **Spring Boot 不会自动读 `.env`**：走 docker compose 时由 `env_file` 注入没问题；
+但**直接 `java -jar` 必须自己 export**，否则所有变量为空、启动自检会 fail-fast 拒绝启动：
+
+```bash
+set -a; . ./.env; set +a
+exec java $JAVA_OPTS -jar nexus-agent-web.jar
+# systemd 的话用 EnvironmentFile=/path/to/.env，别写成 Environment=
+```
 
 ### 一键起全套（PG + Redis + 沙盒服务 + 应用）
 
@@ -120,6 +150,9 @@ docker compose ps     # 四个服务都 healthy 才算起来
 docker build -t nexus-agent:local .
 docker run --rm -p 8080:8080 --env-file .env nexus-agent:local
 ```
+
+`.env` 按上一节填好（里面已含 `SPRING_PROFILES_ACTIVE=prod`，容器里没有 dev 配置）。
+不打容器、直接 `java -jar` 的话记得先 `set -a; . ./.env; set +a`。
 
 镜像内：非 root 用户、`-XX:MaxRAMPercentage=75`、`HEALTHCHECK` 打 `/actuator/health`、
 `ENTRYPOINT` 用 `sh -c exec java` 保证 java 是 PID 1（**否则收不到 SIGTERM，优雅停机失效**）。
@@ -240,6 +273,7 @@ nexus-agent (parent pom)
 ├── nexus-agent-service   LangChain4j 集成、工具、业务 Service、Config
 ├── nexus-agent-web       Controller + 启动类
 ├── nexus_agent_box/      Python FastAPI 沙盒服务（E2B），uv 管理
+├── scripts/              部署自查脚本（check-env.sh：查 .env 缺项/占位符/写法）
 └── docs/sql/             数据库基线与变更管理
 ```
 
@@ -259,4 +293,4 @@ nexus-agent (parent pom)
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
 | [docs/后端变更review.md](./docs/%E5%90%8E%E7%AB%AF%E5%8F%98%E6%9B%B4review.md) | **变更 review 指南**：核心文件的 before/after 代码对照、好在哪、review 盯哪里、怎么验证 |
 | [开发日志.md](./开发日志.md) | 项目演进历史记录 |
-| `Dockerfile` / `docker-compose.yml` / `.env.example` | 部署形态（P3-3）：应用镜像与一键起全套；用法见本文「部署」章节 |
+| `Dockerfile` / `docker-compose.yml` / `.env.example` / `scripts/check-env.sh` | 部署形态（P3-3）：应用镜像与一键起全套、环境变量清单、部署前自查；用法见本文「部署」章节 |
