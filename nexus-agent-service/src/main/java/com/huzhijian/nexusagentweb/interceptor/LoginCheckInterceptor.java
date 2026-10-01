@@ -51,6 +51,23 @@ public class LoginCheckInterceptor implements HandlerInterceptor {
         return true;
     }
 
+    /**
+     * 请求结束后**必须**清掉 ThreadLocal。
+     * <p>
+     * 原来只在 {@code preHandle} 里 {@code saveId}，从不清空：
+     * 一旦处理请求的线程被复用（关掉虚拟线程、换成线程池、或将来接入异步 Servlet），
+     * 下一个请求会读到**上一个用户**的 userId —— 那是实打实的越权，
+     * 而且现象是"偶尔看到别人的数据"，极难复现和定位。
+     * <p>
+     * 现在开着虚拟线程（{@code spring.threads.virtual.enabled=true}，一请求一线程）
+     * 时不会立刻炸，所以这个修法是**把隐患消掉**，不是修一个正在发生的故障。
+     */
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
+                                Object handler, Exception ex) {
+        UserContextHolder.removeUserId();
+    }
+
     private boolean reject(HttpServletResponse response, String msg) throws IOException {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json;charset=UTF-8");

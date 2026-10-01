@@ -1,3 +1,9 @@
+# ---------------------------------------------------------------------------
+# ⚠️ 同一个 YAML 文件里**不允许出现两个同名的顶层键**（比如写两次 `spring:`）。
+#    Spring Boot 的 YAML 加载器会直接抛 `found duplicate key spring` —— **应用起不来**，
+#    而且报错只在启动瞬间出现一次，很容易被误判成"环境有问题"。
+#    下面所有 spring.* 配置必须写在这**一个**块里。
+# ---------------------------------------------------------------------------
 spring:
   application:
     name: nexus-agent-web
@@ -6,6 +12,10 @@ spring:
   threads:
     virtual:
       enabled: true
+  lifecycle:
+    # P3-3 优雅停机的等待上限，到期强制关闭。太长会让 `docker stop` 卡到 Docker 的 10s
+    # 超时后被 SIGKILL（等于白配优雅停机）；30s 够一次长对话收尾。
+    timeout-per-shutdown-phase: 30s
 logging:
   level:
     com:
@@ -20,11 +30,6 @@ server:
   # 容器/编排环境（`docker stop`、k8s 滚动更新）默认就是发 SIGTERM ——
   # 不配这项等于把"对话进行到一半"的连接直接掐断，SSE 会断在半句上。
   shutdown: graceful
-spring:
-  lifecycle:
-    # 等待上限，到期强制关闭。太长会让 `docker stop` 卡到 Docker 的 10s 超时后被 SIGKILL
-    # （等于白配优雅停机）；30s 够一次长对话收尾。
-    timeout-per-shutdown-phase: 30s
 management:
   endpoints:
     web:
@@ -56,3 +61,18 @@ springdoc:
   swagger-ui:
     enabled: true
     path: /swagger-ui.html
+
+# ---------------------------------------------------------------------------
+# 跨域（CORS）—— 前后端分离时才需要
+# ---------------------------------------------------------------------------
+nexus:
+  agent:
+    cors:
+      # 前端跑在别的端口（Vite 默认 5173）时**必须开**，否则浏览器把请求直接拦掉，
+      # 而且 F12 网络面板里看不到任何响应内容，很容易误判成"接口挂了"。
+      # 同源部署（Nginx 把前端和 /api 挂在一个域名下）就**不需要**开。
+      enabled: true
+      # 允许的前端来源，逗号分隔。支持 http://localhost:* 这种通配写法。
+      # ⚠️ 生产环境请列**精确域名**，不要写 '*' —— 那等于任何网站都能读取本服务的响应。
+      # ⚠️ 只填来源（协议 + 域名 + 端口），**不要带路径**、也不要以 / 结尾。
+      allowed-origins: http://localhost:5173,http://127.0.0.1:5173

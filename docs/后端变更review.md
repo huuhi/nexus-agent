@@ -418,6 +418,104 @@ Filter userFilter = metadataKey("user_id").isEqualTo(String.valueOf(userId));
 
 ---
 
+## 7.5 追加修复（2026-10-01）：三处真问题
+
+上一节列的是"待你执行"，这一节是**我随后自己发现并修掉的三个后端问题**，
+其中第 ① 条会让应用**完全起不来**，建议优先确认。
+
+### 7.5.1 ① `application.yml` 重复顶层键 → 应用起不来（P0，P3-3 引入）
+
+**改之前**（`8b12fb4` 里为了加优雅停机，新起了一个 `spring:` 块）：
+
+```yaml
+spring:                       # 第 1 个
+  application:
+    name: nexus-agent-web
+  profiles:
+    active: dev
+  threads:
+    virtual:
+      enabled: true
+server:
+  shutdown: graceful
+spring:                       # 第 2 个 ← 与上面同名
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+```
+
+**为什么是致命的**：Spring Boot 的 YAML 加载器（`SafeConstructor.processDuplicateKeys`）
+遇到重复键**直接抛异常**，不是"后者覆盖前者"：
+
+```
+found duplicate key spring
+```
+
+我实测过：同样的内容喂给 `YamlPropertySourceLoader` 会抛 `DuplicateKeyException`；
+喂给裸 SnakeYAML（默认允许重复键）则是**后者整体覆盖前者**，
+意味着 `spring.profiles.active=dev` 与 `spring.threads.virtual.enabled=true` 会被静默丢掉。
+两种结果都是坏的：**要么起不来，要么虚拟线程和 dev profile 双双失效**。
+
+**改之后**：合并成一个 `spring:` 块，并在文件里写明"不允许出现两个同名顶层键"。
+
+**怎么验证**：新增 `ApplicationYmlTest`，用 Boot 自己的加载器解析
+`application.yml` / `application-prod.yml`（`application-dev.yml` 存在时才测），
+另有一条**反向用例**确认"重复键确实会被判失败"——保证这个测试不会变成永远绿的摆设。
+
+> ⚠️ 这条是 P3-3 引入的。之所以之前没暴露，是因为合并后你还没重启过应用。
+> 拉完这次改动重启即可。
+
+### 7.5.2 ② 跨域对任意网站开放（P0 安全）
+
+**改之前**：
+
+```java
+config.setAllowedOriginPatterns(List.of("*"));   // 任意来源
+config.setAllowedMethods(List.of("*"));
+config.setAllowedHeaders(List.of("*"));
+config.setAllowCredentials(true);                // 还允许带凭证
+```
+
+等于**任何网站**都能带着用户 token 读写本服务的接口。
+
+**改之后**：配置驱动 + 生产默认关。
+
+```yaml
+nexus:
+  agent:
+    cors:
+      enabled: true            # prod 里是 false
+      allowed-origins: http://localhost:5173,http://127.0.0.1:5173
+```
+
+关键取舍：
+
+- **放行头收窄**为 `token` + `Content-Type`（原来 `*`）。`token` 必须放行，否则预检失败。
+- **不开 credentials**：本项目用 token 头鉴权、不用 Cookie，开了没用反而是风险。
+- **给了开关却没给域名 → 不注册任何规则**（等同关闭），
+  **绝不退化成"放行所有"** —— 那是最容易写出的安全漏洞。
+- 配了 `*` → 启动打 WARN。
+- 继续用 `CorsFilter` 而不是 `WebMvcConfigurer#addCorsMappings`：
+  前者是 Servlet 过滤器，**会直接短路 OPTIONS 预检**，
+  不会让它撞到 `LoginCheckInterceptor` 被判成未登录返回 401
+  （那会导致"配了跨域还是被拦"）。
+
+### 7.5.3 ③ 登录拦截器从不清理 ThreadLocal（P1，潜在越权）
+
+**改之前**：只在 `preHandle` 里 `UserContextHolder.saveId(id)`，**没有任何清理**。
+一旦处理请求的线程被复用（关掉虚拟线程 / 换线程池 / 将来接异步 Servlet），
+下一个请求会读到**上一个用户**的 userId —— 那是实打实的越权，
+而且现象是"偶尔看到别人的数据"，几乎无法复现。
+
+**改之后**：补 `afterCompletion` → `UserContextHolder.removeUserId()`。
+
+> 现在开着虚拟线程（一请求一线程）时不会立刻炸，所以这是**消除隐患**而非修正在发生的故障。
+> 但它便宜、零风险，且属于"一旦发生就是事故"的那类问题。
+
+**测试**：206 个（194 通过 + 12 人工跳过），0 失败；新增 `ApplicationYmlTest`(4)、
+`CorsConfigTest`(5)、`LoginCheckInterceptorTest`(3)。
+
+---
+
 ## 8. 变更文件全清单（38 个）
 
 **新增**

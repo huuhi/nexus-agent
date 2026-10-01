@@ -224,6 +224,8 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | `nexus.agent.startup.fail-fast` | `true` | 启动自检发现必需配置缺失时是否阻止启动；只想临时带病启动再设 `false` |
 | `nexus.agent.quota.enabled` / `.default-quota` | `true` / `0` | token 配额校验；`default-quota` 是新用户默认额度（`<=0` 不限）。**给某人限额改库**：`UPDATE users SET token_quota = N WHERE id = ?`（需先执行 `docs/sql/003`） |
 | `nexus.agent.memory.max-results` | `20` | 长期记忆单次检索最多返回多少条（太多会塞爆提示词） |
+| `nexus.agent.cors.enabled` | `true`（dev）/ `false`（prod） | 前后端分离部署（前端在别的域名/端口）时设为 `true`。**prod 默认关闭**，同源部署不用开 |
+| `nexus.agent.cors.allowed-origins` | `http://localhost:5173,http://127.0.0.1:5173`（dev） | 允许的前端来源，逗号分隔（支持 `http://localhost:*`）。⚠️ 留空 = 不启用（**不会**退化成放行所有）；生产请填**精确域名**，别填 `*` |
 | `nexus.agent.memory.fuzzy` | `true` | 字面匹配零命中时用 `pg_trgm` 模糊兜底。**需执行 `docs/sql/006`**；没装扩展会自动降级（仅 WARN 一次） |
 
 ---

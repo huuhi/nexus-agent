@@ -151,7 +151,7 @@ v1 是裸字符串 `"DONE"`，v2 改成对象以便携带信封字段。
 | 鉴权头 | **`token: <JWT>`**（❗不是 `Authorization: Bearer`） |
 | 未登录 | `401` + JSON `{"code":1,"msg":"NOT_LOGIN","data":null,"total":null}`<br>（由 `LoginCheckInterceptor.reject` 写出，`Content-Type: application/json`；**不是纯文本**，早期版本此处写错过） |
 | Content-Type | `text/event-stream` |
-| CORS | ⚠️ **后端未配置任何 CORS**。跨源调用会被浏览器直接拦掉，需 dev proxy / 同源部署（见 `docs/前端开发指南.md` §1.2） |
+| CORS | ✅ 已配置（`CorsFilter`）。dev 默认放行 `http://localhost:5173`；**prod 默认关闭**。配置见 `nexus.agent.cors.*`（`docs/前端开发指南.md` §1.2）。放行请求头：`token`、`Content-Type` |
 
 ⚠️ **不能用浏览器原生 `EventSource`**：它不支持自定义请求头，带不上 `token`。
 请用 `fetch` + `ReadableStream` 自己解析，或用 `@microsoft/fetch-event-source`。
