@@ -4,7 +4,9 @@ package com.huzhijian.nexusagentweb.utils;
 import com.aliyun.oss.ClientBuilderConfiguration;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
+import com.aliyun.oss.common.auth.CredentialsProvider;
 import com.aliyun.oss.common.auth.CredentialsProviderFactory;
+import com.aliyun.oss.common.auth.DefaultCredentialProvider;
 import com.aliyun.oss.common.auth.EnvironmentVariableCredentialsProvider;
 import com.aliyun.oss.common.comm.SignVersion;
 import com.aliyun.oss.model.OSSObject;
@@ -32,6 +34,34 @@ public class AliOssUtil {
     }
 
     /**
+     * 取 OSS 凭证：**配置优先，环境变量兜底**。
+     * <p>
+     * 优先用 {@code spring.aliyun.access-key-id/secret}；没配才回退到 SDK 的
+     * {@code EnvironmentVariableCredentialsProvider}（读 {@code OSS_ACCESS_KEY_ID} /
+     * {@code OSS_ACCESS_KEY_SECRET} 两个环境变量）。
+     * <p>
+     * <b>为什么必须支持配置方式</b>：SDK 那个 provider 直接调 {@code System.getenv()}，
+     * <b>完全绕开 Spring</b> —— 于是写在 yml / .env.properties 里的凭证它一律看不到，
+     * 表现为「配置明明写了且正确，却报
+     * {@code InvalidCredentialsException: Access key id should not be null or empty}」。
+     * 这一半配置（endpoint / bucket / region）走 Spring、另一半（凭证）走环境变量，
+     * 本身就自相矛盾，这里统一成"两者都认"。
+     */
+    private CredentialsProvider credentialsProvider() throws ClientException {
+        String id = aliOssProperties.getAccessKeyId();
+        String secret = aliOssProperties.getAccessKeySecret();
+        if (id != null && !id.isBlank() && secret != null && !secret.isBlank()) {
+            return new DefaultCredentialProvider(id, secret);
+        }
+        log.warn("""
+                spring.aliyun.access-key-id / access-key-secret 没配，回退到环境变量 \
+                OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET。注意：环境变量不经过 Spring，\
+                写在 yml 或 .env.properties 里是读不到的 —— 上传文件会报 \
+                InvalidCredentialsException。建议显式配置这两项。""");
+        return CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+    }
+
+    /**
      * 图片上传
      *
      * @param content 文件字节数组
@@ -47,8 +77,8 @@ public class AliOssUtil {
         log.info("这里！！！  endpoint:{}, bucketName:{}, region:{}", endpoint, bucketName, region);
 
 
-        // 从环境变量中获取访问凭证。运行本代码示例之前，请确保已设置环境变量OSS_ACCESS_KEY_ID和OSS_ACCESS_KEY_SECRET。
-        EnvironmentVariableCredentialsProvider credentialsProvider = CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        // 凭证：配置优先、环境变量兜底（见 credentialsProvider() 的说明）
+        CredentialsProvider credentialsProvider = credentialsProvider();
 
         // 填写Object完整路径，例如202406/1.png。Object完整路径中不能包含Bucket名称。
         //获取当前系统日期的字符串,格式为 yyyy/MM
@@ -77,8 +107,7 @@ public class AliOssUtil {
 
         log.info("文档上传: endpoint:{}, bucketName:{}, region:{}", endpoint, bucketName, region);
 
-        // 从环境变量中获取访问凭证。运行本代码示例之前，请确保已设置环境变量OSS_ACCESS_KEY_ID和OSS_ACCESS_KEY_SECRET。
-        EnvironmentVariableCredentialsProvider credentialsProvider = CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        CredentialsProvider credentialsProvider = credentialsProvider();
 
         // 生成一个新的不重复的文件名
         String newFileName = UUID.randomUUID() +"."+ fileExtension;
@@ -104,7 +133,7 @@ public class AliOssUtil {
      * @param objectName 对象名称
      * @return 文件访问路径
      */
-    private String getUrl(byte[] content, String endpoint, String bucketName, String region, EnvironmentVariableCredentialsProvider credentialsProvider, String objectName) {
+    private String getUrl(byte[] content, String endpoint, String bucketName, String region, CredentialsProvider credentialsProvider, String objectName) {
         ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
         clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
         OSS ossClient = OSSClientBuilder.create()
@@ -139,8 +168,7 @@ public class AliOssUtil {
         String endpoint = aliOssProperties.getEndpoint();
         String bucketName = aliOssProperties.getBucketName();
         String region = aliOssProperties.getRegion();
-        EnvironmentVariableCredentialsProvider credentialsProvider =
-                CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        CredentialsProvider credentialsProvider = credentialsProvider();
 
         ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
         clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
@@ -207,8 +235,7 @@ public class AliOssUtil {
         String bucketName = aliOssProperties.getBucketName();
         String region = aliOssProperties.getRegion();
 
-        // 从环境变量中获取访问凭证
-        EnvironmentVariableCredentialsProvider credentialsProvider = CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        CredentialsProvider credentialsProvider = credentialsProvider();
 
         ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
         clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
