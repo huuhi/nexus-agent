@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.config;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -35,10 +36,23 @@ public class WebClientConfig {
 
     private final AgentProperties agentProperties;
 
-    private final String base_url=System.getenv().getOrDefault("BASE_URL", "http://localhost:8000");
+    /**
+     * 沙盒服务地址。
+     * <p>
+     * 2026-10-03：原先是 {@code System.getenv().getOrDefault("BASE_URL", ...)}，
+     * 绕开 Spring —— 写在配置文件里的 BASE_URL 读不到。
+     * 现在按 Spring 的方式解析：配置项 {@code nexus.agent.sandbox.base-url} 优先，
+     * 回退环境变量 {@code BASE_URL}，再没有才用默认值。
+     * 注意容器里 {@code localhost} 指的是容器自己，连宿主机上的沙盒要写
+     * {@code http://host.docker.internal:8000}。
+     */
+    @Value("${nexus.agent.sandbox.base-url:${BASE_URL:http://localhost:8000}}")
+    private String sandboxBaseUrl;
+
     @Bean
     @Primary
-    public WebClient webClient(){
+    public WebClient webClient() {
+        log.info("沙盒服务地址 BASE_URL = {}", sandboxBaseUrl);
         Duration httpTimeout = agentProperties.getTools().getHttpTimeout();
         ConnectionProvider httpPool = ConnectionProvider.builder("http_pool")
                 .disposeTimeout(Duration.ofSeconds(20))
@@ -49,7 +63,7 @@ public class WebClientConfig {
                 .evictInBackground(Duration.ofMinutes(1))  // 清理后台连接间隔
                 .build();
         return WebClient.builder()
-                .baseUrl(base_url)
+                .baseUrl(sandboxBaseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(

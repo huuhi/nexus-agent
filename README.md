@@ -482,8 +482,12 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 | `type "vector" does not exist` | PostgreSQL 没装 pgvector 扩展 |
 | `缺少环境变量 API_KEY_SECRET` | 见上方第 3 步 |
 | 启动后 token 立刻失效 | 没设 `JWT_SECRET`，每次重启都换成了随机密钥 |
+| `NoClassDefFoundError: Could not initialize class ...JwtUtil` | `JWT_SECRET` 在 **static 初始化块**里解析失败（旧版本要求必须是 Base64，填了带 `-` 的普通串就会炸）→ 类被永久毒化，全站 500。2026-10-03 起已改成惰性 + 容错（任意字符串都认），换新版 jar 即可 |
+| 配置文件里写了密钥却报「没设置」 | 旧版本 `JwtUtil` / `EncryptorFactory` / `AliOssUtil` 直接 `System.getenv()`，**绕开 Spring**，只看进程环境变量。2026-10-03 起统一改为配置项优先、环境变量兜底 |
 | 沙盒工具报 `Connection refused` | FastAPI 沙盒服务没启动，或 `BASE_URL` 指向不对 |
 | 邮箱验证码收不到 | QQ 邮箱要用 **SMTP 授权码**，不是邮箱登录密码 |
+| `password authentication failed for user "postgres"` | PostgreSQL **不区分**「密码错」和「用户不存在」。先确认用户名：不是 `postgres` 就设 `DB_USERNAME=你的用户名`（2026-10-03 前这个值写死在 yml 里，改配置都没用） |
+| `PgVectorEmbeddingStore` 建 Bean 就报连不上 | 该 Bean 在**启动阶段真实连库并建表** → 库不可用时应用**起不来**（区别于"起来了但登录 500"）。先 `psql -h 主机 -U 用户名 -d 库名 -c "select 1"` 二分 |
 | `column "file_name" does not exist` | 数据库是重构前的旧结构，重跑一次基线 SQL |
 | 技能「配了但没反应」 | `nexus.agent.skill.root-dir` 是相对**应用工作目录**解析的；看启动日志里的 `Skill 目录不存在，Skill 能力为空：<绝对路径>`，必要时改成绝对路径 |
 

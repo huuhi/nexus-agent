@@ -65,7 +65,11 @@ public class StartupConfigValidator {
      * @param level       级别
      * @param consequence 缺失后果（写给用户看，必须具体到"哪项能力不可用"）
      */
-    private record Requirement(String name, String key, Level level, String consequence) {
+    private record Requirement(String name, String key, Level level, String consequence, String envKey) {
+        /** 没有等价环境变量的普通配置项 */
+        Requirement(String name, String key, Level level, String consequence) {
+            this(name, key, level, consequence, null);
+        }
     }
 
     private static final List<Requirement> REQUIREMENTS = List.of(
@@ -77,14 +81,16 @@ public class StartupConfigValidator {
                     "langchain4j.open-ai.streaming-chat-model.api-key",
                     Level.REQUIRED,
                     "默认流式对话模型无法调用，任何对话都会失败（prod 模板里是 ${DEEPSEEK}）"),
-            new Requirement("用户 Key 加密主密钥 API_KEY_SECRET",
-                    "API_KEY_SECRET",
+            new Requirement("用户 Key 加密主密钥",
+                    "nexus.agent.api-key-secret",
                     Level.REQUIRED,
-                    "用户自带 API Key 无法加密存储（EncryptorFactory 会直接失败）"),
-            new Requirement("JWT 签名密钥 JWT_SECRET",
-                    "JWT_SECRET",
+                    "用户自带 API Key 无法加密存储（保存配置时会失败）",
+                    "API_KEY_SECRET"),
+            new Requirement("JWT 签名密钥",
+                    "nexus.agent.jwt-secret",
                     Level.RECOMMENDED,
-                    "会随机生成密钥 → **应用重启后所有已签发 token 立即失效**，需重新登录"),
+                    "会随机生成密钥 → **应用重启后所有已签发 token 立即失效**，需重新登录",
+                    "JWT_SECRET"),
             new Requirement("向量模型 Key AI_KEY",
                     "langchain4j.open-ai.embedding-model.api-key",
                     Level.RECOMMENDED,
@@ -145,7 +151,12 @@ public class StartupConfigValidator {
      * 这里按「缺失」处理，由本类统一汇总，避免 Spring 一次只报一个。
      */
     private boolean isPresent(Requirement requirement) {
-        return hasValue(safeGetProperty(requirement.key()));
+        if (hasValue(safeGetProperty(requirement.key()))) {
+            return true;
+        }
+//        兼容「只设了同名环境变量」的情形：Spring 的 Environment 自带 systemEnvironment 属性源，
+//        所以这里仍然走 Environment 而不是 System.getenv —— 保持来源统一。
+        return requirement.envKey() != null && hasValue(safeGetProperty(requirement.envKey()));
     }
 
     private boolean hasValue(String value) {
@@ -173,8 +184,11 @@ public class StartupConfigValidator {
         for (int i = 0; i < missing.size(); i++) {
             Requirement requirement = missing.get(i);
             sb.append(i + 1).append(". ").append(requirement.name()).append("\n");
-            sb.append("   配置项：").append(requirement.key())
-                    .append("（写进 yml，或设为同名环境变量）").append("\n");
+            sb.append("   配置项：").append(requirement.key());
+            if (requirement.envKey() != null) {
+                sb.append("（或环境变量 ").append(requirement.envKey()).append("）");
+            }
+            sb.append("\n");
             sb.append("   后果：").append(requirement.consequence()).append("\n");
         }
         sb.append("-".repeat(70)).append("\n");

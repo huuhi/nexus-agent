@@ -29,7 +29,11 @@ spring:
     # 而 stringtype=unspecified 是 chat_memory.content::jsonb 等写入正常工作的前提。
     url: jdbc:postgresql://${SERVICE_IP}:5432/nexus_agent?reWriteBatchedInserts=true&stringtype=unspecified
     password: ${DATABASE}
-    username: postgres
+    # 2026-10-03：原先**写死** postgres —— 数据库用户名不是 postgres 的环境（比如用户名是 hu）
+    # 无论怎么改配置都连不上，报 password authentication failed for user "postgres"。
+    # 改成占位符：环境变量 DB_USERNAME 或配置文件里写 DB_USERNAME=xxx 都能覆盖，
+    # 不填时仍是 postgres（保持旧行为）。
+    username: ${DB_USERNAME:postgres}
     hikari:
       maximum-pool-size: 100
       minimum-idle: 5

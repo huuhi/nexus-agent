@@ -197,10 +197,11 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 | `AI_KEY`（prod yml 现为 `ALI_AI_KEY`） | DashScope 向量模型 Key | `application-prod.yml` |
 | `DATABASE` / `REDIS_PWD` | PostgreSQL / Redis 密码（2026-10-01 从写死改为占位符） | `application-prod.yml` |
 | `SERVICE_IP` | PostgreSQL / Redis 主机（**注意：不是 `DOCKER_IP`**，历史上文档与 prod.yml 里写错过，以 `application-dev.yml` 为准） | `application-prod.yml` |
+| `DB_USERNAME` | PostgreSQL **用户名**（2026-10-03 前写死 `postgres`，用户名不是 postgres 的环境怎么改都连不上）。不填默认 `postgres` | `application-prod.yml` |
 | `MAIL_USERNAME` / `MAIL_PASSWORD` | QQ SMTP 验证码 | `application-prod.yml` |
-| `JWT_SECRET` | Base64 编码的 HMAC-SHA256 密钥。**不设置会随机生成 → 重启后所有 token 失效** | `JwtUtil` |
-| `API_KEY_SECRET` | 用户 API Key 加密主密钥。**不设置会 NPE** | `EncryptorFactory` |
-| `BASE_URL` | 沙盒服务地址，默认 `http://localhost:8000` | `WebClientConfig` |
+| `nexus.agent.jwt-secret`（或 `JWT_SECRET`） | JWT 签名密钥。**任意字符串都可以**（2026-10-03 起不再强制 Base64）。不设置会随机生成 → 重启后所有 token 失效 | `JwtUtil` |
+| `nexus.agent.api-key-secret`（或 `API_KEY_SECRET`） | 用户 API Key 加密主密钥。缺失时不再启动期炸，改成第一次加解密时才抛 | `EncryptorFactory` |
+| `nexus.agent.sandbox.base-url`（或 `BASE_URL`） | 沙盒服务地址，默认 `http://localhost:8000`。容器里 `localhost` 是容器自己，连宿主机要写 `host.docker.internal` | `WebClientConfig` |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | **Java 侧**阿里云 OSS（头像 / 附件上传、产物删除）。**不设置启动不报错，一上传就失败** | `AliOssUtil` |
 | `spring.aliyun.access-key-id` / `access-key-secret` | 同上，**配置文件写法**（2026-10-02 支持） | `AliOssProperties` |
 | `E2B_API_KEY` | E2B 云沙盒鉴权 | `nexus_agent_box`（`.env`） |
@@ -218,6 +219,13 @@ Spring 在建 Bean 时解析不到会抛 `Could not resolve placeholder 'XXX'` �
 缺项 / 占位符 / 写法（密钥**打码输出**，退出码 0/1）。
 ⚠️ **Spring Boot 不会自动读 `.env`**：走 compose 由 `env_file` 注入没问题，
 直接 `java -jar` 前必须 `set -a; . ./.env; set +a`，否则所有变量为空、启动必失败。
+
+❗**凡是"配置文件里写了却读不到"的，八成是代码直接调了 `System.getenv()`** ——
+这条路**绕开 Spring**，yml / `.env.properties` / 面板配置里写的一律看不见。
+2026-10-03 已把这几处统一改成「Spring 配置项优先 + 同名环境变量兜底」：
+`JwtUtil`、`EncryptorFactory`、`WebClientConfig`、`AliOssUtil`。
+新增代码**禁止**再写 `System.getenv`（除非是启动前必须读的，那种要在注释里写清理由），
+一律用 `@Value("${nexus.agent.xxx:${ENV_VAR:默认值}}")` 这种写法 —— 配置项和环境变量都能覆盖。
 
 ---
 
@@ -1143,6 +1151,9 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 2026-10-01 | **环境变量导出为文件（P3-3 收尾）**：`.env.example` 补全 + 新增部署前自查脚本 | `.env.example` 重写为四节（必需 = prod yml 的 `${}` 占位符 + 代码读的 `API_KEY_SECRET`；建议 `JWT_SECRET`/`OSS_*`；可选 `BASE_URL`/`SPRING_PROFILES_ACTIVE`/`JAVA_OPTS`；填值注意）；新增 `scripts/check-env.sh`；新增 `.gitattributes`（`*.sh`/`Dockerfile`/`*.yml`/`*.yaml`/`.env.example` 强制 LF）；`README.md` 部署章节加「§0 先填环境变量再自查」+ 目录结构/文档索引登记；`AGENTS.md` §4.1 加 OSS 行、§5.2 补两行（顺带删掉重复的「向量库 Bean」行）、§6.18 加「Spring Boot 不会自动读 .env」段 | ❗**补上的最大缺口**：旧的 `.env.example` **完全没有 OSS 两项**。Java 侧 `AliOssUtil` 走阿里云 SDK 的 `EnvironmentVariableCredentialsProvider`，**只认 `OSS_ACCESS_KEY_ID`/`OSS_ACCESS_KEY_SECRET`**；沙盒侧 oss2 认 `ALIBABA_CLOUD_*` —— 两侧类名同名但读的变量不同，极易填反。不填的表现是「启动不报错、一上传就失败」。❗ **Spring Boot 不会自动读 `.env`**：compose 的 `env_file` 是 Docker 的能力，直接 `java -jar` 必须 `set -a; . ./.env; set +a`。`check-env.sh` 查缺项/占位符/写法（`export` 前缀、`KEY = value`、CRLF），密钥**打码输出**，退出码 0/1；已用 mock `.env` 实跑验证三种分支。纯文档+脚本改动，未跑 Java 测试 |
 | 2026-10-01 | **环境变量清单订正**：对齐 prod yml 新增的 3 个变量，并更正"哪些算必需" | `.env.example` 重写（必需 = prod yml 的 `${}` 占位符：`SERVICE_IP`/`DATABASE`/`REDIS_PWD`/`DEEPSEEK`/`MOONSHOT`/`ALI_AI_KEY`/`MAIL_*` + 代码读的 `API_KEY_SECRET`；建议只剩 `JWT_SECRET`/`OSS_*`）；`scripts/check-env.sh` 改为**从 `application-prod.yml` 现抽 `${}` 占位符**作为必需清单（yml 找不到时退回内置清单）；`AGENTS.md` §4.1 加 `DATABASE`/`REDIS_PWD` 并把 `AI_KEY` 标为现名 `ALI_AI_KEY`、§6.10 补 prod 下说明 | ❗**更正我自己上一行的错误分类**：原把 `MOONSHOT`/`AI_KEY`/`MAIL_*` 写成"建议（不填也能启动）"。实际 `application-prod.yml` 里它们写作 `${XXX}` 且**没有默认值**，Spring 建 Bean 时解析不到会抛 `Could not resolve placeholder` → **启动失败**，比 `StartupConfigValidator` 的 `@PostConstruct` 更早。所以 prod 部署时**缺哪个都是起不来**。❗ 变量清单改为**动态抽取**而非写死，避免在 yml 改名后漏查漂移。用真实 prod yml 实跑三个分支验证：缺项（EXIT=1）/ yml 缺失兜底 / 全齐（EXIT=0）|
 | 2026-10-03 | **修：首次设置 MCP Token 必然 500**（`UserConfigServiceImpl.saveOrUpdateMcpToken` 空指针） | `UserConfigServiceImpl` 补 `config == null` 的**建行**分支，并给 `getApiConfig` / `saveOrUpdateAPIConfig` 兜住 `llm_api_token` 为 null；`UserConfigMapper` + XML 新增 `updateMcpTokenById`（只改 `mcp_token`/`salt`）；`UserConfigMapper.xml#save` 的 `::json` 改 `::jsonb` 并加 `jdbcType=VARCHAR`；新增 `UserConfigServiceImplTest`（5 个）；`nexus-agent-web/pom.xml` 给 surefire 注入测试专用 `API_KEY_SECRET` | ❗**方法名叫 saveOrUpdate，实际只写了 update 分支**：`getById(userId)` 返回 null 时直接 `config.getSalt()` → `NullPointerException`。任何「还没配过 LLM API Key 就先配 MCP」的用户 **100% 触发**（线上实测即如此）。❗ **连带两个坑（一起修了）**：① **不能改用 MP 的 `updateById`** —— `llm_api_token` 是 **jsonb** 列，MP 把 Java String 当 varchar 传进去，PostgreSQL 报 `column is of type jsonb but expression is of type character varying`（这也是原作者另写 `updateAPIconfigById` 手写 SQL 的原因）；② 新建行时 `llm_api_token` **不能留 null** —— 该列 `jsonb NOT NULL`，`#{llmApiToken}::jsonb` 传 null 会让 PG 报 `could not determine data type of parameter`，而且后面 `getApiConfig()` 里 `.toString()` 会 NPE，所以统一写成 `[]`。❗ 单测需反射注入 MP 的 `protected baseMapper` 字段（Spring 环境由框架注入，纯单测没有）。测试 **234**（222 通过 + 12 人工跳过），0 失败 |
+| 2026-10-03 | **修：`JWT_SECRET` 非 Base64 时全站 500**（`JwtUtil` 类初始化永久失败） | `JwtUtil` 密钥解析改为**惰性**且**容错**：能按 Base64 解开就用，解不开就当普通字符串的 UTF-8 字节，不足 32 字节用 SHA-256 派生（HS256 硬要求）；`EncryptorFactory` 同样改为惰性解析 | ❗**根因**：原实现在 `static {}` 块里做 `Base64.getDecoder().decode(System.getenv("JWT_SECRET"))`，用户填了带 `-` 的普通字符串 → `IllegalArgumentException: Illegal base64 character 2d` → **类初始化永久失败** → 之后每次访问都是 `NoClassDefFoundError: Could not initialize class JwtUtil` → 登录、鉴权、所有接口一起 500，报错完全指不到 JWT_SECRET。❗ **通用教训**：**不要在 `static` 初始化块里做可能失败的外部依赖解析**（环境变量 / 文件 / 网络），失败一次就永久毒化整个类，且错误信息与真因脱节。改成惰性解析后，缺值只在真正用到的那一次报错。新增 `JwtUtilTest`（6，含"带连字符"、"短于 32 字节"、"换密钥后旧 token 失效"） |
+| 2026-10-03 | **统一：`System.getenv` 全部改为走 Spring**（配置项优先，环境变量兜底） | 新增 `config/RuntimeSecretInitializer`（启动时把配置值注入两个 static 工具类）；`JwtUtil` + `EncryptorFactory` 加 `setConfiguredSecret()`；`WebClientConfig` 的 `BASE_URL` 改 `@Value("${nexus.agent.sandbox.base-url:${BASE_URL:http://localhost:8000}}")`；`NexusAgentWebApplication.main` 删掉 `getenv` 日志（容器启动前拿不到配置值，会显示成默认值误导人）；`StartupConfigValidator` 的 `Requirement` 加 `envKey` 字段，`JWT_SECRET`/`API_KEY_SECRET` 两项改为同时认配置项与环境变量 | ❗**用户报的现象**：「JWT_SECRET / API_KEY_SECRET 我设置了，但说我没有设置，我在配置项设置了啊」—— 因为这两个类直接 `System.getenv()`，**绕开 Spring**，写在 yml / `.env.properties` / 1Panel 面板配置里的一律读不到。与 2026-10-02 的 `AliOssUtil` 是**同一类问题**。❗ 统一写法：`@Value("${nexus.agent.xxx:${ENV_VAR:默认值}}")` —— Spring 的 Environment 自带 systemEnvironment 属性源，配置项与环境变量都能覆盖，不需要再调 `getenv`。新增 `EncryptorFactoryTest`（4）、`RuntimeSecretInitializerTest`（5，用 **ApplicationContextRunner 起真实迷你容器**验证 `@Value` 注入与 `@PostConstruct`，不依赖数据库）。⚠️ 已写入 §4.1：**新增代码禁止再写 `System.getenv`**。测试 **249**（237 通过 + 12 人工跳过），0 失败 |
+| 2026-10-03 | **实测发现：`pgVectorEmbeddingStore` 在建 Bean 时就真实连库** → 数据库不可用时应用**起不来**（不是"能启动但登录 500"） | 仅记录，未改代码 | 用假配置实跑 jar 验证时撞到：`PgVectorEmbeddingStore` 的 `init` 在建 bean 阶段就执行建表/连库 → `PSQLException: Connection refused` → `Application run failed`。与「007 缺列」的表现不同：DB **连不上** = 起不来；DB 连上了但**缺列** = 能起来、登录才 500。排查时要先分清是哪一种。⚠️ 本机无 PostgreSQL，启动验证只能走到「配置加载 + `BASE_URL` 注入成功」这一步（日志已确认 `沙盒服务地址 BASE_URL = http://127.0.0.1:8000` 来自配置文件） |
 
 **已核实与 `CLAUDE.md` 的冲突（这些是 CLAUDE.md 的错，不是代码的错）**：
 
