@@ -1,0 +1,72 @@
+# ============================================================================
+#  nexus-agent —— **服务器部署**用（只起应用 + 沙盒服务，PG / Redis 走外部）
+# ----------------------------------------------------------------------------
+#  与根目录 docker-compose.yml 的区别（别选错文件）：
+#    · docker-compose.yml        = 一键起**全套**（PG + Redis + box + app），本地开发用。
+#                                  ⚠️ 它会新建一个空的 PG，并且首次启动会执行
+#                                  docs/sql/001_baseline.sql（**会 DROP 全表**）。
+#    · docker-compose.server.yml = 服务器部署用。数据库与 Redis 用**外部已有的**，
+#                                  只起 app 与 box 两个容器。
+#
+#  用法（在服务器上，仓库根目录执行）：
+#      cp .env.example .env                                   # 填真实值
+#      cp nexus_agent_box/.env.example nexus_agent_box/.env    # 沙盒服务也要一份
+#      docker compose -f docker-compose.server.yml up -d --build
+#      docker compose -f docker-compose.server.yml ps          # 两个都要 healthy
+#      docker compose -f docker-compose.server.yml logs -f app # 看启动日志
+#
+#  ⚠️ 两个前提：
+#  1. `SERVICE_IP` 指向的外部 PG / Redis 必须**放行这台服务器**；
+#     数据库要先跑过 `docs/sql/007`（缺 token_period 列 → 登录直接 500）。
+#  2. `NEXUS_AGENT_CORS_*` 不要写在这个文件里 —— 前后端分离部署时，往 `.env` 里加两行即可
+#     （`environment:` 优先级高于 `env_file:`，写在这里会覆盖掉 `.env`）。
+# ============================================================================
+
+name: nexus-agent-server
+
+services:
+  # ---------------------------------------------------------------------------
+  # 沙盒服务（FastAPI / E2B）
+  # ---------------------------------------------------------------------------
+  # 只在 compose 内部网络暴露 8000（用 expose 而不是 ports）：
+  # 这个服务只给后端调用，没必要映射到宿主机对外。
+  box:
+    build:
+      context: ./nexus_agent_box
+    container_name: nexus-agent-box
+    env_file:
+      - ./nexus_agent_box/.env
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Java 应用
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-agent-app
+    depends_on:
+      box:
+        condition: service_healthy
+    environment:
+      # 容器网络里用**服务名**访问沙盒服务（写 localhost 会连到 app 自己）
+      BASE_URL: http://box:8000
+      # 镜像里没有 application-dev.yml，必须跑 prod
+      SPRING_PROFILES_ACTIVE: prod
+      # ❗ 这里**故意不写** SERVICE_IP 与 CORS：
+      #    environment: 的优先级高于 env_file:，写了就会覆盖 .env 里填的值，
+      #    表现为「明明填了外部库 IP，应用却连不上」。保持这两项只由 .env 提供。
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

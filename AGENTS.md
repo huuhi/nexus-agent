@@ -886,7 +886,8 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 |---|---|
 | `Dockerfile` | Java 应用镜像：maven 多阶段构建 → `eclipse-temurin:21-jre`，非 root、`MaxRAMPercentage=75`、`HEALTHCHECK` |
 | `.dockerignore` | 排除 `.git`、`target/`、本地 `application-dev.yml`、`docs/` |
-| `docker-compose.yml` | 一键起全套：pgvector / redis / box / app（含 depends_on 健康检查） |
+| `docker-compose.yml` | **本地**一键起全套：pgvector / redis / box / app（含 depends_on 健康检查）。⚠️ 会新建一个空 PG 并在首次启动时执行 `001_baseline.sql`（**会 DROP 全表**） |
+| `docker-compose.server.yml` | **服务器部署**用：只起 `box` + `app` 两个容器，PG / Redis 用外部已有的。故意**不写** `SERVICE_IP` 与 CORS（写了会覆盖 `env_file`），`BASE_URL=http://box:8000`，box 只 `expose` 不映射宿主端口 |
 | `.env.example` | **应用**的环境变量模板（与 `nexus_agent_box/.env.example` 是两份，别混） |
 | `scripts/check-env.sh` | 部署前自查 `.env`：必需项是否填、占位符是否漏改、写法是否正确。退出码 0/1，密钥打码输出 |
 | `.gitattributes` | 强制 `*.sh` / `Dockerfile` / `*.yml` / `*.yaml` / `.env.example` 为 LF 行尾 |

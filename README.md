@@ -149,6 +149,29 @@ docker compose ps     # 四个服务都 healthy 才算起来
 
 ⚠️ **别**把有真实数据的目录挂到 `pgdata` 卷上 —— 初始化会执行 `001_baseline.sql`，它**会 DROP 全表**。
 
+### 服务器部署：app + box 两个容器（数据库在外部）
+
+用 **`docker-compose.server.yml`**，别用根目录那个 `docker-compose.yml` ——
+后者会新建一个空 PG，并在首次启动时执行 `001_baseline.sql`（**它会 DROP 全表**）。
+
+```bash
+cp .env.example .env                                  # 填真实值
+cp nexus_agent_box/.env.example nexus_agent_box/.env  # 沙盒服务也要一份
+docker compose -f docker-compose.server.yml up -d --build
+docker compose -f docker-compose.server.yml ps         # box / app 都要 healthy
+docker compose -f docker-compose.server.yml logs -f app
+```
+
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| `box` | 8000（**仅内部网络**） | FastAPI 沙盒服务，只给后端调用，不映射到宿主机 |
+| `app` | 8080 → 宿主 | Java 应用；`BASE_URL=http://box:8000`（容器网络用服务名互访） |
+
+✅ 服务器**不用装 JDK 21**：构建阶段自带 Maven + JDK，运行阶段自带 JRE。
+⚠️ 两个前提：外部 PG / Redis 放行这台服务器，且库上先跑过 `docs/sql/007`。
+⚠️ 需要跨域就往 `.env` 加 `NEXUS_AGENT_CORS_ENABLED` / `NEXUS_AGENT_CORS_ALLOWED_ORIGINS`
+两行，**别写进 compose** —— `environment:` 会覆盖 `env_file:` 里的同名变量。
+
 ### 只跑应用镜像
 
 ```bash
@@ -395,4 +418,4 @@ nexus-agent (parent pom)
 | [docs/sql/README.md](./docs/sql/README.md) | 数据库基线说明、设计理由、索引清单、变更约定 |
 | [docs/后端变更review.md](./docs/%E5%90%8E%E7%AB%AF%E5%8F%98%E6%9B%B4review.md) | **变更 review 指南**：核心文件的 before/after 代码对照、好在哪、review 盯哪里、怎么验证 |
 | [开发日志.md](./开发日志.md) | 项目演进历史记录 |
-| `Dockerfile` / `docker-compose.yml` / `.env.example` / `scripts/check-env.sh` | 部署形态（P3-3）：应用镜像与一键起全套、环境变量清单、部署前自查；用法见本文「部署」章节 |
+| `Dockerfile` / `docker-compose.yml` / `docker-compose.server.yml` / `.env.example` / `scripts/check-env.sh` | 部署形态（P3-3）：应用镜像、本地全套、**服务器部署（数据库在外部）**、环境变量清单、部署前自查；用法见本文「部署」章节 |
