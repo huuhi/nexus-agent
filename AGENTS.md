@@ -201,7 +201,8 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 | `JWT_SECRET` | Base64 编码的 HMAC-SHA256 密钥。**不设置会随机生成 → 重启后所有 token 失效** | `JwtUtil` |
 | `API_KEY_SECRET` | 用户 API Key 加密主密钥。**不设置会 NPE** | `EncryptorFactory` |
 | `BASE_URL` | 沙盒服务地址，默认 `http://localhost:8000` | `WebClientConfig` |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | **Java 侧**阿里云 OSS（头像 / 附件上传、产物删除）。**不设置启动不报错，一上传就失败** | `AliOssUtil`（`CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider()`） |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | **Java 侧**阿里云 OSS（头像 / 附件上传、产物删除）。**不设置启动不报错，一上传就失败** | `AliOssUtil` |
+| `spring.aliyun.access-key-id` / `access-key-secret` | 同上，**配置文件写法**（2026-10-02 支持） | `AliOssProperties` |
 | `E2B_API_KEY` | E2B 云沙盒鉴权 | `nexus_agent_box`（`.env`） |
 | `ALIBABA_CLOUD_ACCESS_KEY_ID` / `..._SECRET` | **沙盒侧**回传 OSS 用 | `app/utils/oss_utils.py` |
 
