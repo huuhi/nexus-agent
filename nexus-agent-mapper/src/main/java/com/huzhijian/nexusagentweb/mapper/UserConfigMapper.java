@@ -14,6 +14,14 @@ public interface UserConfigMapper extends BaseMapper<UserConfig> {
 
     void updateAPIconfigById(UserConfig config);
 
+    /**
+     * 只更新 mcp_token 与 salt，不碰 llm_api_token。
+     * <p>
+     * 不能改用 MyBatis-Plus 自带的 {@code updateById}：llm_api_token 是 jsonb 列，
+     * MP 会把 Java String 当 varchar 传，PostgreSQL 报类型不匹配。
+     */
+    void updateMcpTokenById(UserConfig config);
+
     void save(UserConfig userConfig);
 }
 

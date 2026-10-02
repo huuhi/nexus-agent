@@ -75,7 +75,10 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
         apiConfig.setAPIKey(encryptKey);
 //        更新
         String id = apiConfig.getId();
-        List<APIConfig> apiConfigs= JSONUtil.toList(config.getLlmApiToken().toString(), APIConfig.class);
+//            用户可能先配了 MCP Token 才有这一行，那时 llm_api_token 是空数组而不是 null；
+//            但历史脏数据里也可能是 null，这里兜住，避免 .toString() NPE。
+        String rawToken = config.getLlmApiToken() == null ? EMPTY_API_TOKEN_JSON : config.getLlmApiToken().toString();
+        List<APIConfig> apiConfigs = JSONUtil.toList(rawToken, APIConfig.class);
 
         if (id==null||id.isEmpty()){
 //            说明是添加配置
@@ -111,19 +114,47 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
                 TimeUnit.DAYS);
     }
 
+    /**
+     * 新建 user_config 记录时的 {@code llm_api_token} 默认值。
+     * <p>
+     * 该列是 {@code jsonb NOT NULL DEFAULT '[]'}：
+     * 1. 传 null 会让 mapper 里的 {@code #{llmApiToken}::jsonb} 变成参数类型不确定的 {@code NULL::jsonb}，
+     *    PostgreSQL 直接报 {@code could not determine data type}；
+     * 2. 留 null 的话 {@link #getApiConfig()} 读出来再 {@code .toString()} 会 NPE。
+     * 所以"只配了 MCP、还没配 LLM"的用户也要写成空数组，而不是留空。
+     */
+    private static final String EMPTY_API_TOKEN_JSON = "[]";
+
     @Override
     public void saveOrUpdateMcpToken(String token) {
         Long userId = UserContextHolder.getUserId();
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
-        redisUtils.delete(CONFIG_KEY+userId);
+        redisUtils.delete(CONFIG_KEY + userId);
         UserConfig config = getById(userId);
-        String salt=config.getSalt()==null?KeyGenerators.string().generateKey():config.getSalt();
+        if (config == null) {
+//            首次设置：user_config 里还没有这个用户的行（比如他还没配过 LLM API Key）
+            String salt = KeyGenerators.string().generateKey();
+            String encrypt = EncryptorFactory.text(salt).encrypt(token);
+            userConfigMapper.save(UserConfig.builder()
+                    .userId(userId)
+                    .llmApiToken(EMPTY_API_TOKEN_JSON)
+                    .mcpToken(encrypt)
+                    .salt(salt)
+                    .build());
+            return;
+        }
+        String salt = config.getSalt() == null || config.getSalt().isBlank()
+                ? KeyGenerators.string().generateKey()
+                : config.getSalt();
         String encrypt = EncryptorFactory.text(salt).encrypt(token);
         config.setMcpToken(encrypt);
         config.setSalt(salt);
-        updateById(config);
+//        不能用 MP 自带的 updateById：llm_api_token 是 jsonb 列，MP 会把 Java String 当 varchar 传进去，
+//        PostgreSQL 报「column is of type jsonb but expression is of type character varying」。
+//        这里只改 mcp_token / salt 两列，绕开 jsonb。
+        userConfigMapper.updateMcpTokenById(config);
     }
 
     @Override
@@ -133,7 +164,7 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
             throw new UnauthorizedException("未登录！");
         }
         UserConfig config = getUserConfig(userId);
-        if (config==null){
+        if (config == null || config.getLlmApiToken() == null) {
             return List.of();
         }
         String json = config.getLlmApiToken().toString();

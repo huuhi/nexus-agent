@@ -18,9 +18,12 @@
     </sql>
     <insert id="save">
         insert into user_config(user_id, llm_api_token, mcp_token, salt)
-        values (#{userId},#{llmApiToken}::json,#{mcpToken},#{salt})
+        values (#{userId},#{llmApiToken,jdbcType=VARCHAR}::jsonb,#{mcpToken},#{salt})
     </insert>
     <update id="updateAPIconfigById">
-        update user_config set llm_api_token=#{llmApiToken}::json,mcp_token=#{mcpToken} where user_id=#{userId};
+        update user_config set llm_api_token=#{llmApiToken}::jsonb,mcp_token=#{mcpToken} where user_id=#{userId};
+    </update>
+    <update id="updateMcpTokenById">
+        update user_config set mcp_token=#{mcpToken},salt=#{salt} where user_id=#{userId};
     </update>
 </mapper>
