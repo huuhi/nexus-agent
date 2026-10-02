@@ -156,6 +156,25 @@ docker build -t nexus-agent:local .
 docker run --rm -p 8080:8080 --env-file .env nexus-agent:local
 ```
 
+数据库在外部时，用 `docker run` 单跑（**别**用 compose 全套，它假定 PG/Redis 也在里面）：
+
+```bash
+docker build -t nexus-agent:local .
+docker run -d --name nexus-agent -p 8080:8080 \
+  --env-file .env \
+  -e NEXUS_AGENT_CORS_ENABLED=true \
+  -e NEXUS_AGENT_CORS_ALLOWED_ORIGINS=http://120.235.30.202:5173 \
+  nexus-agent:local
+```
+
+⚠️ **容器里的 `localhost` 是容器自己**，跟直接跑 jar 不一样 —— 这是换 docker 最容易踩的一处：
+
+- `BASE_URL` 默认 `http://localhost:8000`：沙盒服务跑在**宿主机**时要改成
+  `http://host.docker.internal:8000`（Linux 还需 `--add-host=host.docker.internal:host-gateway`），
+  或直接填宿主机 IP；跑在另一个容器里就用服务名（`http://box:8000`，需同一网络）。
+- 数据库同理：填外部 IP 没问题；DB 在宿主机上就不能写 `localhost`。
+- ⬜ 镜像**未实跑验证过**（开发环境无 Docker），首次请先单独 `docker build` 看能不能构建。
+
 `.env` 按上一节填好（里面已含 `SPRING_PROFILES_ACTIVE=prod`，容器里没有 dev 配置）。
 不打容器、直接 `java -jar` 的话记得先 `set -a; . ./.env; set +a`。
 
@@ -211,6 +230,32 @@ curl -s localhost:8080/actuator/health         # 应返回 {"status":"UP"}
 ⚠️ systemd 的 `EnvironmentFile=` **不做 shell 解析**：文件里不要写 `export ` 前缀，
 也不要写成 `Environment=`（后者只接受单行的 `KEY=value`）。值含 `#` 或空格时加引号。
 改完 `.env` 要 `systemctl restart nexus-agent` 才生效。
+
+### 改配置要重新打包吗？—— 不用
+
+jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是运行时解析的，
+可以**逐属性覆盖**（不是整文件替换），三种方式：
+
+| 方式 | 直接跑 jar | docker | 适用场景 |
+|---|---|---|---|
+| 环境变量 `NEXUS_AGENT_CORS_ALLOWED_ORIGINS=...` | ✅ | ✅ `-e` / `--env-file` | **推荐**，两种跑法通用 |
+| 命令行参数 `--nexus.agent.cors.allowed-origins=...` | ✅ | ❌（见下） | 临时试一下最快 |
+| jar 同级 `config/application-prod.yml` | ✅ | 需 `-v` 挂载 | 要改的东西比较多时 |
+
+所以改 CORS 白名单只需要往 `.env` 里加一行、**重启**，不用回到 Maven：
+
+```bash
+NEXUS_AGENT_CORS_ENABLED=true
+NEXUS_AGENT_CORS_ALLOWED_ORIGINS=http://120.235.30.202:5173
+```
+
+⚠️ 环境变量名是**全大写 + 点变下划线**：`nexus.agent.cors.allowed-origins`
+→ `NEXUS_AGENT_CORS_ALLOWED_ORIGINS`。这靠的是 `SystemEnvironmentPropertySource`
+把属性名反向映射成环境变量名（`CorsConfigTest` 里有两个用例专门锁住它 ——
+将来 Spring 改了策略会先炸测试，而不是上线才发现跨域失效）。
+
+❗ docker 的 `ENTRYPOINT` 是 `sh -c "exec java ..."`，`docker run` 后面的参数传不进 java，
+所以**容器场景只能用环境变量**这一条路（或者改 Dockerfile）。
 
 ### 优雅停机与健康检查
 
