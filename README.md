@@ -141,7 +141,12 @@ docker compose ps     # 四个服务都 healthy 才算起来
 | `box` | 8000 | FastAPI 沙盒服务 |
 | `app` | 8080 | Java 应用（`SPRING_PROFILES_ACTIVE=prod`，镜像里没有 dev 配置） |
 
-⚠️ 库如果已经在别处跑，把 `postgres` / `redis` 两个 service 删掉，再把 `SERVICE_IP` 指过去。
+⚠️ **用外部已有的 PG / Redis 时，光改 `.env` 不够**：`docker-compose.yml` 的 app 服务里
+硬写了 `SERVICE_IP: postgres` / `BASE_URL: http://box:8000`，而 **`environment:` 优先级高于
+`env_file:`** —— 它会**覆盖**你在 `.env` 里填的 IP。必须做三件事：删掉 `postgres` / `redis`
+两个 service、删掉 app 的 `depends_on`、删掉 app.environment 里那两行。
+不报错，只表现为「明明填了 IP 却连不上（或连到了空库）」，极难查。
+
 ⚠️ **别**把有真实数据的目录挂到 `pgdata` 卷上 —— 初始化会执行 `001_baseline.sql`，它**会 DROP 全表**。
 
 ### 只跑应用镜像

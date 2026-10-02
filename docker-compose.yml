@@ -15,6 +15,11 @@
 #  2. `SERVICE_IP=postgres` 是 **compose 服务名**，不是 localhost。
 #     容器网络里 app 通过服务名访问数据库，写 localhost 会连到 app 自己。
 #  3. `BASE_URL=http://box:8000` 同理：容器内访问沙盒服务要用服务名。
+#  4. ⚠️ **`environment:` 的优先级高于 `env_file:`** —— app 里硬写的
+#     `SERVICE_IP: postgres` / `BASE_URL: http://box:8000` 会**覆盖** `.env` 里的同名变量。
+#     用外部库 / 沙盒跑在别的机器上时，光改 `.env` 是**没用**的，
+#     必须把 app.environment 里这两行删掉（或改成你想要的值），否则应用还是去连 `postgres`。
+#     这条不报错，只表现为"明明填了 IP 却连不上 / 连到了空库"，非常难查。
 #  4. 本文件在本机没有 Docker 的环境下**未经实际启动验证**
 #     （见 README「部署」章节）。首次使用请先 `docker compose config` 检查。
 # ============================================================================
