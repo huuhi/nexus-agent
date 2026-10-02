@@ -54,6 +54,16 @@ spring:
     region: cn-guangzhou
     endpoint: https://oss-cn-guangzhou.aliyuncs.com
     image-dir: user/avatar
+    # OSS 凭证（2026-10-02 补）：
+    #   · 有这两个环境变量 → 用它们（冒号后是默认值，缺了不报错而是留空）
+    #   · 环境变量没设 → 可以在 .env.properties / 面板配置里写
+    #     spring.aliyun.access-key-id / access-key-secret，照样生效
+    # ⚠️ 为什么不能直接只靠环境变量：aliyun-sdk-oss 的
+    #    EnvironmentVariableCredentialsProvider 走 System.getenv()，绕开 Spring，
+    #    写在配置文件里它完全看不到（上传时抛 InvalidCredentialsException）。
+    #    现在 AliOssUtil 改成"配置优先、环境变量兜底"，两种写法都认。
+    access-key-id: ${OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
     file-dir: user/file
   data:
     redis:
