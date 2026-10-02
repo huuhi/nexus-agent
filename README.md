@@ -276,6 +276,10 @@ java -Xms256M -Xmx1024M -jar app.jar --spring.profiles.active=prod --spring.conf
 ⚠️ 这种读法下 `.env` 要按 properties 规则写：值**不要加引号**（引号会进值）、值里别用 `\`（是转义符）、
 `#` 开头的行仍是注释。
 
+✅ **这条命令已实测**（2026-10-02）：profile 正确激活为 prod、`.env` 全部占位符解析成功、
+10 份 mapper XML 解析通过；唯一的失败点是故意指向不存在数据库的连接报错 ——
+也就是说在数据库可达的服务器上，这条命令就是完整的启动命令。
+
 ### 改配置要重新打包吗？—— 不用
 
 jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是运行时解析的，
