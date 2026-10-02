@@ -391,6 +391,21 @@ NEXUS_AGENT_CORS_ALLOWED_ORIGINS=http://120.235.30.202:5173
 ❗ docker 的 `ENTRYPOINT` 是 `sh -c "exec java ..."`，`docker run` 后面的参数传不进 java，
 所以**容器场景只能用环境变量**这一条路（或者改 Dockerfile）。
 
+❗ **OSS 凭证现在两种写法都认**（2026-10-02 修复）：
+
+- 环境变量 `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`
+- 或在配置文件里写 `spring.aliyun.access-key-id` / `spring.aliyun.access-key-secret`
+
+原先**只认环境变量** —— 阿里云 SDK 的凭证读取器直接调 `System.getenv()`，**绕开 Spring**，
+所以写在 yml / `.env.properties` 里的凭证它一律看不到，上传时报：
+
+```
+InvalidCredentialsException: Access key id should not be null or empty
+```
+
+这个坑的典型表现就是「配置明明写了而且是对的，却报凭证为空」。
+现在 `AliOssUtil` 改成配置优先、环境变量兜底，两种写法都能用。
+
 ### 优雅停机与健康检查
 
 - `server.shutdown=graceful` + `spring.lifecycle.timeout-per-shutdown-phase=30s`：
