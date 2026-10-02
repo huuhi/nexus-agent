@@ -280,6 +280,29 @@ java -Xms256M -Xmx1024M -jar app.jar --spring.profiles.active=prod --spring.conf
 10 份 mapper XML 解析通过；唯一的失败点是故意指向不存在数据库的连接报错 ——
 也就是说在数据库可达的服务器上，这条命令就是完整的启动命令。
 
+❗ **容器里用不了这条** —— **容器里没有 `.env`**：`.dockerignore` 明确排除了它
+（密钥不该进镜像）。`optional:` 前缀会让读不到文件时**不报错**，
+结果所有 `${XXX}` 静默为空，表现为：
+
+```
+Caused by: PlaceholderResolutionException: Could not resolve placeholder 'MOONSHOT' in value "${MOONSHOT}"
+```
+
+（`MOONSHOT` 只是第一个被解析到的占位符，实际是所有变量都没进去。）
+容器场景改用下面两种之一：
+
+- `--env-file .env`（`docker run`）/ `env_file: - .env`（compose）—— **推荐**。
+  环境变量由 systemEnvironment 属性源提供，此时 `.env` 里的 `SPRING_PROFILES_ACTIVE=prod`
+  **能**正常激活 profile（环境变量有大小写反向映射，配置文件没有），
+  所以不需要再写 `--spring.profiles.active=prod`。
+- `-v /opt/nexus-agent/.env:/app/.env:ro` 把文件挂进容器，再配合上面的 `additional-location`。
+
+排查命令（看变量到底有没有进容器）：
+
+```bash
+docker inspect A_Agent --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'MOONSHOT|DEEPSEEK|SERVICE_IP'
+```
+
 ### 改配置要重新打包吗？—— 不用
 
 jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是运行时解析的，
