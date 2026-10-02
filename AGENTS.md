@@ -226,7 +226,7 @@ Spring 在建 Bean 时解析不到会抛 `Could not resolve placeholder 'XXX'` �
 nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 ├── nexus-agent-common   v0.0.1-SNAPSHOT  JWT、枚举、异常、ThreadLocal 上下文、常量
 ├── nexus-agent-domain   v0.0.1-SNAPSHOT  Entity / DTO / VO / Result 信封
-├── nexus-agent-mapper   v0.0.1-SNAPSHOT  11 个 Mapper 接口 + 11 个 XML
+├── nexus-agent-mapper   v0.0.1-SNAPSHOT  10 个 Mapper 接口 + 10 个 XML（2026-10-02 实数）
 ├── nexus-agent-service  v0.2.0 ⚠️        LangChain4j 集成、工具、业务 Service、Config
 └── nexus-agent-web      v0.1.0 ⚠️        Controller + 启动类 + 配置 + 测试
 ```

@@ -254,6 +254,28 @@ curl -s localhost:8080/actuator/health         # 应返回 {"status":"UP"}
 也不要写成 `Environment=`（后者只接受单行的 `KEY=value`）。值含 `#` 或空格时加引号。
 改完 `.env` 要 `systemctl restart nexus-agent` 才生效。
 
+**用运维面板（只能填一行启动命令）时**，靠 `set -a; . ./.env` 是不行的（那要 shell）。
+好在 `.env` 的 `KEY=value` **恰好是合法的 properties 语法**，让 Spring Boot 直接把它当配置文件读：
+
+```bash
+java -Xms256M -Xmx1024M -jar app.jar --spring.profiles.active=prod --spring.config.additional-location=optional:file:./.env
+```
+
+四个要点：
+
+1. ⚠️ `-Xmx` 这类 **JVM 参数必须放在 `-jar` 之前**（常见面板示例把参数写在后面，是无效的）。
+2. `--spring.profiles.active=prod` **必须显式给**。`.env` 里写的 `SPRING_PROFILES_ACTIVE=prod`
+   是环境变量的命名（大写下划线），而 profile 激活读的是字面键 `spring.profiles.active` ——
+   从配置文件加载的属性**不会**做大小写反向映射（只有真正的系统环境变量才会）。
+   不加这行会按默认的 dev 启动，然后因为镜像/目录里没有 `application-dev.yml` 直接失败。
+3. `--spring.config.additional-location=optional:file:./.env`：把 `.env` 读进配置，
+   所有 `${XXX}` 占位符都能解析。`optional:` = 文件不存在不报错（但那样就全空了，别删错）。
+4. `./` 是**进程工作目录**：面板一般就是 jar 所在目录；不放心就写绝对路径
+   `optional:file:/opt/nexus-agent/.env`。
+
+⚠️ 这种读法下 `.env` 要按 properties 规则写：值**不要加引号**（引号会进值）、值里别用 `\`（是转义符）、
+`#` 开头的行仍是注释。
+
 ### 改配置要重新打包吗？—— 不用
 
 jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是运行时解析的，
@@ -264,6 +286,21 @@ jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是
 | 环境变量 `NEXUS_AGENT_CORS_ALLOWED_ORIGINS=...` | ✅ | ✅ `-e` / `--env-file` | **推荐**，两种跑法通用 |
 | 命令行参数 `--nexus.agent.cors.allowed-origins=...` | ✅ | ❌（见下） | 临时试一下最快 |
 | jar 同级 `config/application-prod.yml` | ✅ | 需 `-v` 挂载 | 要改的东西比较多时 |
+
+第 3 种的具体用法 —— 在 jar 旁边建 `config/application-prod.yml`，**只写要覆盖的几行**，
+其余仍用 jar 里的默认值（Spring Boot 会自动读它，且逐属性优先于 jar 内的同名配置）：
+
+```yaml
+# /opt/nexus-agent/config/application-prod.yml   （jar 同级的 config/ 目录）
+nexus:
+  agent:
+    cors:
+      enabled: true
+      allowed-origins: http://120.235.30.202:5173
+```
+
+前提同样是**进程工作目录 = jar 所在目录**（运维面板默认就是；systemd 靠 `WorkingDirectory=`）。
+改完**重启进程**即可，不用重新打包。
 
 所以改 CORS 白名单只需要往 `.env` 里加一行、**重启**，不用回到 Maven：
 
