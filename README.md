@@ -303,6 +303,33 @@ Caused by: PlaceholderResolutionException: Could not resolve placeholder 'MOONSH
 docker inspect A_Agent --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'MOONSHOT|DEEPSEEK|SERVICE_IP'
 ```
 
+同类问题也出现在 **1Panel 运行环境**之类的"面板帮你起容器"的场景里：
+那个容器有自己的文件系统，你放在宿主机上的 `.env` 它根本看不到。
+
+**两个兜底（不依赖文件、不依赖 shell，任何运行环境都生效）**
+
+① 去掉 `optional:`，让路径不对时**直接报错**而不是静默为空：
+
+```bash
+java -jar app.jar --spring.profiles.active=prod --spring.config.additional-location=file:./.env
+```
+
+找不到文件会明确报 `Config data location 'file:./.env' does not exist`，
+比"变量全空"好查得多。把 `.env` 放到面板的运行目录里（或用绝对路径 `file:/实际路径/.env`）。
+
+② 实在搞不清文件在哪，就把变量**直接写进启动命令**（Spring Boot 的命令行参数，
+键就是占位符里的名字，原样匹配）：
+
+```bash
+java -jar app.jar --spring.profiles.active=prod \
+  --SERVICE_IP=106.52.234.62 --DATABASE=xxx --REDIS_PWD=xxx --DEEPSEEK=xxx \
+  --MOONSHOT=xxx --ALI_AI_KEY=xxx --MAIL_USERNAME=xxx --MAIL_PASSWORD=xxx \
+  --API_KEY_SECRET=xxx --JWT_SECRET=xxx \
+  --OSS_ACCESS_KEY_ID=xxx --OSS_ACCESS_KEY_SECRET=xxx
+```
+
+缺点：密钥明文出现在面板上。能跑通之后，还是建议换回 `.env` 或面板的环境变量配置。
+
 ### 改配置要重新打包吗？—— 不用
 
 jar 里的 `application-prod.yml` 只是**默认值**。Spring Boot 的配置是运行时解析的，
