@@ -53,6 +53,19 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- EncryptorFactory 在类初始化时直接读 System.getenv("API_KEY_SECRET")，
+                         缺了就抛 IllegalStateException。凡是走到加解密的纯单测都需要它。
+                         这里给测试 JVM 注入一个固定值，保证 mvn test 不依赖开发机的环境。
+                         ⚠️ 只是测试用的假密钥，与生产无关。 -->
+                    <environmentVariables>
+                        <API_KEY_SECRET>nexus-agent-test-only-secret</API_KEY_SECRET>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
