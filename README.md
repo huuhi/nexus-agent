@@ -162,6 +162,56 @@ docker run --rm -p 8080:8080 --env-file .env nexus-agent:local
 镜像内：非 root 用户、`-XX:MaxRAMPercentage=75`、`HEALTHCHECK` 打 `/actuator/health`、
 `ENTRYPOINT` 用 `sh -c exec java` 保证 java 是 PID 1（**否则收不到 SIGTERM，优雅停机失效**）。
 
+### 不打容器：直接在服务器上跑 jar
+
+适合「PG / Redis 在外部」的场景（compose 那套假定它们也在同一个 compose 里）。
+
+```bash
+# 1) 本机打包
+/d/dev_utils/maven/bin/mvn -pl nexus-agent-web -am clean package -DskipTests
+# 产物：nexus-agent-web/target/nexus-agent-web-0.0.1-SNAPSHOT.jar
+
+# 2) 上传（jar + 环境变量；沙盒服务要单独部署就再传整个 nexus_agent_box/）
+scp nexus-agent-web/target/nexus-agent-web-0.0.1-SNAPSHOT.jar root@<服务器>:/opt/nexus-agent/app.jar
+scp .env                                                     root@<服务器>:/opt/nexus-agent/.env
+```
+
+服务器上三个前置条件：
+
+- **JDK 21**
+- 沙盒服务跑在**同一台机器的 8000 端口**（`BASE_URL` 默认 `http://localhost:8000`；
+  这里不是容器，`localhost` 就是指这台服务器本身，是对的）
+- 外部 PG / Redis **放行这台服务器的 IP**（`SERVICE_IP` 指向的是外部地址）
+
+```ini
+# /etc/systemd/system/nexus-agent.service
+[Unit]
+Description=nexus-agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nexus-agent
+EnvironmentFile=/opt/nexus-agent/.env          # 用 EnvironmentFile=，不是 Environment=
+ExecStart=/usr/bin/java $JAVA_OPTS -jar /opt/nexus-agent/app.jar
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now nexus-agent
+journalctl -u nexus-agent -f                   # 看启动日志
+curl -s localhost:8080/actuator/health         # 应返回 {"status":"UP"}
+```
+
+⚠️ systemd 的 `EnvironmentFile=` **不做 shell 解析**：文件里不要写 `export ` 前缀，
+也不要写成 `Environment=`（后者只接受单行的 `KEY=value`）。值含 `#` 或空格时加引号。
+改完 `.env` 要 `systemctl restart nexus-agent` 才生效。
+
 ### 优雅停机与健康检查
 
 - `server.shutdown=graceful` + `spring.lifecycle.timeout-per-shutdown-phase=30s`：
