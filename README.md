@@ -289,13 +289,33 @@ Caused by: PlaceholderResolutionException: Could not resolve placeholder 'MOONSH
 ```
 
 （`MOONSHOT` 只是第一个被解析到的占位符，实际是所有变量都没进去。）
-容器场景改用下面两种之一：
+
+❗ **`.env` 这个文件名本身也不能直接用**（实测 2026-10-02）：Spring Boot 的配置加载器
+**只认 `.properties` / `.yml` / `.yaml` 扩展名**，`.env` 会被拒：
+
+```
+Unable to load config data from 'file:./.env'
+Caused by: File extension is not known to any PropertySourceLoader.
+```
+
+✅ **正确做法：复制一份改名为 `.env.properties`**（内容和 `.env` 一模一样即可，
+`KEY=value` 本来就是合法 properties 语法），然后用：
+
+```bash
+java -Xms256M -Xmx1024M -jar app.jar --spring.profiles.active=prod --spring.config.additional-location=file:./.env.properties
+```
+
+✅ **这条已实测**：profile 激活 prod、全部占位符解析成功、走到数据库连接阶段
+（已实测 2026-10-02，`.env` 与 jar 同级目录、工作目录即 jar 目录）。
+`.env` 与 `.env.properties` 的差别只是扩展名 —— 前者给 shell/docker 用，后者给 Spring Boot 用。
+
+容器场景另外两种等价做法：
 
 - `--env-file .env`（`docker run`）/ `env_file: - .env`（compose）—— **推荐**。
   环境变量由 systemEnvironment 属性源提供，此时 `.env` 里的 `SPRING_PROFILES_ACTIVE=prod`
   **能**正常激活 profile（环境变量有大小写反向映射，配置文件没有），
   所以不需要再写 `--spring.profiles.active=prod`。
-- `-v /opt/nexus-agent/.env:/app/.env:ro` 把文件挂进容器，再配合上面的 `additional-location`。
+- `-v /opt/nexus-agent/.env:/app/.env:ro` 把文件挂进容器，再配合上面的 `.env.properties` 方案。
 
 排查命令（看变量到底有没有进容器）：
 
