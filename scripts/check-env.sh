@@ -117,7 +117,7 @@ if [ -f "$PROD_YML" ]; then
     while IFS= read -r k; do [ -n "$k" ] && reqs+=("$k"); done < <(extract_required_from_yml)
     src="${PROD_YML} 的 \${} 占位符 + 代码里的 API_KEY_SECRET"
 else
-    reqs+=(SERVICE_IP DATABASE REDIS_PWD DEEPSEEK MOONSHOT ALI_AI_KEY MAIL_USERNAME MAIL_PASSWORD)
+    reqs+=(SERVICE_IP DATABASE DB_USERNAME REDIS_PWD DEEPSEEK MOONSHOT ALI_AI_KEY MAIL_USERNAME MAIL_PASSWORD)
     src="内置清单（没找到 ${PROD_YML}，路径不对？）"
 fi
 
