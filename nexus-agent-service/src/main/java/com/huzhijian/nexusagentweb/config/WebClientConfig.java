@@ -46,13 +46,27 @@ public class WebClientConfig {
      * 注意容器里 {@code localhost} 指的是容器自己，连宿主机上的沙盒要写
      * {@code http://host.docker.internal:8000}。
      */
-    @Value("${nexus.agent.sandbox.base-url:${BASE_URL:http://localhost:8000}}")
+    @Value("${nexus.agent.sandbox.base-url:${BASE_URL:}}")
     private String sandboxBaseUrl;
+
+    /** 配置项写了但没填值时的兜底（YAML 里 `base-url:` 后面留空会解析成空串，比没有还糟） */
+    private static final String DEFAULT_BASE_URL = "http://localhost:8000";
+
+    private String resolveBaseUrl() {
+        if (sandboxBaseUrl == null || sandboxBaseUrl.isBlank()) {
+            log.warn("沙盒地址为空（nexus.agent.sandbox.base-url 或 BASE_URL 没填），回退 {}。"
+                    + "容器里 localhost 指的是容器自己 —— 要连宿主机上的沙盒请填宿主机内网 IP。",
+                    DEFAULT_BASE_URL);
+            return DEFAULT_BASE_URL;
+        }
+        return sandboxBaseUrl.trim();
+    }
 
     @Bean
     @Primary
     public WebClient webClient() {
-        log.info("沙盒服务地址 BASE_URL = {}", sandboxBaseUrl);
+        String baseUrl = resolveBaseUrl();
+        log.info("沙盒服务地址 BASE_URL = {}", baseUrl);
         Duration httpTimeout = agentProperties.getTools().getHttpTimeout();
         ConnectionProvider httpPool = ConnectionProvider.builder("http_pool")
                 .disposeTimeout(Duration.ofSeconds(20))
@@ -63,7 +77,7 @@ public class WebClientConfig {
                 .evictInBackground(Duration.ofMinutes(1))  // 清理后台连接间隔
                 .build();
         return WebClient.builder()
-                .baseUrl(sandboxBaseUrl)
+                .baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .clientConnector(new ReactorClientHttpConnector(
