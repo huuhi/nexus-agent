@@ -81,10 +81,27 @@ cp nexus_agent_box/.env.example nexus_agent_box/.env
 
 ```bash
 cd nexus_agent_box
-uv run main.py          # 开发模式
-# 或
-docker compose up -d    # 容器模式（改完代码要 docker compose up -d --build）
+cp .env.example .env          # 填 E2B_API_KEY 与 ALIBABA_CLOUD_*（⚠️ 是 ALIBABA_CLOUD_ 前缀，不是 OSS_ 前缀）
+
+# 容器模式（服务器部署用这个）
+docker compose up -d --build
+docker compose logs -f        # 起没起来看日志
+curl http://localhost:8000/docs   # 能打开就是健康
+
+# 或裸跑（服务器上没有 Docker 时）
+uv sync --frozen --no-dev
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+> ⚠️ **部署时不要用 `python main.py` / `uv run main.py`**：
+> `main.py` 里写的是 `uvicorn.run(app, host="127.0.0.1")` —— **只监听本机回环**，
+> 容器外、服务器外都访问不到（容器模式下走 Dockerfile 的 `CMD --host 0.0.0.0`，没有这个问题）。
+>
+> ⚠️ **不需要上传 `.venv`**：`.dockerignore` 已排除它，镜像构建时用 `uv sync --frozen` 重新装，
+> 依据的是 `pyproject.toml` + `uv.lock`。要传到服务器的只有
+> `Dockerfile` / `docker-compose.yml` / `pyproject.toml` / `uv.lock` / `main.py` / `app/`，
+> **外加在服务器上单独创建的 `.env`**（含真实密钥，不要从本地传）。
+> 也**不要传 `docker-compose.override.yml`** —— 它会把宿主机源码挂进容器盖掉镜像。
 
 > `docker-compose.yml` 里现在**不再挂载源码**（镜像为准）；
 > 开发期热重载由自动合并的 `docker-compose.override.yml` 提供。详见下节。
