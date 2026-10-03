@@ -64,7 +64,7 @@ class ToolRegistryTest {
     @Test
     @DisplayName("rag 开启时两个工具集都被解析出来")
     void ragEnabledResolvesBoth() {
-        List<Object> resolved = registry.resolve(new ToolSelection(true));
+        List<Object> resolved = registry.resolve(new ToolSelection(true, false));
 
         assertEquals(2, resolved.size());
         assertTrue(resolved.stream().anyMatch(t -> t instanceof RagLikeToolSet));

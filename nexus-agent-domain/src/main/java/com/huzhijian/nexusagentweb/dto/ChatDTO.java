@@ -14,5 +14,9 @@ public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<
                       String sessionId,
                       List<String> skills,
                       List<Long> MCPs,
-                      ModelDTO model, boolean enableRag) {
+                      ModelDTO model,
+                      /** 是否启用本地知识库（pgvector）检索 */
+                      boolean enableRag,
+                      /** 是否启用乐享知识库检索；与 enableRag 可同时为 true（两个库都会检索） */
+                      boolean enableLexiangRag) {
 }
