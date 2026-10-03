@@ -70,6 +70,29 @@ public class SseResponseConverter {
      * 调用方不可能忘。
      */
     private final AtomicBoolean runSent;
+    /**
+     * 连接是否已断开（超时 / 客户端关网页 / 网络断）。
+     * <p>
+     * ⚠️ **与 {@link #isFinished} 是两回事**，这是 2026-10-03 的关键修正：
+     * <ul>
+     *   <li>以前：onTimeout → onError → isFinished=true → 后续所有产出被丢弃，
+     *       但 TokenStream **还在跑** —— 钱在烧、结果全扔，是最坏的组合；</li>
+     *   <li>现在：连接断开只置 {@code disconnected}，TokenStream 继续跑完，
+     *       消息照常写进 chat_memory、标题照常生成 —— 用户刷新页面就能看到完整回复。</li>
+     * </ul>
+     * "任务结束"（finish / 任务内报错）仍由 isFinished 表达。
+     */
+    private volatile boolean disconnected;
+    /** 心跳任务：长时间不吐字（工具执行中）时防止中间代理（Nginx 默认读超时 60s）掐断连接 */
+    private java.util.concurrent.ScheduledFuture<?> heartbeatTask;
+
+    /** 共享心跳调度池（单线程、daemon）：任务很轻（一次 send），cancel 后线程复用，避免每请求泄漏线程 */
+    private static final java.util.concurrent.ScheduledExecutorService HEARTBEAT_POOL =
+            java.util.concurrent.Executors.newScheduledThreadPool(1, r -> {
+                Thread t = new Thread(r, "sse-heartbeat");
+                t.setDaemon(true);
+                return t;
+            });
 
     @Builder
     public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService,
@@ -104,6 +127,7 @@ public class SseResponseConverter {
         if (!runSent.compareAndSet(false, true)) {
             return;
         }
+        startHeartbeat();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("sessionId", sessionId);
         data.put("isNewSession", isNewSession);
@@ -116,6 +140,54 @@ public class SseResponseConverter {
     }
 
     /**
+     * 每 15 秒发一个 SSE 注释帧（{@code :ping}）。
+     * <p>
+     * 目的：agent 干活期间（工具执行、模型思考）可能**几分钟没有任何事件**，
+     * 中间的 Nginx 等反代默认 60s 读超时就会把连接掐掉 —— 前端表现为"不动了"。
+     * 注释帧对 {@code EventSource} 完全透明（不触发任何回调），也不影响事件契约。
+     */
+    private void startHeartbeat() {
+        heartbeatTask = HEARTBEAT_POOL.scheduleAtFixedRate(() -> {
+            if (disconnected || isFinished.get()) {
+                cancelHeartbeat();
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().comment("ping"));
+            } catch (Exception e) {
+//                发不出去说明连接已经没了：标记断开，让任务继续跑完落库
+                log.info("心跳发送失败，标记连接断开（任务继续）：runId={}", runId);
+                disconnect("心跳发送失败");
+            }
+        }, 15, 15, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    private void cancelHeartbeat() {
+        if (heartbeatTask != null) {
+            heartbeatTask.cancel(false);
+        }
+    }
+
+    /**
+     * 连接断开（超时 / 客户端关网页 / 心跳失败）。
+     * <p>
+     * 只停止**发送**，不终止任务：TokenStream 继续跑完，
+     * 消息照常落库、标题照常生成 —— 用户刷新页面就能看到完整回复。
+     * <p>
+     * ⚠️ 与 {@link #onError(Throwable)} 的区别：onError 是**任务本身**出错（要尽快收尾），
+     * disconnect 只是**传输通道**没了（任务照常）。
+     */
+    public void disconnect(String reason) {
+        if (disconnected) {
+            return;
+        }
+        disconnected = true;
+        cancelHeartbeat();
+        log.info("SSE 连接断开（任务继续在后台跑完，结果会落库）：runId={} session={} 原因={}",
+                runId, sessionId, reason);
+    }
+
+    /**
      * 唯一的发送出口（P2-5）。
      * <p>
      * ① 统一编号与信封；② 把 seq 写进 SSE 原生 `id:` 字段 —— 浏览器 `EventSource`
@@ -125,7 +197,7 @@ public class SseResponseConverter {
      * 不必去 mock `SseEmitter` 的内部机制（它把事件转成 `Set<DataWithMediaType>`，外部很难读回来）。
      */
     protected void dispatch(SseEvent event) {
-        if (isFinished.get()) {
+        if (isFinished.get() || disconnected) {
             return;
         }
         try {
@@ -134,7 +206,8 @@ public class SseResponseConverter {
                     .name(event.getEvent())
                     .data(event));
         } catch (IOException e) {
-            completeWithError(e);
+            // 发送失败 = 连接没了，不是任务出错：标记断开让任务继续跑完落库
+            disconnect("发送失败: " + e.getMessage());
         }
     }
 
@@ -280,12 +353,16 @@ public class SseResponseConverter {
     }
 
     /**
-     * 正常完成
+     * 正常完成（或连接断开后任务跑完）。
+     * <p>
+     * 即使连接早已断开（disconnected=true）也要走到这里：
+     * 标题生成、（经 TokenMemoryStore 的）消息落库都依赖这个收尾 ——
+     * 用户刷新页面时看到的就是这些数据。发送部分会因 disconnected 自动跳过。
      */
     public void finish() {
         if (isFinished.get()) return;
         try {
-            // 结束前把缓冲里剩下的正文发出去，否则回复的尾部会丢
+            // 结束前把缓冲里剩下的正文发出去，否则回复的尾部会丢（连接已断则自动跳过）
             flushPending();
             // 新会话时生成标题（sessionId 已在首帧 run 事件里给过前端，这里不再重复下发）
             if (isNewSession) {
@@ -296,12 +373,19 @@ public class SseResponseConverter {
             isFinished.set(true);
         } catch (Exception e) {
             completeWithError(e);
+        } finally {
+            cancelHeartbeat();
         }
     }
 
     private void completeWithError(Throwable error) {
         if (isFinished.getAndSet(true)) return;
-        emitter.completeWithError(error);
+        cancelHeartbeat();
+        try {
+            emitter.completeWithError(error);
+        } catch (Exception ignored) {
+//            连接可能早已超时/断开：任务收尾到此为止，别让收尾本身再抛异常
+        }
     }
 
     // 暴露 isFinished 供外部检查，但通常不需要
