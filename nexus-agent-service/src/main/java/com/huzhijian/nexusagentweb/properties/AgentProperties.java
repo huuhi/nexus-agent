@@ -352,53 +352,99 @@ public class AgentProperties {
     }
 
     /**
-     * 一个**系统内置模型**（没配自带 Key 的用户用的那批）。
+     * 一个**系统内置模型供应商**（没配自带 Key 的用户用的那批）。
      * <p>
      * 2026-10-03：原先系统默认模型只有 yml 里 {@code langchain4j.open-ai.streaming-chat-model}
      * 那一个 Bean —— 想加第二个、或换一家供应商都得改那一段，很不灵活。
-     * 现在改成列表：每家供应商各写一项，互不干扰。
+     * 现在改成列表：**一家供应商一项，该项下可挂多个模型**（共用同一份 baseUrl / apiKey）。
      * <p>
-     * 例（application-prod.yml）：
+     * 两种写法都支持：
+     * <ol>
+     *   <li><b>多模型（推荐）</b>：填 {@code models} 数组，每个元素一个模型：</li>
+     * </ol>
      * <pre>
      * nexus:
      *   agent:
      *     system-models:
      *       - id: deepseek
-     *         name: DeepSeek-V3
-     *         modelName: deepseek-chat
+     *         name: DeepSeek
      *         baseUrl: https://api.deepseek.com
      *         apiKey: ${DEEPSEEK}
-     *         vision: false
-     *         contextWindow: 131072
-     *         maxOutputTokens: 8192
+     *         models:
+     *           - id: deepseek-chat
+     *             name: DeepSeek-V3
+     *             modelName: deepseek-chat
+     *             contextWindow: 131072
+     *             maxOutputTokens: 8192
+     *           - id: deepseek-reasoner
+     *             name: DeepSeek-R1
+     *             modelName: deepseek-reasoner
      *       - id: qwen
-     *         name: 通义千问
-     *         modelName: qwen3-max
+     *         name: 阿里云百炼
      *         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
      *         apiKey: ${ALI_AI_KEY}
-     *         vision: true
+     *         models:
+     *           - id: qwen3-max
+     *             modelName: qwen3-max
+     *           - id: qwen-vl
+     *             modelName: qwen-vl-max
+     *             vision: true
      * </pre>
+     * <ol start="2">
+     *   <li><b>单模型（兼容旧写法）</b>：不写 {@code models}，直接在供应商项上写
+     *       {@code modelName} —— 此时该项既是供应商也是唯一那个模型。</li>
+     * </ol>
+     * <p>
+     * 字段继承：模型级的 {@code vision}/{@code contextWindow}/{@code maxOutputTokens}
+     * 没填时，依次回退到**供应商级**同名配置，再没有才用默认值。
+     * <p>
      * ⚠️ 不配这个列表时行为**完全不变**（仍用 langchain4j starter 建的单一默认模型）。
      */
     @Data
     public static class SystemModel {
-        /** 唯一标识；前端 {@code model.id} 传它即可选中 */
+        /** 供应商标识（仅用于分组展示，前端选模型用的是模型自己的 id） */
         private String id;
-        /** 展示名（给前端选择器用） */
+        /** 供应商展示名 */
         private String name;
-        /** 实际发给服务商的模型名 */
-        private String modelName;
         /** OpenAI 兼容地址 */
         private String baseUrl;
         /** 该服务商的 Key（建议写成占位符 ${XXX}） */
         private String apiKey;
 
+        /**
+         * 该供应商下的模型列表。**留空时按旧写法处理** —— 用本项的
+         * {@code modelName} 作为唯一模型。
+         */
+        private List<ModelEntry> models = new ArrayList<>();
+
+        // ---- 下面是"单模型旧写法"用的字段，写 models 时这些只作为**兜底默认值** ----
+        /** 实际发给服务商的模型名（旧写法必填；新写法由 models[].modelName 提供） */
+        private String modelName;
         /** 是否支持图片输入，默认 false */
         private Boolean vision;
         /** 上下文窗口，默认 256000 */
         private Integer contextWindow;
         /** 单次最大输出 token，默认 32000 */
         private Integer maxOutputTokens;
+
+        /**
+         * 供应商下的一个模型条目。
+         */
+        @Data
+        public static class ModelEntry {
+            /** 模型唯一标识；前端 {@code model.id} 传它即可选中。不填则用 {@code modelName} */
+            private String id;
+            /** 展示名；不填则用 modelName */
+            private String name;
+            /** 实际发给服务商的模型名 */
+            private String modelName;
+            /** 是否支持图片输入；不填时继承供应商级，再没有则 false */
+            private Boolean vision;
+            /** 上下文窗口；不填时继承供应商级，再没有则 256000 */
+            private Integer contextWindow;
+            /** 单次最大输出 token；不填时继承供应商级，再没有则 32000 */
+            private Integer maxOutputTokens;
+        }
     }
 
     @Data
