@@ -94,7 +94,7 @@ class ChatMessageConverterTest {
     }
 
     @Test
-    @DisplayName("正常图片：url 进提示词，attached_files 保留原始 metadata")
+    @DisplayName("正常图片：产生真正的 ImageContent（多模态模型才能看到图），attached_files 保留原始 metadata")
     void imageOk() throws Exception {
         List<ChatUserMessage> messages = List.of(ChatUserMessage.builder()
                 .type(UserMessageType.IMAGE)
@@ -105,7 +105,9 @@ class ChatMessageConverterTest {
         ChatMessageConverter.ConvertedMessage result = converter.toContents(messages);
 
         assertEquals(1, result.contents().size());
-        assertTrue(result.contents().get(0).toString().contains("https://oss.../a.png"));
+//        2026-10-03：必须是 ImageContent —— URL 文本模型是"看不到"的
+        org.junit.jupiter.api.Assertions.assertInstanceOf(
+                dev.langchain4j.data.message.ImageContent.class, result.contents().get(0));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> attached =
                 (List<Map<String, Object>>) result.metadata().get("attached_files");

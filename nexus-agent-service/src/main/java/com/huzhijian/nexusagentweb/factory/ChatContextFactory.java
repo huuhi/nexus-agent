@@ -23,7 +23,7 @@ import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFact
 import dev.langchain4j.memory.chat.TokenWindowChatMemory;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
-import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+import com.huzhijian.nexusagentweb.model.MultimodalTokenCountEstimator;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolProvider;
 import dev.langchain4j.skills.Skills;
@@ -88,8 +88,12 @@ public class ChatContextFactory {
                         .builder()
 //                        窗口与 token 估算器由 nexus.agent.memory.* 配置。
 //                        原实现写死 100000 + gpt-4o，而 gpt-4o 与真实使用的模型无关，裁剪不准。
+//                        2026-10-03：换 MultimodalTokenCountEstimator —— 原生 OpenAiTokenCountEstimator
+//                        不认识 ImageContent（直接抛 Unknown content type），图片消息会用真图后必须换
                         .maxTokens(agentProperties.getMemory().getMaxTokens(),
-                                new OpenAiTokenCountEstimator(agentProperties.getMemory().getTokenEstimatorModel()))
+                                new MultimodalTokenCountEstimator(
+                                        agentProperties.getMemory().getTokenEstimatorModel(),
+                                        agentProperties.getMemory().getImageTokens()))
                         .chatMemoryStore(memoryStore)
                         .id(sessionId)
                         .build());

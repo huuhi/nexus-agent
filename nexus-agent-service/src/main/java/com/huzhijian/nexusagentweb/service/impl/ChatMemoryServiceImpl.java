@@ -50,6 +50,27 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
             "<<IMAGE_START id=\"(.*?)\">>.*?<<IMAGE_END>>",
             Pattern.DOTALL
     );
+
+    /**
+     * 兼容**存量数据**的包裹标记：无论新旧格式（两括号带 id / 三括号无 id），
+     * 只要是配对的 FILE/IMAGE 包裹块就从文本里剥掉。
+     * <p>
+     * 背景：图片消息曾用「URL 包在 TextContent 里」的方案，标记就被存进了 chat_memory；
+     * 2026-10-03 改用真正的 {@code ImageContent} 后，新消息不再产生这些文本，
+     * 但历史库里已经存了的还在 —— 读取时在这里统一剥掉，前端才不会显示出一坨标记。
+     */
+    private static final Pattern LEGACY_WRAPPER = Pattern.compile(
+            "<<{2,3}(IMAGE|FILE)_START( id=\"[^\"]*\")?>>{2,3}.*?<<{2,3}\\1_END>>{2,3}",
+            Pattern.DOTALL
+    );
+
+    /** 剥掉文本里残留的文件/图片包裹标记（存量数据兼容），并收敛首尾空白 */
+    private static String stripLegacyWrappers(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return LEGACY_WRAPPER.matcher(text).replaceAll("").strip();
+    }
     @Override
     public List<ChatHistory> getByMemoryId(Object memory) {
 //        输入任意字符，则过滤工具消息
@@ -133,7 +154,7 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                         UserMessage { name = null, contents = [TextContent { text = "text" }], attributes = {} }
                         要进行转换
                         */
-                        messageVOBuilder.content(text);
+                        messageVOBuilder.content(stripLegacyWrappers(text));
                     }else{
 //                        说明有文件/图片等其他内容
                         Map<String, Object> attributes = userMessage.attributes();
@@ -151,6 +172,7 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                         StringBuilder textBuilder = new StringBuilder();
                         for (Content content : userMessage.contents()) {
                             if (!(content instanceof TextContent textContent)) {
+//                                图片走 ImageContent（2026-10-03 起）：文本里不再出现，前端用 attachedFiles 渲染
                                 continue;
                             }
                             String text = textContent.text();
@@ -159,7 +181,10 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                             }
                             textBuilder.append(text);
                         }
-                        messageVOBuilder.content(textBuilder.toString()).attachedFiles(attachedFiles);
+//                        存量数据可能把文本和包裹标记存在同一个 content 里，统一再剥一次
+                        messageVOBuilder
+                                .content(stripLegacyWrappers(textBuilder.toString()))
+                                .attachedFiles(attachedFiles);
                     }
 
 
