@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelListDTO;
+import com.huzhijian.nexusagentweb.model.SystemModelRegistry;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.vo.Result;
 import io.swagger.v3.oas.annotations.Operation;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * @author 胡志坚
@@ -26,9 +28,11 @@ import java.util.List;
 public class ChatController {
 
     private final ChatService chatService;
+    private final SystemModelRegistry systemModelRegistry;
 
-    public ChatController(ChatService chatService) {
+    public ChatController(ChatService chatService, SystemModelRegistry systemModelRegistry) {
         this.chatService = chatService;
+        this.systemModelRegistry = systemModelRegistry;
     }
 
     /**
@@ -64,5 +68,25 @@ public class ChatController {
     public Result getModelList(@RequestBody @Valid ModelListDTO modelListDTO){
         List<String> models= chatService.getModelList(modelListDTO.baseUrl(), modelListDTO.token());
         return Result.ok(models);
+    }
+
+    /**
+     * 列出**系统内置模型**（没配自带 Key 的用户可选的那批）。
+     * <p>
+     * 2026-10-03：系统模型从"yml 里唯一一个"改成可配列表（多供应商），
+     * 前端需要一个地方知道现在有哪些可选，才能在模型选择器里列出来。
+     * 返回的是展示信息，**不含 apiKey**（那是服务端配置，不能下发给前端）。
+     */
+    @Operation(summary = "系统内置模型列表",
+            description = "返回 nexus.agent.system-models 配置的模型：id / 名称 / 模型名 / 是否支持图片 / 上下文窗口 / 最大输出。不含密钥。列表为空表示未启用（此时后端用 langchain4j 的单一默认模型）。")
+    @GetMapping("/models")
+    public Result getSystemModels(){
+        return Result.ok(systemModelRegistry.getDefinitions().stream()
+                .map(def -> Map.of(
+                        "id", def.getId(),
+                        "name", def.getName() == null ? def.getModelName() : def.getName(),
+                        "modelName", def.getModelName(),
+                        "vision", Boolean.TRUE.equals(def.getVision())))
+                .toList());
     }
 }
