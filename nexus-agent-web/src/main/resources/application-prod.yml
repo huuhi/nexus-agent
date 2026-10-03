@@ -97,9 +97,11 @@ mybatis-plus:
 #    models      该供应商下的模型列表
 #
 #  模型级字段（models[] 里每一项）—— **只有 modelName 是必填的**：
-#    modelName   实际发给服务商的模型名（必填）
-#    id          可选，默认 = modelName。只有在"两家供应商有同名模型"时才需要单独指定
-#    name        可选，默认 = modelName。想让选择器显示得好看点才写（如"DeepSeek-V3（推荐）"）
+#    modelName   实际发给服务商的模型名（**唯一必填项**）
+#    name        展示名，可选，默认 = modelName。想让选择器显示得好看点才写（如"DeepSeek-V3"）
+#    id          本系统内的唯一键，可选，默认 = modelName。
+#                99% 的情况**不用写** —— 只有"两家供应商有同名模型"（如百炼和某代理都叫
+#                deepseek-chat）时，才给其中一个单独指定，否则两行会撞 id、后者覆盖前者
 #    vision / contextWindow / maxOutputTokens
 #                可选，不填时**继承供应商级**同名配置，再没有才用默认值（false / 256000 / 32000）
 #
@@ -112,9 +114,6 @@ mybatis-plus:
 #
 #  前端可用 GET /api/chat/models 拿到这里配的列表（不含密钥，带 providerId 便于分组）。
 # ============================================================================
-
-
-# ============================================================================
 #  nexus-agent 运行时参数（全部有代码默认值，不写这段也能启动）
 # 对应类：com.huzhijian.nexusagentweb.properties.AgentProperties
 # ============================================================================
@@ -126,28 +125,20 @@ nexus:
         baseUrl: https://api.deepseek.com
         apiKey: ${DEEPSEEK}
         models:
-          - id: deepseek-chat
+          - modelName: deepseek-chat
             name: DeepSeek-V3
-            modelName: deepseek-chat
             contextWindow: 131072
             maxOutputTokens: 8192
-          - id: deepseek-reasoner
-            name: DeepSeek-R1
-            modelName: deepseek-reasoner
-            contextWindow: 131072
-            maxOutputTokens: 32768
       - id: qwen
         name: 阿里云百炼
         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
         apiKey: ${ALI_AI_KEY}
         models:
-          - id: qwen3-max
+          - modelName: qwen3-max
             name: 通义千问-Max
-            modelName: qwen3-max
             contextWindow: 262144
-          - id: qwen-vl
+          - modelName: qwen-vl-max
             name: 通义千问-VL（支持看图）
-            modelName: qwen-vl-max
             vision: true
             contextWindow: 131072
     cors:

@@ -152,6 +152,38 @@ class SystemModelRegistryTest {
     }
 
     @Test
+    @DisplayName("只写 modelName + name 两字段即可：id 省略时自动等于 modelName（推荐写法）")
+    void twoFieldSyntaxIsEnough() {
+        AgentProperties.SystemModel.ModelEntry chat = newEntry("deepseek-chat");
+        chat.setName("DeepSeek-V3");
+        SystemModelRegistry registry = registry(List.of(
+                provider("deepseek", DEEPSEEK_URL, List.of(chat, newEntry("deepseek-reasoner")))));
+
+        assertEquals(2, registry.getEntries().size());
+        SystemModelRegistry.SystemModelEntry first = registry.getEntries().get(0);
+        assertEquals("deepseek-chat", first.id(), "省略 id 时应补成 modelName");
+        assertEquals("deepseek-chat", first.modelName());
+        assertEquals("DeepSeek-V3", first.name(), "写了 name 就用它做展示名");
+//        前端拿 id 也能选中（id 与 modelName 同值，两条路都通）
+        assertNotNull(registry.resolveModel(new ModelDTO("deepseek-chat", null, false)));
+        assertNotNull(registry.resolveModel(new ModelDTO(null, "deepseek-chat", false)));
+    }
+
+    @Test
+    @DisplayName("两家供应商有同名模型：靠各自的 id 区分，不至于后者覆盖前者")
+    void sameModelNameAcrossProvidersUsesExplicitId() {
+        SystemModelRegistry registry = registry(List.of(
+                provider("deepseek", DEEPSEEK_URL, List.of(newEntry("deepseek-chat"))),
+                provider("proxy", QWEN_URL, List.of(modelEntry("proxy-chat", "deepseek-chat")))));
+
+        assertEquals(2, registry.getEntries().size(), "同名模型必须靠 id 区分开");
+        assertEquals("deepseek-chat", registry.getEntries().get(0).id());
+        assertEquals("proxy-chat", registry.getEntries().get(1).id());
+        assertNotSame(registry.resolveModel(new ModelDTO("deepseek-chat", null, false)),
+                registry.resolveModel(new ModelDTO("proxy-chat", null, false)));
+    }
+
+    @Test
     @DisplayName("兼容旧写法：不写 models，只在供应商上写 modelName")
     void legacySingleModelSyntax() {
         AgentProperties.SystemModel p = provider("legacy", DEEPSEEK_URL, List.of());

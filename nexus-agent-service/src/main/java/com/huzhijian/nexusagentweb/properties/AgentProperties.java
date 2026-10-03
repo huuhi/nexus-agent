@@ -371,25 +371,25 @@ public class AgentProperties {
      *         baseUrl: https://api.deepseek.com
      *         apiKey: ${DEEPSEEK}
      *         models:
-     *           - id: deepseek-chat
+     *           - modelName: deepseek-chat
      *             name: DeepSeek-V3
-     *             modelName: deepseek-chat
      *             contextWindow: 131072
      *             maxOutputTokens: 8192
-     *           - id: deepseek-reasoner
+     *           - modelName: deepseek-reasoner
      *             name: DeepSeek-R1
-     *             modelName: deepseek-reasoner
      *       - id: qwen
      *         name: 阿里云百炼
      *         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
      *         apiKey: ${ALI_AI_KEY}
      *         models:
-     *           - id: qwen3-max
-     *             modelName: qwen3-max
-     *           - id: qwen-vl
-     *             modelName: qwen-vl-max
+     *           - modelName: qwen3-max
+     *           - modelName: qwen-vl-max
      *             vision: true
      * </pre>
+     * <p>
+     * 模型级字段里**只有 {@code modelName} 必填**：{@code id} 与 {@code name} 不填时都自动
+     * 退化成 {@code modelName}（见 {@code SystemModelRegistry#register}）。
+     * {@code id} 仅在"两家供应商有同名模型"时需要单独指定，否则默认即可。
      * <ol start="2">
      *   <li><b>单模型（兼容旧写法）</b>：不写 {@code models}，直接在供应商项上写
      *       {@code modelName} —— 此时该项既是供应商也是唯一那个模型。</li>
@@ -429,14 +429,22 @@ public class AgentProperties {
 
         /**
          * 供应商下的一个模型条目。
+         * <p>
+         * ⚠️ <b>只有 {@code modelName} 是必填的</b>，{@code id} / {@code name} 都能省略。
          */
         @Data
         public static class ModelEntry {
-            /** 模型唯一标识；前端 {@code model.id} 传它即可选中。不填则用 {@code modelName} */
+            /**
+             * 模型在本系统内的唯一键；前端 {@code model.id} 传它即可选中。
+             * <p>
+             * <b>一般不用写</b> —— 不填时自动等于 {@code modelName}。
+             * 只有"两家供应商有同名模型"（如百炼和某代理都叫 deepseek-chat）时才需要单独指定，
+             * 否则两行会撞同一个 id、后者覆盖前者。
+             */
             private String id;
-            /** 展示名；不填则用 modelName */
+            /** 展示名；不填则用 modelName（想让选择器显示得好看点才写，如 "DeepSeek-V3"） */
             private String name;
-            /** 实际发给服务商的模型名 */
+            /** 实际发给服务商的模型名（**必填**，其余字段缺省都由它兜底） */
             private String modelName;
             /** 是否支持图片输入；不填时继承供应商级，再没有则 false */
             private Boolean vision;
