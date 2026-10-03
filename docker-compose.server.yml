@@ -57,11 +57,23 @@ services:
     depends_on:
       box:
         condition: service_healthy
+    # -------------------------------------------------------------------------
+    # 外部配置挂载：改模型配置**不用重新构建镜像**
+    # -------------------------------------------------------------------------
+    # 在仓库根目录建 conf/nexus-override.yml，把 nexus.agent.system-models
+    # （以及任何想运行时改的配置）写进去，之后只改这个文件 + `restart app` 即可。
+    # 完整说明见 docs/部署指南（改配置不重打包）.md
+    volumes:
+      - ./conf:/app/conf:ro
     environment:
       # 容器网络里用**服务名**访问沙盒服务（写 localhost 会连到 app 自己）
       BASE_URL: http://box:8000
       # 镜像里没有 application-dev.yml，必须跑 prod
       SPRING_PROFILES_ACTIVE: prod
+      # 外部 yml 压过 jar 内的 application-prod.yml（实测优先级更高）。
+      # 用 optional: 前缀是故意的 —— 文件不存在时不报错，容器照常起。
+      # 想让配置写错时**启动就失败**（更早暴露问题），就去掉 optional:。
+      SPRING_CONFIG_ADDITIONAL_LOCATION: "optional:file:/app/conf/nexus-override.yml"
       # ❗ 这里**故意不写** SERVICE_IP 与 CORS：
       #    environment: 的优先级高于 env_file:，写了就会覆盖 .env 里填的值，
       #    表现为「明明填了外部库 IP，应用却连不上」。保持这两项只由 .env 提供。

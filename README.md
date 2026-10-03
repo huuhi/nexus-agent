@@ -186,6 +186,29 @@ docker compose -f docker-compose.server.yml logs -f app
 
 ✅ 服务器**不用装 JDK 21**：构建阶段自带 Maven + JDK，运行阶段自带 JRE。
 ⚠️ 两个前提：外部 PG / Redis 放行这台服务器，且库上先跑过 `docs/sql/007`。
+
+### 改模型配置不用重新打包
+
+`system-models` 写在 `application-prod.yml` 里，而这个文件是**打进 jar / 镜像**的 ——
+直接改仓库里的 yml 就得重新 package + 重新上传，运维上很折腾。
+
+**已实测验证**外部 yml 优先级高于 jar 内配置（`ExternalConfigOverrideProbe` 用 Spring Boot
+真实 ConfigData 机制验证），所以挂一个外部文件即可，**改完重启就生效**：
+
+```bash
+# jar 模式：加一个启动参数
+java -jar nexus-agent-web.jar \
+  --spring.config.additional-location=file:/opt/nexus-agent/conf/nexus-override.yml
+
+# Docker 模式：docker-compose.server.yml 已经配好了，挂载点 + 环境变量都在
+# 直接改 conf/nexus-override.yml 然后：
+docker compose -f docker-compose.server.yml restart app
+```
+
+⚠️ `system-models` 是**整体替换不是合并** —— 外部文件里要列就把想用的模型全列出来，
+漏了的会消失（jar 内那份建议删干净，让外部文件成为唯一来源）。
+
+完整说明、文件清单、启动命令见 **[`docs/部署指南（改配置不重打包）.md`](./docs/部署指南（改配置不重打包）.md)**。
 ⚠️ 需要跨域就往 `.env` 加 `NEXUS_AGENT_CORS_ENABLED` / `NEXUS_AGENT_CORS_ALLOWED_ORIGINS`
 两行，**别写进 compose** —— `environment:` 会覆盖 `env_file:` 里的同名变量。
 

@@ -1,0 +1,53 @@
+# ============================================================================
+#  运行时外部配置 —— 改这里**不用重新构建镜像**
+# ----------------------------------------------------------------------------
+#  docker-compose.server.yml 已把本目录挂载到容器的 /app/conf（只读），
+#  并设了 SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:/app/conf/nexus-override.yml。
+#
+#  作用：本文件的优先级**高于** jar 包内的 application-prod.yml。
+#  改完只要：
+#      docker compose -f docker-compose.server.yml restart app
+#  十几秒生效，不用重新 build、不用重新上传 jar。
+#
+#  ⚠️ 两个必须知道的坑：
+#
+#  1. **列表是整体替换，不是合并。**
+#     下面写 `nexus.agent.system-models` 会把 jar 内那份列表**整个顶掉** ——
+#     只写一个模型，jar 内配的其它模型就全没了。所以要列就把想用的**全列出来**。
+#
+#  2. **jar 内那份最好删干净**（application-prod.yml 里把 system-models 整段去掉，
+#     连注释一起删）。否则两份配置并存，日志里到底哪个生效很难查。
+#     删掉后本文件就是唯一来源，最省心。
+#
+#  生效验证（启动后跑一次，数量对得上就说明读到了）：
+#      docker compose -f docker-compose.server.yml logs app | grep "系统模型已就绪"
+#
+#  💡 环境变量（API Key 等）仍然写在根目录的 .env 里，本文件用 ${XXX} 占位符引用即可。
+#     完整说明见 docs/部署指南（改配置不重打包）.md
+# ============================================================================
+
+# 下面整段默认注释掉 —— 需要改模型时，解开并按需修改。
+# 字段含义详见 docs/模型能力配置（前端）.md（只有 modelName 必填，id/name 可省）。
+#
+# nexus:
+#   agent:
+#     system-models:
+#       - id: deepseek
+#         name: DeepSeek
+#         baseUrl: https://api.deepseek.com
+#         apiKey: ${DEEPSEEK}
+#         models:
+#           - modelName: deepseek-chat
+#             name: DeepSeek-V3
+#             contextWindow: 131072
+#             maxOutputTokens: 8192
+#       - id: qwen
+#         name: 阿里云百炼
+#         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+#         apiKey: ${ALI_AI_KEY}
+#         models:
+#           - modelName: qwen3-max
+#             name: 通义千问-Max
+#           - modelName: qwen-vl-max
+#             name: 通义千问-VL（支持看图）
+#             vision: true
