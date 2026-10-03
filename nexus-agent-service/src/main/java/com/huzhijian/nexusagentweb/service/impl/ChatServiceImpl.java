@@ -128,7 +128,10 @@ public class ChatServiceImpl implements ChatService {
         writer.start();
 
         sseEmitter.onCompletion(writer::finish);
-        sseEmitter.onTimeout(()->writer.onError(new Throwable("超时！")));
+//        超时/断开只标记"连接没了"，**不终止任务**（2026-10-03）：
+//        TokenStream 继续跑完，消息落库、标题生成照常 —— 用户刷新页面就能看到完整回复。
+//        以前这里是 onError（isFinished=true → 后续产出全被丢弃，但任务还在烧钱），是最坏的组合。
+        sseEmitter.onTimeout(() -> writer.disconnect("SSE 连接超时"));
         sseEmitter.onError(writer::onError);
 
         tokenStream.onPartialThinking(writer::writeThinking)
