@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -21,99 +23,151 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@link SystemModelRegistry} 的纯单测。
  * <p>
- * 覆盖 2026-10-03 新增的「系统内置模型列表（多供应商）」：
+ * 覆盖 2026-10-03 的「系统内置模型：多供应商 + 每家可挂多个模型」：
  * 以前系统默认模型只有 yml 里那一个 Bean，加第二个或换供应商都得改配置结构。
  */
-@DisplayName("SystemModelRegistry —— 多供应商系统模型的选择与兜底")
+@DisplayName("SystemModelRegistry —— 多供应商、每家多个模型")
 class SystemModelRegistryTest {
 
-    private static AgentProperties.SystemModel model(String id, String modelName, String baseUrl,
-                                                     Boolean vision, Integer contextWindow) {
-        AgentProperties.SystemModel m = new AgentProperties.SystemModel();
+    private static final String DEEPSEEK_URL = "https://api.deepseek.com";
+    private static final String QWEN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+    /** 模型条目 */
+    private static AgentProperties.SystemModel.ModelEntry modelEntry(String id, String modelName) {
+        AgentProperties.SystemModel.ModelEntry m = new AgentProperties.SystemModel.ModelEntry();
         m.setId(id);
-        m.setName("展示名-" + id);
         m.setModelName(modelName);
-        m.setBaseUrl(baseUrl);
-        m.setApiKey("sk-test-" + id);
-        m.setVision(vision);
-        m.setContextWindow(contextWindow);
         return m;
     }
 
-    private SystemModelRegistry registry(List<AgentProperties.SystemModel> models) {
+    private static AgentProperties.SystemModel.ModelEntry visionEntry(String id, String modelName) {
+        AgentProperties.SystemModel.ModelEntry m = modelEntry(id, modelName);
+        m.setVision(true);
+        return m;
+    }
+
+    /** 供应商（含多个模型） */
+    private static AgentProperties.SystemModel provider(String id, String baseUrl,
+                                                        List<AgentProperties.SystemModel.ModelEntry> models) {
+        AgentProperties.SystemModel p = new AgentProperties.SystemModel();
+        p.setId(id);
+        p.setName("供应商-" + id);
+        p.setBaseUrl(baseUrl);
+        p.setApiKey("sk-test-" + id);
+        p.setModels(models);
+        return p;
+    }
+
+    private SystemModelRegistry registry(List<AgentProperties.SystemModel> providers) {
         AgentProperties props = new AgentProperties();
-        props.setSystemModels(models);
+        props.setSystemModels(providers);
         ChatModelFactory factory = new ChatModelFactory(new ModelCapabilityResolver(props));
         SystemModelRegistry registry = new SystemModelRegistry(props, factory);
         registry.init();
         return registry;
     }
 
-    private SystemModelRegistry twoModels() {
+    /** 两家供应商：DeepSeek 两个模型，百炼两个模型（其中一个支持视觉） */
+    private SystemModelRegistry twoProviders() {
         return registry(List.of(
-                model("deepseek", "deepseek-chat", "https://api.deepseek.com", false, 131_072),
-                model("qwen", "qwen3-max", "https://dashscope.aliyuncs.com/compatible-mode/v1", true, 262_144)));
+                provider("deepseek", DEEPSEEK_URL, List.of(
+                        modelEntry("deepseek-chat", "deepseek-chat"),
+                        modelEntry("deepseek-reasoner", "deepseek-reasoner"))),
+                provider("qwen", QWEN_URL, List.of(
+                        modelEntry("qwen3-max", "qwen3-max"),
+                        visionEntry("qwen-vl", "qwen-vl-max")))));
     }
 
     @Test
-    @DisplayName("按 id 精确选中对应供应商的模型")
-    void resolveById() {
-        SystemModelRegistry registry = twoModels();
-        StreamingChatModel m1 = registry.resolveModel(new ModelDTO("deepseek", "deepseek-chat", false));
-        StreamingChatModel m2 = registry.resolveModel(new ModelDTO("qwen", "qwen3-max", false));
-        assertNotSame(m1, m2, "不同供应商应该是不同的模型实例");
+    @DisplayName("一家供应商的多个模型都装载进来（共用 baseUrl/apiKey，只写一次）")
+    void oneProviderMultipleModels() {
+        SystemModelRegistry registry = twoProviders();
+        assertEquals(4, registry.getEntries().size(), "两家各两个 = 4 个模型");
+        assertNotNull(registry.resolveModel(new ModelDTO("deepseek-chat", "deepseek-chat", false)));
+        assertNotNull(registry.resolveModel(new ModelDTO("deepseek-reasoner", "deepseek-reasoner", false)));
     }
 
     @Test
-    @DisplayName("只有 modelName 没有 id：按模型名匹配")
+    @DisplayName("同一供应商的不同模型是不同实例")
+    void differentModelsAreDifferentInstances() {
+        SystemModelRegistry registry = twoProviders();
+        StreamingChatModel chat = registry.resolveModel(new ModelDTO("deepseek-chat", "deepseek-chat", false));
+        StreamingChatModel reasoner = registry.resolveModel(new ModelDTO("deepseek-reasoner", "deepseek-reasoner", false));
+        assertNotSame(chat, reasoner);
+    }
+
+    @Test
+    @DisplayName("视觉能力按模型区分：同一家里只有 qwen-vl 支持看图")
+    void visionIsPerModel() {
+        SystemModelRegistry registry = twoProviders();
+
+        assertTrue(registry.resolveCapabilities(new ModelDTO("qwen-vl", "qwen-vl-max", false)).vision());
+        assertFalse(registry.resolveCapabilities(new ModelDTO("qwen3-max", "qwen3-max", false)).vision(),
+                "同一供应商的其它模型不该被带成支持视觉");
+        assertFalse(registry.resolveCapabilities(new ModelDTO("deepseek-chat", "deepseek-chat", false)).vision());
+    }
+
+    @Test
+    @DisplayName("只传 modelName 没有 id：也能匹配到")
     void resolveByModelName() {
-        SystemModelRegistry registry = twoModels();
-        StreamingChatModel byName = registry.resolveModel(new ModelDTO(null, "qwen3-max", false));
-        StreamingChatModel byId = registry.resolveModel(new ModelDTO("qwen", "qwen3-max", false));
-        assertSame(byId, byName);
+        SystemModelRegistry registry = twoProviders();
+        assertSame(registry.resolveModel(new ModelDTO("qwen-vl", "qwen-vl-max", false)),
+                registry.resolveModel(new ModelDTO(null, "qwen-vl-max", false)));
+    }
+
+    @Test
+    @DisplayName("模型级没填的字段继承供应商级")
+    void inheritFromProvider() {
+        AgentProperties.SystemModel p = provider("p", QWEN_URL, List.of(modelEntry("m1", "model-1")));
+        p.setVision(true);
+        p.setContextWindow(100_000);
+        SystemModelRegistry registry = registry(List.of(p));
+
+        ModelCapabilities caps = registry.resolveCapabilities(new ModelDTO("m1", "model-1", false));
+        assertTrue(caps.vision(), "模型级没填 → 用供应商级的 true");
+        assertEquals(100_000, caps.contextWindow());
+    }
+
+    @Test
+    @DisplayName("兼容旧写法：不写 models，只在供应商上写 modelName")
+    void legacySingleModelSyntax() {
+        AgentProperties.SystemModel p = provider("legacy", DEEPSEEK_URL, List.of());
+        p.setModelName("deepseek-chat");
+        SystemModelRegistry registry = registry(List.of(p));
+
+        assertEquals(1, registry.getEntries().size());
+        assertSame(registry.resolveModel(new ModelDTO("legacy", "deepseek-chat", false)),
+                registry.resolveModel(new ModelDTO(null, "deepseek-chat", false)));
     }
 
     @Test
     @DisplayName("匹配不上时回退第一个（系统模型本来就是兜底用的）")
     void fallBackToFirst() {
-        SystemModelRegistry registry = twoModels();
-        StreamingChatModel fallback = registry.resolveModel(new ModelDTO("不存在的id", "不存在的模型", false));
-        assertSame(registry.resolveModel(new ModelDTO("deepseek", "deepseek-chat", false)), fallback);
+        SystemModelRegistry registry = twoProviders();
+        assertSame(registry.resolveModel(new ModelDTO("deepseek-chat", "deepseek-chat", false)),
+                registry.resolveModel(new ModelDTO("不存在", "不存在", false)));
     }
 
     @Test
-    @DisplayName("能力元数据来自该项配置：qwen 支持视觉、窗口 262144")
-    void capabilitiesFromConfig() {
-        SystemModelRegistry registry = twoModels();
+    @DisplayName("配置不完整（缺 apiKey / 缺 modelName）的项被跳过，不影响其它项")
+    void incompleteEntriesAreSkipped() {
+        AgentProperties.SystemModel noKey = provider("nokey", DEEPSEEK_URL, List.of(modelEntry("x", "x-model")));
+        noKey.setApiKey("");
+        AgentProperties.SystemModel noModelName = provider("nomodel", DEEPSEEK_URL, List.of(modelEntry("y", "")));
 
-        ModelCapabilities qwen = registry.resolveCapabilities(new ModelDTO("qwen", "qwen3-max", false));
-        assertTrue(qwen.vision());
-        assertEquals(262_144, qwen.contextWindow());
+        SystemModelRegistry registry = registry(List.of(noKey, noModelName,
+                provider("ok", DEEPSEEK_URL, List.of(modelEntry("ok-model", "ok-model")))));
 
-        ModelCapabilities deepseek = registry.resolveCapabilities(new ModelDTO("deepseek", "deepseek-chat", false));
-        assertTrue(!deepseek.vision(), "没填 vision 就该是 false");
-        assertEquals(131_072, deepseek.contextWindow());
+        assertEquals(1, registry.getEntries().size());
+        assertEquals("ok-model", registry.getEntries().get(0).id());
     }
 
     @Test
-    @DisplayName("未配置（空列表）：isEmpty 为真，解析返回空/默认，老行为不变")
+    @DisplayName("未配置（空列表）：isEmpty 为真，老行为不变")
     void emptyConfigKeepsOldBehaviour() {
         SystemModelRegistry registry = registry(List.of());
         assertTrue(registry.isEmpty());
-        assertNull(registry.resolveModel(new ModelDTO("deepseek", "deepseek-chat", false)));
+        assertNull(registry.resolveModel(new ModelDTO("deepseek-chat", "deepseek-chat", false)));
         assertEquals(ModelCapabilities.DEFAULT, registry.resolveCapabilities(null));
-    }
-
-    @Test
-    @DisplayName("配置缺字段（没 apiKey）的那项被跳过，不影响其它项")
-    void incompleteEntryIsSkipped() {
-        AgentProperties.SystemModel broken = model("broken", "x", "https://api.deepseek.com", null, null);
-        broken.setApiKey("");
-        SystemModelRegistry registry = registry(List.of(
-                broken,
-                model("ok", "ok-model", "https://api.deepseek.com", false, null)));
-
-        assertTrue(registry.getDefinitions().stream().noneMatch(d -> "broken".equals(d.getId())));
-        assertEquals(1, registry.getDefinitions().size());
     }
 }

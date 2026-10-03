@@ -83,36 +83,57 @@ mybatis-plus:
 #  ⚠️ 这一段是**注释状态**：不配时行为完全不变（仍用上面 langchain4j 那一个默认模型）。
 #     想加模型 / 换供应商 / 同时挂好几家，就把它解开照着写 —— 每家一项，互不影响。
 #
-#  字段说明：
-#    id          唯一标识，前端 model.id 传它即可选中（也可以不传 id，只传 modelName）
-#    name        展示名（给前端选择器用）
-#    modelName   实际发给服务商的模型名
-#    baseUrl     OpenAI 兼容地址（决定"思考/联网"参数怎么下发，见 ModelCapabilityResolver）
-#    apiKey      该服务商的 Key，建议写成占位符 ${XXX}
-#    vision      是否支持图片输入，默认 false
-#    contextWindow / maxOutputTokens  默认 256000 / 32000
+#  结构：一家供应商一项（baseUrl + apiKey 只写一次），**该项下 models 挂多个模型**。
 #
-#  前端可用 GET /api/chat/models 拿到这里配的列表（不含密钥）。
+#  供应商级字段：
+#    id / name   供应商标识与展示名（前端可按它分组）
+#    baseUrl     OpenAI 兼容地址（决定"思考/联网"参数怎么下发）
+#    apiKey      该服务商的 Key，建议写成占位符 ${XXX}
+#    models      该供应商下的模型列表
+#
+#  模型级字段（models[] 里每一项）：
+#    id          模型唯一 id，前端 model.id 传它即可选中；不填则用 modelName
+#    name        展示名；不填则用 modelName
+#    modelName   实际发给服务商的模型名（必填）
+#    vision / contextWindow / maxOutputTokens
+#                不填时**继承供应商级**同名配置，再没有才用默认值（false / 256000 / 32000）
+#
+#  💡 旧写法（一项 = 一个模型，modelName 直接写在供应商上）也仍然支持。
+#
+#  前端可用 GET /api/chat/models 拿到这里配的列表（不含密钥，带 providerId 便于分组）。
 # ============================================================================
 # nexus:
 #   agent:
 #     system-models:
 #       - id: deepseek
-#         name: DeepSeek-V3
-#         modelName: deepseek-chat
+#         name: DeepSeek
 #         baseUrl: https://api.deepseek.com
 #         apiKey: ${DEEPSEEK}
-#         vision: false
-#         contextWindow: 131072
-#         maxOutputTokens: 8192
+#         models:
+#           - id: deepseek-chat
+#             name: DeepSeek-V3
+#             modelName: deepseek-chat
+#             contextWindow: 131072
+#             maxOutputTokens: 8192
+#           - id: deepseek-reasoner
+#             name: DeepSeek-R1
+#             modelName: deepseek-reasoner
+#             contextWindow: 131072
+#             maxOutputTokens: 32768
 #       - id: qwen
-#         name: 通义千问
-#         modelName: qwen3-max
+#         name: 阿里云百炼
 #         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
 #         apiKey: ${ALI_AI_KEY}
-#         vision: true
-#         contextWindow: 262144
-#         maxOutputTokens: 32768
+#         models:
+#           - id: qwen3-max
+#             name: 通义千问-Max
+#             modelName: qwen3-max
+#             contextWindow: 262144
+#           - id: qwen-vl
+#             name: 通义千问-VL（支持看图）
+#             modelName: qwen-vl-max
+#             vision: true
+#             contextWindow: 131072
 
 # ============================================================================
 #  nexus-agent 运行时参数（全部有代码默认值，不写这段也能启动）

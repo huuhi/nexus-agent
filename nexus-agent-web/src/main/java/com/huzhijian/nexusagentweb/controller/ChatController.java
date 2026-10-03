@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -81,12 +82,24 @@ public class ChatController {
             description = "返回 nexus.agent.system-models 配置的模型：id / 名称 / 模型名 / 是否支持图片 / 上下文窗口 / 最大输出。不含密钥。列表为空表示未启用（此时后端用 langchain4j 的单一默认模型）。")
     @GetMapping("/models")
     public Result getSystemModels(){
-        return Result.ok(systemModelRegistry.getDefinitions().stream()
-                .map(def -> Map.of(
-                        "id", def.getId(),
-                        "name", def.getName() == null ? def.getModelName() : def.getName(),
-                        "modelName", def.getModelName(),
-                        "vision", Boolean.TRUE.equals(def.getVision())))
+        return Result.ok(systemModelRegistry.getEntries().stream()
+                .map(e -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("id", e.id());
+                    item.put("name", e.name());
+                    item.put("modelName", e.modelName());
+                    item.put("vision", e.capabilities().vision());
+                    item.put("contextWindow", e.capabilities().contextWindow());
+                    item.put("maxOutputTokens", e.capabilities().maxOutputTokens());
+//                    供应商信息：前端可按它分组展示（"DeepSeek / 阿里云百炼 / ..."）
+                    if (e.providerId() != null) {
+                        item.put("providerId", e.providerId());
+                    }
+                    if (e.providerName() != null) {
+                        item.put("providerName", e.providerName());
+                    }
+                    return item;
+                })
                 .toList());
     }
 }
