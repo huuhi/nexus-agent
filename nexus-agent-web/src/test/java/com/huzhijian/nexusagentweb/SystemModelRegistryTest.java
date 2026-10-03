@@ -129,6 +129,29 @@ class SystemModelRegistryTest {
     }
 
     @Test
+    @DisplayName("模型不写 id/name 时：id 用 modelName，绝不能回退成供应商 id（否则同家模型互相覆盖）")
+    void idFallsBackToModelNameNotProviderId() {
+        SystemModelRegistry registry = registry(List.of(
+                provider("deepseek", DEEPSEEK_URL, List.of(
+                        newEntry("deepseek-chat"),
+                        newEntry("deepseek-reasoner")))));
+
+        assertEquals(2, registry.getEntries().size(), "两个模型都得在，不能被互相覆盖");
+        assertEquals("deepseek-chat", registry.getEntries().get(0).id());
+        assertEquals("deepseek-reasoner", registry.getEntries().get(1).id());
+//        展示名默认是模型名；供应商名只体现在 providerName 上
+        assertEquals("deepseek-chat", registry.getEntries().get(0).name());
+        assertEquals("deepseek", registry.getEntries().get(0).providerId());
+    }
+
+    /** 只写 modelName 的条目（最简写法） */
+    private static AgentProperties.SystemModel.ModelEntry newEntry(String modelName) {
+        AgentProperties.SystemModel.ModelEntry m = new AgentProperties.SystemModel.ModelEntry();
+        m.setModelName(modelName);
+        return m;
+    }
+
+    @Test
     @DisplayName("兼容旧写法：不写 models，只在供应商上写 modelName")
     void legacySingleModelSyntax() {
         AgentProperties.SystemModel p = provider("legacy", DEEPSEEK_URL, List.of());
