@@ -116,6 +116,28 @@ class ChatMessageConverterTest {
     }
 
     @Test
+    @DisplayName("模型不支持视觉（vision=false）：图片降级为 URL 文本，不能发 ImageContent")
+    void imageDegradesWhenModelHasNoVision() throws Exception {
+        List<ChatUserMessage> messages = List.of(ChatUserMessage.builder()
+                .type(UserMessageType.IMAGE)
+                .content("")
+                .metadata(Map.of("fileUrl", "https://oss.../a.png", "fileName", "a.png"))
+                .build());
+
+        ChatMessageConverter.ConvertedMessage result = converter.toContents(messages, false);
+
+        assertEquals(1, result.contents().size());
+//        降级后必须是文本；发 ImageContent 会被不支持视觉的上游直接拒绝（400）
+        org.junit.jupiter.api.Assertions.assertInstanceOf(
+                dev.langchain4j.data.message.TextContent.class, result.contents().get(0));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> attached =
+                (List<Map<String, Object>>) result.metadata().get("attached_files");
+//        附件元数据仍然保留，前端照样能渲染图片
+        assertEquals(1, attached.size());
+    }
+
+    @Test
     @DisplayName("正常文档：调用解析器并把正文拼进提示词")
     void fileOk() throws Exception {
         when(fileUtils.getDocument(any(SysFile.class))).thenReturn(Document.from("销售额 100 万"));

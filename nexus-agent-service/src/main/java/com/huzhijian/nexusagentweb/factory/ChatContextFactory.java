@@ -10,6 +10,7 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.em.ModelType;
+import com.huzhijian.nexusagentweb.model.ModelCapabilities;
 import com.huzhijian.nexusagentweb.model.ModelCapabilityResolver;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
@@ -66,6 +67,8 @@ public class ChatContextFactory {
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
         Long userId = runContext.userId();
         String sessionId = runContext.sessionId();
+//        本次模型的能力（视觉 / 上下文窗口 / 最大输出）：记忆窗口与输出上限都按它算
+        ModelCapabilities capabilities = resolveCapabilities(chatDTO.model(), userId);
         StreamingChatModel  model=createModel(chatDTO.model(),userId);
 //        MCP：返回「可用的 provider」+「选了但连不上的服务名」（P2-9）。
 //        后者会随 ChatContext 传给提示词组装，让模型知道"有这些能力但现在用不了"，
@@ -86,11 +89,10 @@ public class ChatContextFactory {
                 .tools(tools)
                 .chatMemoryProvider(memoryId -> TokenWindowChatMemory
                         .builder()
-//                        窗口与 token 估算器由 nexus.agent.memory.* 配置。
-//                        原实现写死 100000 + gpt-4o，而 gpt-4o 与真实使用的模型无关，裁剪不准。
-//                        2026-10-03：换 MultimodalTokenCountEstimator —— 原生 OpenAiTokenCountEstimator
-//                        不认识 ImageContent（直接抛 Unknown content type），图片消息会用真图后必须换
-                        .maxTokens(agentProperties.getMemory().getMaxTokens(),
+//                        记忆窗口：以前是全局写死的 nexus.agent.memory.max-tokens（100000），
+//                        与真实模型无关 —— 256k 窗口的模型白白浪费，8k 窗口的模型则被上游拒。
+//                        2026-10-03：按「该模型的上下文窗口 − 最大输出」算，再受全局上限兜住。
+                        .maxTokens(capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens()),
                                 new MultimodalTokenCountEstimator(
                                         agentProperties.getMemory().getTokenEstimatorModel(),
                                         agentProperties.getMemory().getImageTokens()))
@@ -121,67 +123,115 @@ public class ChatContextFactory {
                 .build();
     }
 
-    private StreamingChatModel createModel(ModelDTO modelDTO,Long userId) {
-        log.debug("模型配置：{}", modelDTO);
+    /**
+     * 解析本次对话**实际会用到**的模型能力（视觉 / 上下文窗口 / 最大输出）。
+     * <p>
+     * 供 {@code ChatServiceImpl} 在转换用户消息前调用 —— 图片要不要发成真图，
+     * 取决于这个模型支不支持视觉。解析不到（用系统默认模型 / 用户没配）时返回默认值。
+     */
+    public ModelCapabilities resolveCapabilities(ModelDTO modelDTO, Long userId) {
+        MatchedModel matched = matchModel(modelDTO, userId);
+        if (matched == null) {
+            return ModelCapabilities.DEFAULT;
+        }
+        return ModelCapabilities.of(matched.model());
+    }
+
+    /**
+     * 一次模型匹配的完整结果：命中的 API 配置 + 命中的模型条目。
+     *
+     * @param apiConfig 命中的用户 API 配置（含 baseUrl / 加密后的 Key）
+     * @param model     该配置里与请求模型名匹配的条目（含视觉 / 窗口 / 输出上限）
+     * @param salt      该用户的加密盐值
+     * @return null 表示「用系统默认模型」
+     */
+    private record MatchedModel(APIConfig apiConfig, Model model, String salt) {
+    }
+
+    /**
+     * 按请求里的模型信息匹配用户配置。
+     * <p>
+     * 匹配规则与历史实现一致：先用 {@code model.id} 找配置项，没给 id 就用默认配置项；
+     * 再在该配置项的模型列表里找「type=CHAT 且名字相同」的条目。
+     * 任何一步失败都返回 null（调用方回退系统默认模型），并打日志留痕。
+     */
+    private MatchedModel matchModel(ModelDTO modelDTO, Long userId) {
+        if (modelDTO == null) {
+            log.info("回退系统默认模型：用户 {} 的请求未指定模型（model 为空）", userId);
+            return null;
+        }
         UserConfig userConfig = userConfigService.getUserConfig(userId);
-
-        if (userConfig!=null&&modelDTO!=null){
-//            构造模型
-            String configJson = userConfig.getLlmApiToken().toString();
-            List<APIConfig> apiConfigs = JSONUtil.toList(configJson, APIConfig.class);
-            APIConfig apiConfig = apiConfigs.stream().filter(config -> {
+        if (userConfig == null) {
+            log.info("回退系统默认模型：用户 {} 没有 API 配置（未配置自带 Key）", userId);
+            return null;
+        }
+        String configJson = String.valueOf(userConfig.getLlmApiToken());
+        List<APIConfig> apiConfigs = JSONUtil.toList(configJson, APIConfig.class);
+        APIConfig apiConfig = apiConfigs.stream().filter(config -> {
 //                如果ID不为空也不为null，那么优先根据id寻找配置，如果为null，那么使用默认配置
-                if (modelDTO.id() != null && !modelDTO.id().isEmpty()) {
-                    return config.getId().equals(modelDTO.id());
-                }
-                return config.getIsDefault();
-            }).findFirst().orElse(null);
+            if (modelDTO.id() != null && !modelDTO.id().isEmpty()) {
+                return config.getId().equals(modelDTO.id());
+            }
+            return Boolean.TRUE.equals(config.getIsDefault());
+        }).findFirst().orElse(null);
 
-
-            if (apiConfig==null){
+        if (apiConfig == null) {
 //              TODO  判断余额是否足够
 //              回退本身是预期行为（用户没配就用系统默认），但必须留痕：
 //              否则用户会以为在用自己填的 Key，实际走的是系统默认模型
-                log.info("回退系统默认模型：用户 {} 的配置里{}，请求模型={}",
-                        userId,
-                        modelDTO.id() != null && !modelDTO.id().isEmpty()
-                                ? "找不到 id=" + modelDTO.id() + " 的配置项"
-                                : "没有标记为默认的配置项",
-                        modelDTO.modelName());
-                return defaultModel;
-            }
-            List<Model> models = apiConfig.getModel();
-            boolean match = models.stream().anyMatch(model -> {
-//                类型为Chat并且模型名称存在配置中
-                return model.getType().equals(ModelType.CHAT) && model.getName().equals(modelDTO.modelName());
-            });
-            if (!match){
-                log.info("回退系统默认模型：用户 {} 的配置（id={}）中不含可用模型「{}」，已配置的是 {}",
-                        userId, apiConfig.getId(), modelDTO.modelName(),
-                        models.stream().filter(m -> ModelType.CHAT.equals(m.getType()))
-                                .map(Model::getName).toList());
-                return defaultModel;
-            }
-
-            String secretApiKey = apiConfig.getAPIKey();
-            String apiKey = EncryptorFactory.text(userConfig.getSalt()).decrypt(secretApiKey);
-//          额外参数按「服务商能力」下发（P2-3）：只发该服务商认的字段，避免 400
-            Map<String, Object> extraBody = buildExtraBody(apiConfig.getBaseUrl(), modelDTO);
-            return OpenAiStreamingChatModel.builder()
-                    .apiKey(apiKey)
-                    .baseUrl(apiConfig.getBaseUrl())
-                    .modelName(modelDTO.modelName())
-                    .returnThinking(true)
-//                    目前这个配置只针对deepseek
-                    .sendThinking(true)
-                    .customParameters(extraBody)
-                    .httpClientBuilder(new SpringRestClientBuilderFactory().create())
-                    .build();
+            log.info("回退系统默认模型：用户 {} 的配置里{}，请求模型={}",
+                    userId,
+                    modelDTO.id() != null && !modelDTO.id().isEmpty()
+                            ? "找不到 id=" + modelDTO.id() + " 的配置项"
+                            : "没有标记为默认的配置项",
+                    modelDTO.modelName());
+            return null;
         }
-        log.info("回退系统默认模型：{}", userConfig == null
-                ? "用户 " + userId + " 没有 API 配置（未配置自带 Key）"
-                : "请求未指定模型（model 为空）");
-        return defaultModel;
+        List<Model> models = apiConfig.getModel() == null ? List.of() : apiConfig.getModel();
+        Model matched = models.stream()
+                .filter(model -> ModelType.CHAT.equals(model.getType())
+                        && modelDTO.modelName().equals(model.getName()))
+                .findFirst().orElse(null);
+        if (matched == null) {
+            log.info("回退系统默认模型：用户 {} 的配置（id={}）中不含可用模型「{}」，已配置的是 {}",
+                    userId, apiConfig.getId(), modelDTO.modelName(),
+                    models.stream().filter(m -> ModelType.CHAT.equals(m.getType()))
+                            .map(Model::getName).toList());
+            return null;
+        }
+        return new MatchedModel(apiConfig, matched, userConfig.getSalt());
+    }
+
+    private StreamingChatModel createModel(ModelDTO modelDTO, Long userId) {
+        log.debug("模型配置：{}", modelDTO);
+        MatchedModel matched = matchModel(modelDTO, userId);
+        if (matched == null) {
+            return defaultModel;
+        }
+        APIConfig apiConfig = matched.apiConfig();
+        Model model = matched.model();
+
+        String secretApiKey = apiConfig.getAPIKey();
+        String apiKey = EncryptorFactory.text(matched.salt()).decrypt(secretApiKey);
+//          额外参数按「服务商能力」下发（P2-3）：只发该服务商认的字段，避免 400
+        Map<String, Object> extraBody = buildExtraBody(apiConfig.getBaseUrl(), modelDTO);
+//          输出上限与上下文窗口来自**该模型的元数据**（2026-10-03），不再是全局写死：
+//          用户在配置里填了就按填的来，没填走 32k 默认
+        ModelCapabilities capabilities = ModelCapabilities.of(model);
+        log.debug("模型 {} 能力：视觉={}，上下文窗口={}，最大输出={}",
+                model.getName(), capabilities.vision(),
+                capabilities.contextWindow(), capabilities.maxOutputTokens());
+        return OpenAiStreamingChatModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(apiConfig.getBaseUrl())
+                .modelName(modelDTO.modelName())
+                .maxTokens(capabilities.maxOutputTokens())
+                .returnThinking(true)
+//                    目前这个配置只针对deepseek
+                .sendThinking(true)
+                .customParameters(extraBody)
+                .httpClientBuilder(new SpringRestClientBuilderFactory().create())
+                .build();
     }
 
     /**
