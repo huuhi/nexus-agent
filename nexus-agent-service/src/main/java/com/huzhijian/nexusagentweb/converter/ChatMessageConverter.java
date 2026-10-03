@@ -8,6 +8,7 @@ import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.utils.FileUtils;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.Content;
+import dev.langchain4j.data.message.ImageContent;
 import dev.langchain4j.data.message.TextContent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -71,15 +72,13 @@ public class ChatMessageConverter {
                     contents.add(TextContent.from(fileText));
                 }
                 case UserMessageType.IMAGE -> {
-//                    如果是图片，不彻底ImageContent，防止token计算错误，将url添加到TextContent中即可
+//                    2026-10-03：改用真正的 ImageContent —— 这是多模态模型看到图片的唯一途径。
+//                    原实现把 URL 包在 TextContent 里（注释说"防止 token 计算错误"），
+//                    结果是模型收到的只是一串 URL 文字：支持视觉的模型也说"我没看到图"，
+//                    然后拿沙盒代码去瞎折腾。token 计算的坑已由 MultimodalTokenCountEstimator 解决。
                     String url = requireMetadata(metadata, FILE_URL, UserMessageType.IMAGE.name());
                     attachedFiles.add(metadata);
-                    String imageUrl = """
-                           %s
-                            用户传递的图片url: %s;
-                           %s
-                           """.formatted(IMAGE_START, url, IMAGE_END);
-                    contents.add(TextContent.from(imageUrl));
+                    contents.add(ImageContent.from(url));
                 }
             }
         }

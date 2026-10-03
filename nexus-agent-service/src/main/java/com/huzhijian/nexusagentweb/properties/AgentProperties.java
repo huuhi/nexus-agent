@@ -83,6 +83,19 @@ public class AgentProperties {
         private String tokenEstimatorModel = "gpt-4o";
 
         /**
+         * 一张图片按多少 token 估算（配额与记忆窗口裁剪用）。
+         * <p>
+         * 2026-10-03：图片消息从「URL 文本」改成了真正的 {@code ImageContent}，
+         * 而 {@code OpenAiTokenCountEstimator} 不认识 ImageContent —— 一遇到就抛
+         * {@code Unknown content type}（已实测），TokenWindowChatMemory 裁剪窗口时会直接炸。
+         * 所以文本部分仍交给它算，图片部分按这个常数算。
+         * <p>
+         * 参考：OpenAI 的计费规则里，一张低细节图固定 85 token；1024px 中细节图约
+         * 85 + 170×块数 ≈ 600~1100。取 1024 偏保守（宁可多估，避免超窗）。
+         */
+        private int imageTokens = 1024;
+
+        /**
          * 单次长期记忆检索最多返回多少条（P2-7）。
          * <p>
          * 这些条目会直接拼进系统提示词，条数过多既费 token 又稀释重点。
