@@ -50,6 +50,19 @@ public class ChatMessageConverter {
     }
 
     public ConvertedMessage toContents(List<ChatUserMessage> messages) throws ClientException, IOException {
+        return toContents(messages, true);
+    }
+
+    /**
+     * @param vision 本次使用的模型是否支持图片输入。
+     *               <b>false 时图片降级为 URL 文本</b> —— 不支持视觉的模型收到 image_url
+     *               会被上游 API 直接拒绝；降级最多让模型"看不到图"，不会 400。
+     *               <p>
+     *               降级文本用的仍是 FILE/IMAGE 包裹标记格式，历史读取时会被
+     *               {@code ChatMemoryServiceImpl#stripLegacyWrappers} 剥掉，不会污染前端显示。
+     */
+    public ConvertedMessage toContents(List<ChatUserMessage> messages, boolean vision)
+            throws ClientException, IOException {
         List<Content> contents = new ArrayList<>();
         List<Map<String, Object>> attachedFiles = new ArrayList<>();
         for (ChatUserMessage message : messages) {
@@ -78,7 +91,19 @@ public class ChatMessageConverter {
 //                    然后拿沙盒代码去瞎折腾。token 计算的坑已由 MultimodalTokenCountEstimator 解决。
                     String url = requireMetadata(metadata, FILE_URL, UserMessageType.IMAGE.name());
                     attachedFiles.add(metadata);
-                    contents.add(ImageContent.from(url));
+                    if (vision) {
+//                        多模态模型：发真正的 image_url，模型直接读图像像素
+                        contents.add(ImageContent.from(url));
+                    } else {
+//                        不支持视觉：降级成 URL 文本（模型至少知道有张图，不会凭空瞎猜去写代码）
+                        log.warn("本次模型不支持视觉（vision=false），图片降级为 URL 文本：{}", url);
+                        String imageUrl = """
+                               %s
+                                用户传递的图片url: %s;
+                               %s
+                               """.formatted(IMAGE_START, url, IMAGE_END);
+                        contents.add(TextContent.from(imageUrl));
+                    }
                 }
             }
         }

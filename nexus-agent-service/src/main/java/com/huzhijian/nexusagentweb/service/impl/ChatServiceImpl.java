@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.service.impl;
 import com.aliyuncs.exceptions.ClientException;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import com.huzhijian.nexusagentweb.model.ModelCapabilities;
 import com.huzhijian.nexusagentweb.context.ChatContext;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
@@ -79,7 +80,9 @@ public class ChatServiceImpl implements ChatService {
 //        1) 先转换用户消息：附件元数据由返回值带回，不再写 ThreadLocal
         ChatMessageConverter.ConvertedMessage converted;
         try {
-            converted = converter.toContents(messages);
+//            图片发成真图还是降级成 URL 文本，取决于本次模型支不支持视觉（2026-10-03）
+            ModelCapabilities capabilities = chatContextFactory.resolveCapabilities(chatDTO.model(), userId);
+            converted = converter.toContents(messages, capabilities.vision());
         } catch (ClientException e) {
             throw new ValidationException("参数错误!");
         } catch (IOException e) {
