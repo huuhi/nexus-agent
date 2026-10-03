@@ -102,38 +102,7 @@ mybatis-plus:
 #
 #  前端可用 GET /api/chat/models 拿到这里配的列表（不含密钥，带 providerId 便于分组）。
 # ============================================================================
-# nexus:
-#   agent:
-#     system-models:
-#       - id: deepseek
-#         name: DeepSeek
-#         baseUrl: https://api.deepseek.com
-#         apiKey: ${DEEPSEEK}
-#         models:
-#           - id: deepseek-chat
-#             name: DeepSeek-V3
-#             modelName: deepseek-chat
-#             contextWindow: 131072
-#             maxOutputTokens: 8192
-#           - id: deepseek-reasoner
-#             name: DeepSeek-R1
-#             modelName: deepseek-reasoner
-#             contextWindow: 131072
-#             maxOutputTokens: 32768
-#       - id: qwen
-#         name: 阿里云百炼
-#         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
-#         apiKey: ${ALI_AI_KEY}
-#         models:
-#           - id: qwen3-max
-#             name: 通义千问-Max
-#             modelName: qwen3-max
-#             contextWindow: 262144
-#           - id: qwen-vl
-#             name: 通义千问-VL（支持看图）
-#             modelName: qwen-vl-max
-#             vision: true
-#             contextWindow: 131072
+
 
 # ============================================================================
 #  nexus-agent 运行时参数（全部有代码默认值，不写这段也能启动）
@@ -141,6 +110,36 @@ mybatis-plus:
 # ============================================================================
 nexus:
   agent:
+    system-models:
+      - id: deepseek
+        name: DeepSeek
+        baseUrl: https://api.deepseek.com
+        apiKey: ${DEEPSEEK}
+        models:
+          - id: deepseek-chat
+            name: DeepSeek-V3
+            modelName: deepseek-chat
+            contextWindow: 131072
+            maxOutputTokens: 8192
+          - id: deepseek-reasoner
+            name: DeepSeek-R1
+            modelName: deepseek-reasoner
+            contextWindow: 131072
+            maxOutputTokens: 32768
+      - id: qwen
+        name: 阿里云百炼
+        baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+        apiKey: ${ALI_AI_KEY}
+        models:
+          - id: qwen3-max
+            name: 通义千问-Max
+            modelName: qwen3-max
+            contextWindow: 262144
+          - id: qwen-vl
+            name: 通义千问-VL（支持看图）
+            modelName: qwen-vl-max
+            vision: true
+            contextWindow: 131072
     cors:
       # ⚠️ 生产**默认关闭**：一旦开启，allowed-origins 里写的每个网站都能带着用户 token
       #    读取本服务的响应，等于把后端的攻击面又往外扩了一圈。
