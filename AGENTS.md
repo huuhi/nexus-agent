@@ -1107,6 +1107,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-03 | **新增乐享知识库接入（只读检索）**：`LexiangRagTool` + `LexiangClient` + `LexiangTokenProvider` + `lexiang_credential` 表；`ChatDTO` 新增 `enableLexiangRag` | `docs/sql/008`、`lexiang/`、`LexiangController`、`ChatDTO`、`ToolSelection` | 只做检索不做上传；token 双层缓存（进程内+Redis）因限频 20 次/10 分钟；前端文档 `docs/乐享知识库接入（前端）.md` |
 | 2026-09-23 | 新建 `AGENTS.md`，替代已过期的 `CLAUDE.md` 作为开发入口 | `AGENTS.md` | 核对基准 `86f3a07` |
 | 2026-09-23 | 新建 `重构计划.md`（P0–P3 分阶段计划） | `重构计划.md` | 见文件内优先级 |
 | 2026-09-23 | 实测编译基线：5 模块全部 `BUILD SUCCESS` | — | 首次联网拉依赖约 4 分钟；见 §2.4 |
