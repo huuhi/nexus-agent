@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.tools;
 
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.lexiang.LexiangApi;
 import com.huzhijian.nexusagentweb.service.LexiangService;
@@ -50,10 +51,36 @@ public class LexiangRagTool implements AgentToolSet {
 
     private final LexiangService lexiangService;
     private final ToolCallGuard toolCallGuard;
+    private final RunUserRegistry runUserRegistry;
 
-    public LexiangRagTool(LexiangService lexiangService, ToolCallGuard toolCallGuard) {
+    public LexiangRagTool(LexiangService lexiangService, ToolCallGuard toolCallGuard,
+                           RunUserRegistry runUserRegistry) {
         this.lexiangService = lexiangService;
         this.toolCallGuard = toolCallGuard;
+        this.runUserRegistry = runUserRegistry;
+    }
+
+    /**
+     * 确定本次检索该用哪个用户的凭证。
+     * <p>
+     * <b>为什么不能直接用 UserContextHolder</b>：工具运行在 LangChain4j 的
+     * <b>流式回调线程</b>，不是处理 HTTP 请求的线程，ThreadLocal 在那里必然是 null。
+     * （实测表现为：配置明明正确，却一直返回「无法确定当前用户，已按安全策略拒绝检索」。）
+     * <p>
+     * <b>正确做法</b>：请求线程已把 sessionId → userId 登记进 {@link RunUserRegistry}，
+     * 这里用 {@code @ToolMemoryId} 注入的 memoryId（即 sessionId）反查。
+     * <p>
+     * 保留 ThreadLocal 作兜底：单元测试与非流式的同步调用路径上它仍然有效。
+     * <p>
+     * <b>拿不到就返回 null，由调用方拒绝，绝不退化成"随便取一个用户"</b> ——
+     * 那等于跨用户数据泄露。
+     */
+    private Long resolveUserId(Object memoryId) {
+        Long fromRegistry = runUserRegistry.findUserId(memoryId);
+        if (fromRegistry != null) {
+            return fromRegistry;
+        }
+        return UserContextHolder.getUserId();
     }
 
     /**
@@ -69,10 +96,10 @@ public class LexiangRagTool implements AgentToolSet {
         if (blocked != null) {
             return blocked;
         }
-        Long userId = UserContextHolder.getUserId();
+        Long userId = resolveUserId(memoryId);
         if (userId == null) {
             // 拿不到用户绝不能退化成"不过滤" —— 那是跨用户数据泄露
-            log.warn("乐享知识库检索被拒绝：当前线程没有用户上下文");
+            log.warn("乐享知识库检索被拒绝：无法从会话 {} 确定当前用户", memoryId);
             return "乐享知识库检索失败：无法确定当前用户，已按安全策略拒绝检索。";
         }
         try {

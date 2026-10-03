@@ -6,6 +6,7 @@ import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.model.ModelCapabilities;
 import com.huzhijian.nexusagentweb.context.ChatContext;
 import com.huzhijian.nexusagentweb.context.RunContext;
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
@@ -62,6 +63,7 @@ public class ChatServiceImpl implements ChatService {
     private final RunMetricsReporter runMetricsReporter;
     private final QuotaService quotaService;
     private final ArtifactService artifactService;
+    private final RunUserRegistry runUserRegistry;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -95,6 +97,12 @@ public class ChatServiceImpl implements ChatService {
         boolean isNewSession = incomingSessionId == null || incomingSessionId.isEmpty();
         String sessionId = isNewSession ? UUID.randomUUID().toString() : incomingSessionId;
         RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata());
+
+//        工具要拿到 userId，但它运行在**流式回调线程**上 —— 那里 UserContextHolder（ThreadLocal）
+//        必然是 null。所以在这里（请求线程，userId 还在）把 sessionId → userId 登记进注册表，
+//        工具侧用 @ToolMemoryId（就是 sessionId）反查。
+//        ⚠️ 别再让工具直接用 UserContextHolder —— 那是架构上必然取不到值的写法。
+        runUserRegistry.register(sessionId, userId);
 
 //        trace_id：贯穿一次 Run 的日志与 SSE 事件，把「用户看到的报错」与「服务端日志」对上
         String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);

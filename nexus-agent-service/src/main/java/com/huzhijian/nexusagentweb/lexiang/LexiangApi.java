@@ -20,8 +20,20 @@ public final class LexiangApi {
     /** 换取 access_token */
     public static final String PATH_TOKEN = "/cgi-bin/token";
 
-    /** 团队列表 */
+    /** 团队列表（团队管理权限；⚠️ AppKey 绑定团队时不可调用） */
     public static final String PATH_TEAMS = "/cgi-bin/v1/kb/teams";
+
+    /**
+     * 某成员所属的团队列表 —— <b>本项目实际使用的路径</b>。
+     * <p>
+     * 为什么不直接用 {@link #PATH_TEAMS}：官方文档在「团队列表」接口上标注
+     * <b>「授权范围：AppKey 绑定团队时，不可调用此接口」</b>。
+     * 而绝大多数用户拿到的 AppKey 恰好是按团队授权的，于是列表直接返回空 ——
+     * 表现为「联调成功（检索能通）但团队和知识库下拉框全是空的」。
+     * <p>
+     * 按 staffId 查询走的是「这个成员能看到哪些团队」这条路径，不受该限制。
+     */
+    public static final String PATH_STAFF_TEAMS = "/cgi-bin/v1/staffs/%s/teams";
 
     /** 知识库列表（必须带 team_id） */
     public static final String PATH_SPACES = "/cgi-bin/v1/kb/spaces";
@@ -125,6 +137,37 @@ public final class LexiangApi {
                 private String type;
                 private String id;
             }
+        }
+    }
+
+    /**
+     * 团队节点（{@code GET /cgi-bin/v1/staffs/{staff_id}/teams} 的一项）。
+     * <p>
+     * <b>不要复用 {@link SpaceNode} 解析</b>：两者虽然都用 JSON:API 外壳，
+     * 但 attributes 的字段完全不同 —— 团队是 {@code code / is_secret / signature}，
+     * 知识库是 {@code logo}。用错模型会导致「接口 200 但列表空」这种难查的静默失败。
+     */
+    @Data
+    public static class TeamNode {
+        private String type;
+        private String id;
+        private TeamAttributes attributes;
+        private TeamLinks links;
+
+        @Data
+        public static class TeamAttributes {
+            /** 团队名称 */
+            private String name;
+            /** 团队 code（形如 k100022），可用作 spaces 接口的 team_id 之外的备用标识 */
+            private String code;
+            /** 可见性：0=非成员也能搜到；1=仅成员可见 */
+            private Integer is_secret;
+            private String logo;
+        }
+
+        @Data
+        public static class TeamLinks {
+            private String platform;
         }
     }
 

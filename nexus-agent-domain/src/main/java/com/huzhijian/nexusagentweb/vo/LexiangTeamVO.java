@@ -11,5 +11,6 @@ import lombok.Data;
 public class LexiangTeamVO {
     private String id;
     private String name;
+    /** 团队 code（形如 k100022），便于用户辨认哪个是自己的团队 */
     private String code;
 }

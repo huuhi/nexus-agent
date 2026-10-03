@@ -83,16 +83,29 @@ public class LexiangServiceImpl extends ServiceImpl<LexiangCredentialMapper, Lex
 
     @Override
     public List<LexiangTeamVO> listTeams(Long userId) {
+        LexiangCredential credential = requireCredential(userId);
         String token = requireToken(userId);
-        List<LexiangApi.SpaceNode> nodes = client.listTeams(token, 50);
+        String staffId = credential.getStaffId();
+
+        // 先按「该成员能看到哪些团队」查 —— 这条路径不受 AppKey 授权范围的限制
+        List<LexiangApi.TeamNode> nodes = client.listTeams(token, staffId, 50);
+        // 查不到再退到「全部团队」：它需要团队管理权限，AppKey 按团队授权时会失败。
+        // 两种都空说明确实是授权范围问题，此时要让用户看得到原因，不能只给一个空列表。
         if (nodes == null || nodes.isEmpty()) {
-            return List.of();
+            nodes = client.listAllTeams(token, staffId, 50);
+        }
+        if (nodes == null || nodes.isEmpty()) {
+            log.warn("用户 {} 的乐享团队列表为空：staffId={}，请确认 AppKey 的授权范围与成员账号是否正确",
+                    userId, staffId);
+            throw new IllegalStateException(
+                    "未获取到任何乐享团队。请确认：① 成员账号（x-staff-id）填写正确；"
+                            + "② AppKey 的授权范围包含你所在的团队（管理员发放凭证时设置）。");
         }
         return nodes.stream()
                 .map(n -> LexiangTeamVO.builder()
                         .id(n.getId())
-                        // 团队列表与知识库列表结构相同（都是 JSON:API），attributes.name 复用
                         .name(n.getAttributes() == null ? null : n.getAttributes().getName())
+                        .code(n.getAttributes() == null ? null : n.getAttributes().getCode())
                         .build())
                 .toList();
     }
@@ -102,7 +115,12 @@ public class LexiangServiceImpl extends ServiceImpl<LexiangCredentialMapper, Lex
         String token = requireToken(userId);
         List<LexiangApi.SpaceNode> nodes = client.listSpaces(token, teamId, 50);
         if (nodes == null || nodes.isEmpty()) {
-            return List.of();
+            // 静默返回空列表会让用户以为"这个团队没有知识库"，
+            // 实际更常见的原因是 AppKey 授权范围不含该团队 —— 说清楚
+            log.warn("用户 {} 在团队 {} 下未取到知识库，请检查 AppKey 授权范围", userId, teamId);
+            throw new IllegalStateException(
+                    "该团队下没有取到知识库。请确认 AppKey 的授权范围包含此团队"
+                            + "（授权范围由管理员在乐享【接口凭证管理】里设置）。");
         }
         return nodes.stream()
                 .map(n -> LexiangSpaceVO.builder()

@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb;
 
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.lexiang.LexiangApi;
 import com.huzhijian.nexusagentweb.service.LexiangService;
@@ -41,8 +42,9 @@ class LexiangRagToolTest {
 
     private final LexiangService lexiangService = mock(LexiangService.class);
     private final ToolCallGuard guard = mock(ToolCallGuard.class);
+    private final RunUserRegistry runUserRegistry = new RunUserRegistry();
 
-    private final LexiangRagTool tool = new LexiangRagTool(lexiangService, guard);
+    private final LexiangRagTool tool = new LexiangRagTool(lexiangService, guard, runUserRegistry);
 
     @AfterEach
     void clearContext() {
@@ -141,5 +143,64 @@ class LexiangRagToolTest {
 
         assertTrue(result.contains("换个说法"), "应直接返回拦截提示：" + result);
         verify(lexiangService, never()).search(any(), any(), anyString(), anyInt());
+    }
+
+    // ↓↓↓ 下面几条是 2026-10-03 线上报错的回归测试 ↓↓↓
+
+    @Test
+    @DisplayName("【回归】ThreadLocal 为空时靠注册表仍能拿到 userId（流式线程场景）")
+    void resolvesUserIdFromRegistryWhenThreadLocalEmpty() {
+        // 复现线上真实条件：**没有任何 ThreadLocal**（工具跑在流式回调线程上），
+        // 只有请求线程登记过的 sessionId → userId
+        UserContextHolder.removeUserId();
+        runUserRegistry.register("s-stream", 88L);
+        when(lexiangService.search(any(), any(), anyString(), anyInt())).thenReturn(List.of());
+
+        tool.lexiangSearch("s-stream", "报销");
+
+        // 修复前这里返回「无法确定当前用户，已按安全策略拒绝检索」
+        verify(lexiangService).search(eq(88L), isNull(), eq("报销"), eq(3));
+    }
+
+    @Test
+    @DisplayName("【回归】ThreadLocal 与注册表都没有时必须拒绝（绝不放行）")
+    void refusesWhenNeitherRegistryNorThreadLocalHasUser() {
+        // 安全底线：拿不到用户就拒绝，绝不能退化成"随便取一个"
+        UserContextHolder.removeUserId();
+        when(lexiangService.search(any(), any(), anyString(), anyInt())).thenReturn(List.of());
+
+        String result = tool.lexiangSearch("s-unknown", "报销");
+
+        assertTrue(result.contains("拒绝"), "应明确拒绝：" + result);
+        verify(lexiangService, never()).search(any(), any(), anyString(), anyInt());
+    }
+
+    @Test
+    @DisplayName("【回归】会话结束后注销注册表，检索随即被拒绝")
+    void unregisterRevokesAccess() {
+        UserContextHolder.removeUserId();
+        runUserRegistry.register("s1", 5L);
+        when(lexiangService.search(any(), any(), anyString(), anyInt())).thenReturn(List.of());
+
+        tool.lexiangSearch("s1", "a");
+        runUserRegistry.unregister("s1");
+        String after = tool.lexiangSearch("s1", "a");
+
+        assertTrue(after.contains("拒绝"), "注销后不应还能检索：" + after);
+    }
+
+    @Test
+    @DisplayName("注册表按 sessionId 精确区分用户，不会串号")
+    void registryIsolatesSessions() {
+        UserContextHolder.removeUserId();
+        runUserRegistry.register("sA", 11L);
+        runUserRegistry.register("sB", 22L);
+        when(lexiangService.search(any(), any(), anyString(), anyInt())).thenReturn(List.of());
+
+        tool.lexiangSearch("sA", "q");
+        tool.lexiangSearch("sB", "q");
+
+        verify(lexiangService).search(eq(11L), isNull(), anyString(), anyInt());
+        verify(lexiangService).search(eq(22L), isNull(), anyString(), anyInt());
     }
 }

@@ -93,18 +93,56 @@ public class LexiangClient {
     }
 
     /**
-     * 列出用户可访问的团队。
+     * 列出某个成员可见的团队。
+     * <p>
+     * <b>刻意不走 {@code /cgi-bin/v1/kb/teams}</b>：官方在该接口上标注
+     * 「AppKey 绑定团队时不可调用此接口」，而绝大多数 AppKey 正是按团队授权的
+     * → 接口不报错但返回空，表现为「下拉框永远是空的」。
+     * <p>
+     * {@code /cgi-bin/v1/staffs/{staff_id}/teams} 走的是「该成员能看到哪些团队」，
+     * 不受那条限制。
+     *
+     * @param staffId 成员账号；为空时用 {@code system-bot}（能看到的是公开范围）
      */
-    public List<LexiangApi.SpaceNode> listTeams(String accessToken, int limit) {
+    public List<LexiangApi.TeamNode> listTeams(String accessToken, String staffId, int limit) {
+        String effectiveStaff = StrUtil.blankToDefault(staffId, LexiangApi.STAFF_SYSTEM_BOT);
         String raw = webClient.get()
-                .uri(builder -> builder.path(LexiangApi.PATH_TEAMS)
+                .uri(builder -> builder.path(String.format(LexiangApi.PATH_STAFF_TEAMS, effectiveStaff))
                         .queryParam("limit", limit)
                         .build())
                 .header("Authorization", "Bearer " + accessToken)
+                .header("x-staff-id", effectiveStaff)
                 .retrieve()
                 .bodyToMono(String.class)
                 .block();
         return parseDataArray(raw, "团队");
+    }
+
+    /**
+     * 列出全部团队（团队管理权限）。
+     * <p>
+     * ⚠️ <b>AppKey 绑定团队时该接口不可用</b>，所以它只作为
+     * {@link #listTeams} 查不到任何团队时的兜底尝试。
+     *
+     * @return 不可用或无数据时返回空列表，不抛异常
+     */
+    public List<LexiangApi.TeamNode> listAllTeams(String accessToken, String staffId, int limit) {
+        String effectiveStaff = StrUtil.blankToDefault(staffId, LexiangApi.STAFF_SYSTEM_BOT);
+        try {
+            String raw = webClient.get()
+                    .uri(builder -> builder.path(LexiangApi.PATH_TEAMS)
+                            .queryParam("limit", limit)
+                            .build())
+                    .header("Authorization", "Bearer " + accessToken)
+                    .header("x-staff-id", effectiveStaff)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+            return parseDataArray(raw, "团队");
+        } catch (Exception e) {
+            log.debug("全量团队列表不可用（AppKey 可能按团队授权），忽略：{}", e.getMessage());
+            return List.of();
+        }
     }
 
     /**
