@@ -4,6 +4,11 @@ langchain4j:
       model-name: moonshot-v1-8k
       base-url: https://api.moonshot.cn/v1
       api-key: ${MOONSHOT}
+    # ⚠️ 2026-10-03：这一段是**最后兜底** —— 配了下面的 nexus.agent.system-models 之后
+    #    正常不会被用到，也可以整段删掉（删了之后 ${DEEPSEEK} 环境变量也不再需要）。
+    #    以前它是**必填**的：不写应用启动就失败，于是"不想用 DeepSeek 了"根本做不到。
+    #    ⚠️ 但 chat-model（会话标题生成）与 embedding-model（知识库向量化）**不能删**，
+    #       它们各有用途，删了标题生成不了、RAG 也起不来。
     streaming-chat-model:
       model-name: deepseek-flash
       base-url: https://api.deepseek.com
@@ -91,12 +96,17 @@ mybatis-plus:
 #    apiKey      该服务商的 Key，建议写成占位符 ${XXX}
 #    models      该供应商下的模型列表
 #
-#  模型级字段（models[] 里每一项）：
-#    id          模型唯一 id，前端 model.id 传它即可选中；不填则用 modelName
-#    name        展示名；不填则用 modelName
+#  模型级字段（models[] 里每一项）—— **只有 modelName 是必填的**：
 #    modelName   实际发给服务商的模型名（必填）
+#    id          可选，默认 = modelName。只有在"两家供应商有同名模型"时才需要单独指定
+#    name        可选，默认 = modelName。想让选择器显示得好看点才写（如"DeepSeek-V3（推荐）"）
 #    vision / contextWindow / maxOutputTokens
-#                不填时**继承供应商级**同名配置，再没有才用默认值（false / 256000 / 32000）
+#                可选，不填时**继承供应商级**同名配置，再没有才用默认值（false / 256000 / 32000）
+#
+#  所以最简写法就是每行只写一个 modelName：
+#       models:
+#         - modelName: deepseek-chat
+#         - modelName: deepseek-reasoner
 #
 #  💡 旧写法（一项 = 一个模型，modelName 直接写在供应商上）也仍然支持。
 #

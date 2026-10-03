@@ -100,13 +100,14 @@ public class SystemModelRegistry {
     private void register(AgentProperties.SystemModel provider,
                           AgentProperties.SystemModel.ModelEntry entry) {
         String modelName = entry == null ? provider.getModelName() : entry.getModelName();
+//        ⚠️ id 的回退**不能**用 provider.getId()：那会让同一供应商下的多个模型
+//        拿到同一个 id 并互相覆盖（只剩最后一个）。供应商 id 只用于分组展示。
         String id = firstNonBlank(
-                entry == null ? null : entry.getId(),
-                provider.getId(),
+                entry == null ? provider.getId() : entry.getId(),
                 modelName);
+//        展示名同理：默认就是模型名，想写得好看再单独填 name
         String name = firstNonBlank(
-                entry == null ? null : entry.getName(),
-                provider.getName(),
+                entry == null ? provider.getName() : entry.getName(),
                 modelName);
 
 //        能力：模型级 → 供应商级 → 默认值（都由 ModelCapabilities.of 兜底）

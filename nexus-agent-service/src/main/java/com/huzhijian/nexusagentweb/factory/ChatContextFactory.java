@@ -32,6 +32,7 @@ import dev.langchain4j.service.tool.ToolProvider;
 import dev.langchain4j.skills.Skills;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.map.HashedMap;
 import org.springframework.stereotype.Component;
@@ -50,7 +51,16 @@ import java.util.Map;
 @Slf4j
 @RequiredArgsConstructor
 public class ChatContextFactory {
-    private final StreamingChatModel defaultModel;
+    /**
+     * langchain4j starter 根据 {@code langchain4j.open-ai.streaming-chat-model} 建的那个模型。
+     * <p>
+     * 用 {@code ObjectProvider} 而不是直接注入：<b>它是可选的</b>。
+     * 以前直接注入意味着 yml 里那段（含 {@code api-key: ${DEEPSEEK}}）**必须存在**，
+     * 否则应用启动就失败 —— 于是"我不想用 DeepSeek 了"这件事根本做不到：
+     * 就算配了 {@code nexus.agent.system-models}，DeepSeek 的配置还是得原样留着。
+     * 现在改成可选：配了 system-models 就完全可以不配 langchain4j 那段。
+     */
+    private final ObjectProvider<StreamingChatModel> defaultModelProvider;
     private final PgChatMemoryStore chatMemoryStore;
     /**
      * 工具不再逐个注入。各工具类实现 {@link AgentToolSet} 自我声明，
@@ -219,7 +229,15 @@ public class ChatContextFactory {
                 log.debug("使用系统内置模型：请求模型={}", modelDTO == null ? "(未指定)" : modelDTO.modelName());
                 return systemModel;
             }
-            return defaultModel;
+            StreamingChatModel fallback = defaultModelProvider.getIfAvailable();
+            if (fallback == null) {
+//                既没有系统内置模型、也没有 langchain4j 那段配置 —— 这是配置错误，要明确说清
+                throw new IllegalStateException(
+                        "没有任何可用的对话模型：nexus.agent.system-models 未配置（或配置不完整被跳过），"
+                                + "且 langchain4j.open-ai.streaming-chat-model 也没配。"
+                                + "请至少配置其中一个。");
+            }
+            return fallback;
         }
         APIConfig apiConfig = matched.apiConfig();
         Model model = matched.model();
