@@ -6,7 +6,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -324,6 +326,14 @@ public class AgentProperties {
         private Map<String, ProviderCapability> providers = new LinkedHashMap<>();
     }
 
+    /**
+     * 系统内置模型列表（多供应商）。
+     * <p>
+     * 留空 = 不启用，沿用 {@code langchain4j.open-ai.streaming-chat-model} 建的单一默认模型
+     * —— 这样老配置升级上来行为不变。
+     */
+    private List<SystemModel> systemModels = new ArrayList<>();
+
     @Data
     public static class ProviderCapability {
         /**
@@ -339,6 +349,56 @@ public class AgentProperties {
          * 默认 {@code false}；目前只有阿里云百炼（DashScope）系的 OpenAI 兼容接口认这个参数。
          */
         private boolean search = false;
+    }
+
+    /**
+     * 一个**系统内置模型**（没配自带 Key 的用户用的那批）。
+     * <p>
+     * 2026-10-03：原先系统默认模型只有 yml 里 {@code langchain4j.open-ai.streaming-chat-model}
+     * 那一个 Bean —— 想加第二个、或换一家供应商都得改那一段，很不灵活。
+     * 现在改成列表：每家供应商各写一项，互不干扰。
+     * <p>
+     * 例（application-prod.yml）：
+     * <pre>
+     * nexus:
+     *   agent:
+     *     system-models:
+     *       - id: deepseek
+     *         name: DeepSeek-V3
+     *         modelName: deepseek-chat
+     *         baseUrl: https://api.deepseek.com
+     *         apiKey: ${DEEPSEEK}
+     *         vision: false
+     *         contextWindow: 131072
+     *         maxOutputTokens: 8192
+     *       - id: qwen
+     *         name: 通义千问
+     *         modelName: qwen3-max
+     *         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+     *         apiKey: ${ALI_AI_KEY}
+     *         vision: true
+     * </pre>
+     * ⚠️ 不配这个列表时行为**完全不变**（仍用 langchain4j starter 建的单一默认模型）。
+     */
+    @Data
+    public static class SystemModel {
+        /** 唯一标识；前端 {@code model.id} 传它即可选中 */
+        private String id;
+        /** 展示名（给前端选择器用） */
+        private String name;
+        /** 实际发给服务商的模型名 */
+        private String modelName;
+        /** OpenAI 兼容地址 */
+        private String baseUrl;
+        /** 该服务商的 Key（建议写成占位符 ${XXX}） */
+        private String apiKey;
+
+        /** 是否支持图片输入，默认 false */
+        private Boolean vision;
+        /** 上下文窗口，默认 256000 */
+        private Integer contextWindow;
+        /** 单次最大输出 token，默认 32000 */
+        private Integer maxOutputTokens;
     }
 
     @Data

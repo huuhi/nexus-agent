@@ -10,8 +10,10 @@ import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelDTO;
 import com.huzhijian.nexusagentweb.em.ModelType;
+import com.huzhijian.nexusagentweb.model.ChatModelFactory;
 import com.huzhijian.nexusagentweb.model.ModelCapabilities;
 import com.huzhijian.nexusagentweb.model.ModelCapabilityResolver;
+import com.huzhijian.nexusagentweb.model.SystemModelRegistry;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
@@ -62,6 +64,9 @@ public class ChatContextFactory {
     private final AgentProperties agentProperties;
     private final SkillLoader skillLoader;
     private final ModelCapabilityResolver modelCapabilityResolver;
+    private final ChatModelFactory chatModelFactory;
+    /** 系统内置模型（多供应商）；未配置时为空，走 langchain4j starter 的单一默认模型 */
+    private final SystemModelRegistry systemModelRegistry;
 
 
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
@@ -127,14 +132,16 @@ public class ChatContextFactory {
      * 解析本次对话**实际会用到**的模型能力（视觉 / 上下文窗口 / 最大输出）。
      * <p>
      * 供 {@code ChatServiceImpl} 在转换用户消息前调用 —— 图片要不要发成真图，
-     * 取决于这个模型支不支持视觉。解析不到（用系统默认模型 / 用户没配）时返回默认值。
+     * 取决于这个模型支不支持视觉。
+     * <p>
+     * 优先用用户自带配置里的模型元数据；没有自带配置时用**系统内置模型**的元数据。
      */
     public ModelCapabilities resolveCapabilities(ModelDTO modelDTO, Long userId) {
         MatchedModel matched = matchModel(modelDTO, userId);
-        if (matched == null) {
-            return ModelCapabilities.DEFAULT;
+        if (matched != null) {
+            return ModelCapabilities.of(matched.model());
         }
-        return ModelCapabilities.of(matched.model());
+        return systemModelRegistry.resolveCapabilities(modelDTO);
     }
 
     /**
@@ -206,6 +213,12 @@ public class ChatContextFactory {
         log.debug("模型配置：{}", modelDTO);
         MatchedModel matched = matchModel(modelDTO, userId);
         if (matched == null) {
+//            用户没配自带 Key（或没匹配上）→ 系统内置模型；再没有才用 langchain4j 的单一默认
+            StreamingChatModel systemModel = systemModelRegistry.resolveModel(modelDTO);
+            if (systemModel != null) {
+                log.debug("使用系统内置模型：请求模型={}", modelDTO == null ? "(未指定)" : modelDTO.modelName());
+                return systemModel;
+            }
             return defaultModel;
         }
         APIConfig apiConfig = matched.apiConfig();
@@ -213,57 +226,14 @@ public class ChatContextFactory {
 
         String secretApiKey = apiConfig.getAPIKey();
         String apiKey = EncryptorFactory.text(matched.salt()).decrypt(secretApiKey);
-//          额外参数按「服务商能力」下发（P2-3）：只发该服务商认的字段，避免 400
-        Map<String, Object> extraBody = buildExtraBody(apiConfig.getBaseUrl(), modelDTO);
 //          输出上限与上下文窗口来自**该模型的元数据**（2026-10-03），不再是全局写死：
 //          用户在配置里填了就按填的来，没填走 32k 默认
         ModelCapabilities capabilities = ModelCapabilities.of(model);
         log.debug("模型 {} 能力：视觉={}，上下文窗口={}，最大输出={}",
                 model.getName(), capabilities.vision(),
                 capabilities.contextWindow(), capabilities.maxOutputTokens());
-        return OpenAiStreamingChatModel.builder()
-                .apiKey(apiKey)
-                .baseUrl(apiConfig.getBaseUrl())
-                .modelName(modelDTO.modelName())
-                .maxTokens(capabilities.maxOutputTokens())
-                .returnThinking(true)
-//                    目前这个配置只针对deepseek
-                .sendThinking(true)
-                .customParameters(extraBody)
-                .httpClientBuilder(new SpringRestClientBuilderFactory().create())
-                .build();
-    }
-
-    /**
-     * 按服务商能力组装「额外参数」（P2-3）。
-     * <p>
-     * 只下发该服务商支持的字段：不认某个字段的服务商可能直接 400，而少一个开关只是功能降级，
-     * 两者代价不对等。判定依据是 baseUrl（见 {@link ModelCapabilityResolver}）——
-     * 同一型号经不同服务商转发时支持的参数并不相同。
-     * <p>
-     * 用户勾了思考但服务商不支持时会打日志说明，不静默丢弃。
-     */
-    private Map<String, Object> buildExtraBody(String baseUrl, ModelDTO modelDTO) {
-        ModelCapabilityResolver.Capability capability = modelCapabilityResolver.resolve(baseUrl);
-        Map<String, Object> extraBody = new HashedMap<>();
-        if (capability.thinking()) {
-            if (modelDTO.isThinking()) {
-                log.debug("开启思考：model={}", modelDTO.modelName());
-                extraBody.put("thinking", Map.of("type", "enabled"));
-                extraBody.put("enable_thinking", true);
-            } else {
-                log.debug("关闭思考：model={}", modelDTO.modelName());
-                extraBody.put("thinking", Map.of("type", "disabled"));
-                extraBody.put("enable_thinking", false);
-            }
-        } else if (modelDTO.isThinking()) {
-            log.info("服务商不支持思考参数，本次已忽略 thinking 开关：baseUrl={} model={}",
-                    baseUrl, modelDTO.modelName());
-        }
-        if (capability.search()) {
-            extraBody.put("enable_search", true);
-        }
-        return extraBody;
+        return chatModelFactory.build(apiConfig.getBaseUrl(), apiKey, modelDTO.modelName(),
+                capabilities.maxOutputTokens(), modelDTO.isThinking());
     }
 
 }

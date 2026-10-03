@@ -78,6 +78,43 @@ mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 
 # ============================================================================
+#  系统内置模型（**没配自带 Key 的用户**用的那批）—— 2026-10-03
+# ----------------------------------------------------------------------------
+#  ⚠️ 这一段是**注释状态**：不配时行为完全不变（仍用上面 langchain4j 那一个默认模型）。
+#     想加模型 / 换供应商 / 同时挂好几家，就把它解开照着写 —— 每家一项，互不影响。
+#
+#  字段说明：
+#    id          唯一标识，前端 model.id 传它即可选中（也可以不传 id，只传 modelName）
+#    name        展示名（给前端选择器用）
+#    modelName   实际发给服务商的模型名
+#    baseUrl     OpenAI 兼容地址（决定"思考/联网"参数怎么下发，见 ModelCapabilityResolver）
+#    apiKey      该服务商的 Key，建议写成占位符 ${XXX}
+#    vision      是否支持图片输入，默认 false
+#    contextWindow / maxOutputTokens  默认 256000 / 32000
+#
+#  前端可用 GET /api/chat/models 拿到这里配的列表（不含密钥）。
+# ============================================================================
+# nexus:
+#   agent:
+#     system-models:
+#       - id: deepseek
+#         name: DeepSeek-V3
+#         modelName: deepseek-chat
+#         baseUrl: https://api.deepseek.com
+#         apiKey: ${DEEPSEEK}
+#         vision: false
+#         contextWindow: 131072
+#         maxOutputTokens: 8192
+#       - id: qwen
+#         name: 通义千问
+#         modelName: qwen3-max
+#         baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+#         apiKey: ${ALI_AI_KEY}
+#         vision: true
+#         contextWindow: 262144
+#         maxOutputTokens: 32768
+
+# ============================================================================
 #  nexus-agent 运行时参数（全部有代码默认值，不写这段也能启动）
 # 对应类：com.huzhijian.nexusagentweb.properties.AgentProperties
 # ============================================================================
