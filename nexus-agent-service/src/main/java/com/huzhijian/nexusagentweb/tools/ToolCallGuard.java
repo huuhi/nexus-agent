@@ -106,7 +106,7 @@ public class ToolCallGuard {
     }
 
     /**
-     * 文本版拦截：给**返回 String** 的工具用（LogTool / MemoryTool / RagTool）。
+     * 文本版拦截：给**返回 String** 的工具用（LogTool / MemoryTool / LexiangRagTool）。
      *
      * @return null 表示放行；非 null 为紧凑 JSON 文本，直接 return 给模型即可
      */

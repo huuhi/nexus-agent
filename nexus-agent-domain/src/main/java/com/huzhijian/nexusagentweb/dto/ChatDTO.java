@@ -15,8 +15,11 @@ public record ChatDTO(@NotNull(message = "发送的消息不能为空！") List<
                       List<String> skills,
                       List<Long> MCPs,
                       ModelDTO model,
-                      /** 是否启用本地知识库（pgvector）检索 */
-                      boolean enableRag,
-                      /** 是否启用乐享知识库检索；与 enableRag 可同时为 true（两个库都会检索） */
+                      /**
+                       * 是否启用乐享知识库检索。
+                       * <p>
+                       * ⚠️ 原先还有一个 {@code enableRag}（本地 pgvector 知识库），已于 2026-10-04
+                       * 随本地知识库一起下线 —— 现在知识库检索只有乐享这一条路。
+                       */
                       boolean enableLexiangRag) {
 }

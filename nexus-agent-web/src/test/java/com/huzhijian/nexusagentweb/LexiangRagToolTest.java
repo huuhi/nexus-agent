@@ -63,10 +63,7 @@ class LexiangRagToolTest {
     @DisplayName("只有显式开启乐享检索时工具才启用")
     void enabledOnlyWhenRequested() {
         assertFalse(tool.enabled(ToolSelection.none()), "默认应关闭");
-        assertTrue(tool.enabled(new ToolSelection(false, true)), "显式开启才启用");
-        // 开着本地库不等于开着乐享库 —— 两者是独立开关
-        assertFalse(tool.enabled(new ToolSelection(true, false)),
-                "只开本地库时不应启用乐享检索");
+        assertTrue(tool.enabled(new ToolSelection(true)), "显式开启才启用");
     }
 
     @Test

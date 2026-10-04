@@ -7,8 +7,10 @@ langchain4j:
     # ⚠️ 2026-10-03：这一段是**最后兜底** —— 配了下面的 nexus.agent.system-models 之后
     #    正常不会被用到，也可以整段删掉（删了之后 ${DEEPSEEK} 环境变量也不再需要）。
     #    以前它是**必填**的：不写应用启动就失败，于是"不想用 DeepSeek 了"根本做不到。
-    #    ⚠️ 但 chat-model（会话标题生成）与 embedding-model（知识库向量化）**不能删**，
-    #       它们各有用途，删了标题生成不了、RAG 也起不来。
+    # ⚠️ 但 chat-model（会话标题生成）**不能删**，删了标题生成不了。
+    #    2026-10-04：embedding-model 一并删掉了 —— 本地知识库（pgvector）已下线。
+    #    向量化只在入库/检索时用，而第三方知识库（乐享）的向量化由对方服务自己做，
+    #    我们这边不再需要向量模型，${ALI_AI_KEY} 也不再是必填环境变量。
     streaming-chat-model:
       model-name: deepseek-flash
       base-url: https://api.deepseek.com
@@ -20,11 +22,6 @@ langchain4j:
         enable_thinking: true
       api-key: ${DEEPSEEK}
       return-thinking: true
-    embedding-model:
-      api-key: ${ALI_AI_KEY}
-      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      model-name: text-embedding-v4
-      dimensions: 1024
 
 spring:
   datasource:

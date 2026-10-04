@@ -15,7 +15,7 @@ import java.util.List;
  * 说明: 工具注册表。Spring 自动收集所有 {@link AgentToolSet} 实现，按本次运行的选择解析出工具列表。
  * <p>
  * 解决的问题：工具原来硬编码在 {@code ChatContextFactory} 里（逐个注入 + 逐个注册），
- * 新增工具必须改工厂；开关条件（如 enableRag）也散落在业务代码里。
+ * 新增工具必须改工厂；开关条件（如 enableLexiangRag）也散落在业务代码里。
  * 现在「有哪些工具」由各工具类自我声明，工厂只调一次 {@link #resolve(ToolSelection)}。
  */
 @Slf4j

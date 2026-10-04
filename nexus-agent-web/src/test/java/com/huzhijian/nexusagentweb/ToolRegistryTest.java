@@ -32,11 +32,11 @@ class ToolRegistryTest {
         }
     }
 
-    /** 只在 ragEnabled 时启用的工具集，key=rag */
-    private static class RagLikeToolSet implements AgentToolSet {
+    /** 只在按需开关打开时启用的工具集，key=on_demand */
+    private static class OnDemandToolSet implements AgentToolSet {
         @Override
         public String key() {
-            return "rag";
+            return "on_demand";
         }
 
         @Override
@@ -46,15 +46,15 @@ class ToolRegistryTest {
 
         @Override
         public boolean enabled(ToolSelection selection) {
-            return selection.ragEnabled();
+            return selection.lexiangRagEnabled();
         }
     }
 
-    private final ToolRegistry registry = new ToolRegistry(List.of(new AlwaysToolSet(), new RagLikeToolSet()));
+    private final ToolRegistry registry = new ToolRegistry(List.of(new AlwaysToolSet(), new OnDemandToolSet()));
 
     @Test
-    @DisplayName("rag 关闭时只解析出常驻工具")
-    void ragDisabledOnlyResolvesAlwaysOnTools() {
+    @DisplayName("按需开关关闭时只解析出常驻工具")
+    void onDemandOffOnlyResolvesAlwaysOnTools() {
         List<Object> resolved = registry.resolve(ToolSelection.none());
 
         assertEquals(1, resolved.size());
@@ -62,18 +62,18 @@ class ToolRegistryTest {
     }
 
     @Test
-    @DisplayName("rag 开启时两个工具集都被解析出来")
-    void ragEnabledResolvesBoth() {
-        List<Object> resolved = registry.resolve(new ToolSelection(true, false));
+    @DisplayName("按需开关打开时两个工具集都被解析出来")
+    void onDemandOnResolvesBoth() {
+        List<Object> resolved = registry.resolve(new ToolSelection(true));
 
         assertEquals(2, resolved.size());
-        assertTrue(resolved.stream().anyMatch(t -> t instanceof RagLikeToolSet));
+        assertTrue(resolved.stream().anyMatch(t -> t instanceof OnDemandToolSet));
     }
 
     @Test
     @DisplayName("keys() 列出全部已注册工具集（含当前未启用的）")
     void keysListsAllRegistered() {
-        assertEquals(List.of("always", "rag"), registry.keys());
+        assertEquals(List.of("always", "on_demand"), registry.keys());
         assertFalse(registry.keys().isEmpty());
     }
 

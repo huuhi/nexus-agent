@@ -146,10 +146,10 @@ where table_schema='public' and table_name='users'
 | `chat_history_list(user_id, update_time DESC)` | `ChatHistoryListServiceImpl.getList` |
 | `user_memory(user_id)` | `UserMemoryServiceImpl.getMemory` |
 | `sys_file(user_id, biz_type)` | `FileServiceImpl.getFileByUserId` |
-| `knowledge_base(user_id)` | `KnowledgeBaseServiceImpl.getKnowledgeList` |
+| `knowledge_base(user_id)` | ~~`KnowledgeBaseServiceImpl.getKnowledgeList`~~ ⚠️ **2026-10-04 随本地知识库下线，索引已无用**（见 `009`） |
 | `mcp_information(user_id)` | `McpInformationServiceImpl.getMcp` |
 | `system_log(create_at DESC)` | 日志按时间倒序查看 |
-| `knowledge_embedding HNSW(vector_cosine_ops)` | RAG 相似度检索 |
+| `knowledge_embedding HNSW(vector_cosine_ops)` | ~~RAG 相似度检索~~ ⚠️ **2026-10-04 随本地知识库下线**（见 `009`） |
 | `user_memory(content) gin_trgm_ops` | `UserMemoryServiceImpl.getMemory` 的 `ILIKE '%kw%'`（P2-7，见 `006`） |
 
 ## ⚠️ 已知问题（需要改代码，不是改表）

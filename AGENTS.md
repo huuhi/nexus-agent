@@ -31,7 +31,8 @@
 | 工具调用（Tool Calling）+ 流式回显 | ✅ 可用 | `tools/` + `SseResponseConverter` |
 | MCP 接入（仅 streamable_http） | ✅ 可用（有资源泄漏） | `McpInformationServiceImpl` |
 | 沙盒执行代码（**E2B 云沙盒**，非本地 Docker） | ✅ 可用（有路由 bug） | `BoxTool` + `nexus_agent_box/` |
-| RAG 知识库（pgvector） | ✅ 可用（P2-13：入库/检索同模型 + 检索带 `user_id` 隔离） | `KnowledgeBaseFileServiceImpl`（入库）/ `RagTool`（检索） |
+| 知识库检索（**仅第三方：腾讯乐享**） | ✅ 可用（用户自带 AppKey/AppSecret，BYOK） | `LexiangRagTool` + `lexiang/`（见 §6.17） |
+| ~~RAG 知识库（本地 pgvector）~~ | ❌ **已下线 2026-10-04** | 代码已删、表用 `docs/sql/009` 删除。用户嫌难维护；向量模型（`ALI_AI_KEY`）也不再需要 |
 | 长期记忆 | ✅ 可用（`pg_trgm` 模糊检索 + 字面匹配兜底，P2-7） | `UserMemoryServiceImpl` + `utils/MemoryQueryParser` / `MemoryTool`（见 §6.15） |
 | Skill 系统（`langchain4j-skills`） | ✅ 可用（本地目录扫描，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `skills/` 目录 |
 | JWT 登录 / 邮件验证码 / WS 推送 / OSS 上传 | ✅ 可用 | `LoginCheckInterceptor` 等 |
@@ -265,14 +266,14 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | 系统提示词 | `nexus-agent-common/.../content/ModelSystemContent.java` |
 | 工具注册 / 开关 / 新增工具 | `nexus-agent-service/.../tools/registry/`（`ToolRegistry`、`AgentToolSet`、`ToolSelection`），用法见 §6.4 |
 | 沙盒工具 | `nexus-agent-service/.../tools/BoxTool.java` |
-| 记忆 / RAG 工具 | `tools/MemoryTool.java`（长期记忆，常驻） + `tools/RagTool.java`（知识库检索，`enableRag=true` 时启用；**检索带 `user_id` 隔离**，见 §6.16） |
+| 记忆 / 知识库工具 | `tools/MemoryTool.java`（长期记忆，常驻） + `tools/LexiangRagTool.java`（乐享知识库检索，`enableLexiangRag=true` 时启用；见 §6.17） |
 | 沙盒服务端 | `nexus_agent_box/app/routers/{box,file,execute,mcp}.py` |
 | 聊天历史落库 | `nexus-agent-service/.../config/PgChatMemoryStore.java` |
 | 鉴权 | `nexus-agent-service/.../interceptor/LoginCheckInterceptor.java` |
 | MCP | `nexus-agent-service/.../service/impl/McpInformationServiceImpl.java` |
-| 知识库**入库**（切分 + 向量化） | `nexus-agent-service/.../service/impl/KnowledgeBaseFileServiceImpl.java` |
+| ~~知识库入库（切分 + 向量化）~~ | ❌ 已随本地知识库下线（2026-10-04） |
 | 会话列表 / 重命名 / 搜索 | `nexus-agent-service/.../service/impl/ChatHistoryListServiceImpl.java`（合并与排序）+ `nexus-agent-mapper/.../ChatHistoryListMapper.java`（改标题）+ `ChatMemoryMapper.xml#searchHits`（按正文搜）。见 §6.19 |
-| 向量库 Bean | `nexus-agent-service/.../factory/PgVectorEmbeddingFactory.java`（**维度取自 `embeddingModel.dimension()`**，改模型要同步 `vector(N)` 与 HNSW 索引） |
+| ~~向量库 Bean~~ | ❌ 已随本地知识库下线（2026-10-04）。`langchain4j-pgvector` 依赖与 `ALI_AI_KEY` 一并移除 |
 | 环境变量清单 / 部署前自查 | `.env.example`（清单 + 填法）+ `scripts/check-env.sh`（查缺项 / 占位符 / 写法，密钥打码）。见 §4.1 与 §6.18 |
 | 行尾（CRLF） | `.gitattributes` —— `*.sh` / `Dockerfile` / `*.yml` 强制 LF，避免上 Linux 报 `bad interpreter: /bin/bash^M` |
 
@@ -283,7 +284,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 ### 6.1 对话全链路（SSE）
 
 ```
-POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], model, enableRag}
+POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], model, enableLexiangRag}
   └─ ChatController.chatStream
       └─ ChatServiceImpl.chat
           ├─ UserContextHolder.getUserId()          ← 来自 LoginCheckInterceptor
@@ -294,7 +295,7 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
           │    │     .streamingChatModel(model)
           │    │     .tools(boxTool, logTool)                   ← 永远注册
           │    │     .chatMemoryProvider(TokenWindowChatMemory, maxTokens=100000)
-          │    │     + ragTool     (enableRag=true 时)          ← 实际是 MemoryTool 实例
+          │    │     + lexiangRagTool (enableLexiangRag=true 时)
           │    │     + toolProvider(mcp) (MCPs 非空时)
           │    └─ sessionId = 入参 or UUID（isNewSession）
           ├─ redisUtils.set("session:"+sessionId, userId, 5min) ← ⚠️ 仅 5 分钟
@@ -810,7 +811,20 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 ---
 
-### 6.16 知识库 RAG：入库 / 检索的向量口径与隔离（P2-13）
+### 6.16 知识库 RAG：入库 / 检索的向量口径与隔离（P2-13）—— 🔴 已随本地知识库下线，本节仅作历史归档
+
+> **2026-10-04：本地知识库（pgvector）整体下线。** 用户反馈"不好搞同时又不好用"，
+> 决定只保留第三方（乐享）知识库检索。本节描述的 `RagTool` / `KnowledgeBaseFileServiceImpl` /
+> `PgVectorEmbeddingFactory` / `knowledge_embedding` 表**代码里已全部删除**，
+> 表由 `docs/sql/009_drop_local_knowledge_base.sql` 删除，依赖 `langchain4j-pgvector` 与
+> 环境变量 `ALI_AI_KEY` 一并移除。
+>
+> **仍然有效的教训**（换成任何向量检索方案都适用）：
+> ① 入库与检索必须同一个向量模型，否则相似度无意义且不报错；
+> ② 检索**必须**带用户维度过滤，缺过滤就是跨用户越权；
+> ③ 拿不到用户上下文时**拒绝**检索，绝不能退化成不过滤。
+>
+> 下面的具体类名/表名已不存在，查细节请看 `git log` 里下线前的版本。
 
 > 一句话：**入库和检索必须用同一个向量模型**，且**检索必须带 `user_id` 过滤**。
 > 这两条各对应一个"不报错但结果是错的"级别的坑。
@@ -1005,9 +1019,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | DELETE | `/api/artifact/{id}` | `ArtifactController` | 删除产物：**先删记录、再尽力删 OSS 对象**（P2-10） |
 | POST | `/api/file/image` | `FileController` | 上传图片 |
 | GET | `/api/file` | `FileController` | 当前用户文件列表 |
-| POST | `/api/knowledge` | `KnowledgeController` | 建知识库 |
-| POST | `/api/knowledge/file` | `KnowledgeController` | 文件入知识库（触发向量化）。⚠️ P2-13：`configId`/`model` 已废弃且**不再必填**，向量模型固定用系统模型 |
-| GET | `/api/knowledge/list`、`/{id}` | `KnowledgeController` | 知识库列表 / 详情 |
+| ~~POST/GET | `/api/knowledge*`~~ | ~~`KnowledgeController`~~ | ❌ **已删除 2026-10-04**（本地知识库下线）。`/api/file` 系列**不受影响**，仍服务聊天附件 |
 | GET | `/api/mcp/service` | `McpController` | 从服务端拉 MCP 列表 |
 | GET/POST/PUT | `/api/mcp` | `McpController` | 查 / 存 / 改 |
 | GET/DELETE | `/api/mcp/{id}` | `McpController` | 详情 / 删除 |
@@ -1107,6 +1119,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-04 | **🔴 下线本地知识库（pgvector）**，知识库检索只保留乐享 | 删：`KnowledgeController`/`RagTool`/`KnowledgeBase*Service(Impl)`/`KnowledgeBase*Mapper(+xml)`/`PgVectorEmbeddingFactory`/`Knowledge*DTO`/`KnowledgeBase*` 实体；改：`ChatDTO`（去 `enableRag`）、`ToolSelection`（单字段）、`nexus-agent-service/pom.xml`（去 pgvector）、`application-prod.yml`、`.env.example`、`scripts/check-env.sh`；新增 `docs/sql/009` | **行为变更**：① `POST /api/chat/stream` 不再接受 `enableRag`；② `/api/knowledge*` 全部 404；③ `${ALI_AI_KEY}` 不再必填。**⚠️ 聊天附件不受影响** —— `/api/file` 与三个 document-parser 依赖都保留（`FileUtils` 仍被 `ChatMessageConverter` 用）。表由 `009` 删。测试 299 全通过 |
 | 2026-10-03 | **新增乐享知识库接入（只读检索）**：`LexiangRagTool` + `LexiangClient` + `LexiangTokenProvider` + `lexiang_credential` 表；`ChatDTO` 新增 `enableLexiangRag` | `docs/sql/008`、`lexiang/`、`LexiangController`、`ChatDTO`、`ToolSelection` | 只做检索不做上传；token 双层缓存（进程内+Redis）因限频 20 次/10 分钟；前端文档 `docs/乐享知识库接入（前端）.md` |
 | 2026-09-23 | 新建 `AGENTS.md`，替代已过期的 `CLAUDE.md` 作为开发入口 | `AGENTS.md` | 核对基准 `86f3a07` |
 | 2026-09-23 | 新建 `重构计划.md`（P0–P3 分阶段计划） | `重构计划.md` | 见文件内优先级 |
@@ -1214,10 +1227,10 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 | 条目 | 状态 | 说明 |
 |---|---|---|
 | `app/routers/test2.py` 孤儿脚本 | ✅ 已删 | 未被 `main.py` 引用，且**在模块顶层执行 `Sandbox.create()`** —— 一旦被 import 就会创建真实沙盒并计费 |
-| `ChatContextFactory` 把记忆工具绑在 `enableRag` 上 | ✅ 已修 | 长期记忆与知识库无关；`MemoryTool` 改为常驻注册，`enableRag` 只控制 `RagTool`。**行为变更**：不勾选知识库时也会多出 2 个记忆工具 |
+| `ChatContextFactory` 把记忆工具绑在 `enableRag` 上 | ✅ 已修 | 长期记忆与知识库无关；`MemoryTool` 改为常驻注册，`enableRag` 只控制 `RagTool`。**行为变更**：不勾选知识库时也会多出 2 个记忆工具。⚠️ 2026-10-04 起 `enableRag` 与 `RagTool` 均已下线，记忆工具仍常驻 |
 | **全库无主键/唯一约束/外键/索引** | ✅ 已修 | 库被清空过、灾后 schema 缺约束。旧数据已确认可舍弃，故按代码需求**重新设计**基线：12 表全部补主键、4 个外键、9 个索引、`users.email` 唯一约束。详见 §9 |
 | **`sys_file` 表在库中不存在** | ✅ 已修 | 该表曾丢失，导致文件上传必报 `relation does not exist`。依据 `SysFile` 实体 + `FileMapper.xml` 的 resultMap 推导出 DDL 并建表 |
-| **`knowledge_base_file` 缺 `file_name` 列** | ✅ 已修 | `insertKnowledge` 会写入它、`resultMap` 也映射它，缺列导致**知识库入库与详情查询双双报错**。基线已含该列 |
+| **`knowledge_base_file` 缺 `file_name` 列** | ✅ 已修 | `insertKnowledge` 会写入它、`resultMap` 也映射它，缺列导致**知识库入库与详情查询双双报错**。基线已含该列。⚠️ 2026-10-04 表与代码一并下线 |
 | **`KnowledgeBaseFileMapper.xml` 把 `fileName` 映射到 `fail_name`** | ✅ 已修 | 笔误，改为 `file_name` |
 | ~~**SSE 事件名大小写不统一**~~ | ✅ 已修（P2-5） | v1 里 `message`/`session_id`/`finish` 是小写字面量，`TOOL_EXECUTION`/`TOOL_EXECUTION_RESULT` 是枚举值（全大写），按 `event: tool_execution` 监听收不到。v2 已统一为小写，并顺带做了 `seq` + `runId` 信封与 `run` 首帧。权威契约见 **`docs/sse-contract.md`**（§6.2 只留索引） |
 | ~~**知识库入库强制要求用户自带 embedding 配置**~~ | ✅ 已修（P2-13） | 原 `KnowledgeBaseFileServiceImpl.getEmbeddingModel()` 只从**用户 API 配置**里找 EMBEDDING 模型，找不到就抛异常；而 `RagTool` 检索用的是**系统默认** EmbeddingModel → 没配 API Key 的用户建库必失败，且即便配上也是**跨模型检索**（向量空间不可比、结果不相关且不报错）。现已统一为「入库与检索共用注入的系统模型」，`getEmbeddingModel()` 整体删除（连带删掉里面的 `System.out.println(apiKey)`），`configId`/`model` 从方法签名移除 |

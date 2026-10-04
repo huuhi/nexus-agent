@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
  * 创造日期 2026/4/1
  * 说明: 用户长期记忆工具。
  * <p>
- * 注意职责边界：知识库检索（RAG）已拆分到 {@link RagTool}，
+ * 注意职责边界：知识库检索已拆分到 {@link LexiangRagTool}，
  * 本类只负责"用户长期记忆"的检索与写入，不要在这里再加 RAG 相关方法。
  */
 @Component
