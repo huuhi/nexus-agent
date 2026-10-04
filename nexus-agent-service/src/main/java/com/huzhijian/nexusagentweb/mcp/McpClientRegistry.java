@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.mcp;
 
 import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
+import com.huzhijian.nexusagentweb.service.impl.McpInformationServiceImpl;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
 import dev.langchain4j.mcp.client.McpClient;
@@ -114,12 +115,22 @@ public class McpClientRegistry {
         // 否则用户会以为服务不可用，而真正的问题是地址指向内网被拦了。
         urlGuard.validate(info.getUrl(), "MCP 服务地址（" + info.getName() + "）");
 
-        StreamableHttpMcpTransport transport = StreamableHttpMcpTransport.builder()
+        // ⚠️ 2026-10-04 修复：header 之前**存了但从来没发出去** ——
+        // 用户在配置里填的 Authorization / X-Api-Key 全部被丢弃，
+        // 于是「配了鉴权的 MCP 服务」必然 checkHealth 失败、被标成 available=false，
+        // 而日志里只说"连不上"，用户完全看不出是鉴权头没带上。
+        Map<String, String> headers = McpInformationServiceImpl.parseHeader(info.getHeader());
+
+        StreamableHttpMcpTransport.Builder builder = StreamableHttpMcpTransport.builder()
                 .url(info.getUrl())
-                .timeout(agentProperties.getMcp().getHealthTimeout())
-                .build();
+                .timeout(agentProperties.getMcp().getHealthTimeout());
+        if (!headers.isEmpty()) {
+            builder.customHeaders(headers);
+            // 只打头名不打值：值通常是凭据
+            log.debug("MCP 客户端携带自定义头：id={} 头名={}", info.getId(), headers.keySet());
+        }
         McpClient client = DefaultMcpClient.builder()
-                .transport(transport)
+                .transport(builder.build())
                 .build();
         try {
             client.checkHealth();

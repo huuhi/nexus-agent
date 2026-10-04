@@ -25,6 +25,22 @@
 > 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
 > 这是本目录「无真实查询就不加索引」约定的一次完整实践。
 
+### ⚠️ jsonb 列的两条铁律（2026-10-04 加，踩过两次）
+
+`mcp_information.header` 与 `user_config.llm_api_token` 都是 **jsonb** 列。
+这两个列的写入必须同时满足下面两条，缺一条就是 500：
+
+| # | 规则 | 不遵守的后果 |
+|---|---|---|
+| 1 | **Java 侧字段声明成 `String`**（存 jsonb 的文本），不要声明成 `Object` / `Map` | 声明成 `Object` 时 MyBatis 找不到 TypeHandler：写要靠 XML 里的 `::jsonb` 硬转（漏了报 `column "header" is of type jsonb but expression is of type character varying`）；读走 `UnknownTypeHandler` 拿到 `PGobject`，序列化成 `{"type":"jsonb","value":"..."}` 这种嵌套壳子 |
+| 2 | **XML 里必须显式 `::jsonb`**，且给 `jdbcType=VARCHAR` | 不加 `::jsonb` 就报类型不匹配；`#{x}::jsonb` 在 x 为 null 时还会变成类型不确定的 `NULL::jsonb`，报 `could not determine data type` |
+
+⚠️ **jsonb NOT NULL 列还有个更隐蔽的坑**：`DEFAULT '{}'` 只在「**不写这一列**」时生效；
+一旦写了 `#{x}::jsonb` 而 x 是 null，DEFAULT 就不起作用，直接违反非空约束。
+所以 NOT NULL 的 jsonb 列必须在**应用层归一化**（空值写成 `'{}'` / `'[]'`），
+不能指望数据库默认值兜底 —— 这就是 `McpInformationServiceImpl.EMPTY_HEADER_JSON` 的来历。
+
+
 ### 命名与维护约定
 
 1. **只增不改。** 已执行过的文件不再修改内容；需要调整就新建下一个序号。

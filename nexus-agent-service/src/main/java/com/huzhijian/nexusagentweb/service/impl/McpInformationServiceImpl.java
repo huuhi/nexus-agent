@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.lang.TypeReference;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -27,8 +28,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -119,6 +122,12 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         }
         String salt = userConfig.getSalt();
         String mcpToken = userConfig.getMcpToken();
+        // ⚠️ 2026-10-04：这两个 null/空之前会一路传到 EncryptorFactory 里炸成
+        // IllegalStateException / NPE，报错完全看不出是「用户没配 MCP token」。
+        // 这里提前拦下并说人话。
+        if (salt == null || salt.isBlank() || mcpToken == null || mcpToken.isBlank()) {
+            throw new ValidationException("尚未配置 MCP Token，请先在「用户设置」里保存 MCP Token");
+        }
         String rawToken = EncryptorFactory.text(salt).decrypt(mcpToken);
 
 
@@ -145,6 +154,9 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
         }
+        if (mcPs == null || mcPs.isEmpty()) {
+            return;
+        }
 //      应该要过滤一下，如果已经在数据库中存在，则执行更新
         List<McpInformation> existMCPs = query().eq("user_id", userId).list();
 //        需要添加的MCP服务ID
@@ -152,8 +164,16 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 //        更新
         List<McpInformation> updateList=new ArrayList<>();
 
-//        收集
-        Map<String, Long> map = existMCPs.stream().collect(Collectors.toMap(McpInformation::getStrId,McpInformation::getId));
+//        收集。⚠️ 2026-10-04 加了 filter + merge 函数：
+//        ① 库里可能有 str_id IS NULL 的历史行。PostgreSQL 的唯一约束里 NULL 与 NULL 不算冲突
+//           （uk_mcp_user_strid 拦不住），所以这种行可能**有多条**；
+//           而 Collectors.toMap 碰到 null key 直接抛 NPE，碰到重复 key 抛 IllegalStateException
+//           —— 两种都在「用户点一下保存」时炸成 500。strId 为空的行本来就无法参与匹配，直接跳过。
+//        ② merge 时保留 id 最小的那条，保证同一 strId 有多个历史行时行为可预期。
+        Map<String, Long> map = existMCPs.stream()
+                .filter(m -> m.getStrId() != null && !m.getStrId().isBlank())
+                .collect(Collectors.toMap(McpInformation::getStrId, McpInformation::getId,
+                        (a, b) -> Math.min(a, b)));
         for (McpServerItemDTO mcp : mcPs) {
 
 //            相同服务
@@ -170,7 +190,11 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (!updateList.isEmpty()) {
             // 更新的配置可能与已建连接不符，逐个作废缓存
             updateList.forEach(mcp -> {
-                mcpInformationMapper.updateMCP(mcp);
+                int updated = mcpInformationMapper.updateMCP(mcp);
+                if (updated == 0) {
+                    // 并发删除 / 越权：不能当成功，否则用户以为自己配好了，其实没有
+                    log.warn("更新 MCP 失败（记录不存在或不属于当前用户）：strId={} id={}", mcp.getStrId(), mcp.getId());
+                }
                 mcpClientRegistry.evict(mcp.getId());
             });
         }
@@ -231,7 +255,11 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (mcpInformation == null) {
             throw new NotFoundException("MCP 不存在或无权限查看");
         }
-        return BeanUtil.copyProperties(mcpInformation, McpDetailVO.class);
+        McpDetailVO vo = BeanUtil.copyProperties(mcpInformation, McpDetailVO.class);
+        // ⚠️ 实体里 header 是 jsonb 的**文本**，直接透传给前端会变成一个 JSON 字符串
+        // （前端得自己再 parse 一次）。这里解析成对象，和 DTO 的 Map 形态对齐。
+        vo.setHeader(parseHeader(mcpInformation.getHeader()));
+        return vo;
     }
 
     private Long requireUserId() {
@@ -246,7 +274,6 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         // ⚠️ 2026-10-04：先校验 URL 再入库，防 SSRF（用户填内网地址/云元数据地址）。
         // 原来这里原样入库，随后 McpClientRegistry.checkHealth() 直接让服务端出网。
         urlGuard.validate(mcp.url(), "MCP 服务地址（" + mcp.name() + "）");
-        String header = JSONUtil.toJsonStr(mcp.header());
         // ⚠️ 不要打整个 DTO：header 里通常带鉴权 token（用户自己填的凭据），
         // 落到日志里等于凭据多了一份副本。只打标识信息。
         log.debug("登记 MCP 服务：name={} strId={} url={} header字段数={}",
@@ -261,10 +288,99 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
                 .strId(mcp.strId())
                 .logoUrl(mcp.logoUrl())
                 .userId(userId)
-                .header(header)
-                .available(mcp.available())
+                .header(toHeaderJson(mcp.header()))
+                // ⚠️ available 是 boolean NOT NULL：DTO 里不传就是 null，
+                // updateMCP 的 `available = #{available}` 会写 null 进去直接违约。
+                // 语义上也该是 true —— 用户主动来登记/改配置了，就是想用它。
+                .available(mcp.available() == null || mcp.available())
                 .build();
 
+    }
+
+    /**
+     * 把请求头 Map 序列化成可入库的 jsonb 文本。
+     * <p>
+     * ⚠️ <b>2026-10-04 修的线上 500 就是这里</b>：原来直接 {@code JSONUtil.toJsonStr(mcp.header())}，
+     * 而 hutool 对 {@code null} 入参**返回 {@code null} 而不是字符串 {@code "null"}**。
+     * 前端从 {@code GET /api/mcp/service}（服务商预置列表）拿到的条目根本没有 header 字段
+     * —— {@code McpServerItemVO} 里就没有它 —— 原样回传 {@code POST /api/mcp} 时 header 为 null，
+     * 写成 {@code NULL::jsonb} 撞上 {@code header jsonb NOT NULL} 约束：
+     * <pre>ERROR: null value in column "header" of relation "mcp_information" violates not-null constraint</pre>
+     * <p>
+     * 顺带在这里做两件防御：
+     * <ol>
+     *   <li><b>拒绝非字符串值</b>：请求头的值最终要拼进 HTTP 头，值是对象/数组时
+     *       {@code String::valueOf} 会得到 {@code {k=[a, b]}} 这种非法头值，
+     *       与其等下在建连时炸掉，不如入库前就报错。</li>
+     *   <li><b>拒绝非法 key</b>：HTTP 头名只允许 token 字符，含空格/换行/冒号的一律拒绝
+     *       （换行尤其危险，属于 header 注入）。</li>
+     * </ol>
+     * 空 Map 归一化成 {@code {}}，与建表 DDL 的 {@code DEFAULT '{}'} 保持一致。
+     */
+    private static final String EMPTY_HEADER_JSON = "{}";
+
+    private String toHeaderJson(Map<String, Object> header) {
+        if (header == null || header.isEmpty()) {
+            return EMPTY_HEADER_JSON;
+        }
+        validateHeaderEntries(header);
+        return JSONUtil.toJsonStr(header);
+    }
+
+    /** 校验请求头的 key/value 形态，见 {@link #toHeaderJson}。 */
+    private void validateHeaderEntries(Map<String, Object> header) {
+        for (Map.Entry<String, Object> e : header.entrySet()) {
+            String name = e.getKey();
+            Object value = e.getValue();
+            if (name == null || name.isBlank() || !HEADER_NAME_PATTERN.matcher(name).matches()) {
+                throw new ValidationException("MCP 请求头名称不合法：" + name);
+            }
+            if (!(value instanceof String)) {
+                throw new ValidationException("MCP 请求头「" + name + "」的值必须是字符串，当前是 "
+                        + (value == null ? "null" : value.getClass().getSimpleName()));
+            }
+            String v = (String) value;
+            if (v.indexOf('\r') >= 0 || v.indexOf('\n') >= 0 || v.indexOf('\0') >= 0) {
+                // 换行能让攻击者注入第二个请求头（或伪造整个响应），必须在入库前就挡住
+                throw new ValidationException("MCP 请求头「" + name + "」的值含有非法字符（换行/NUL）");
+            }
+        }
+    }
+
+    /**
+     * HTTP 头名允许的字符：RFC 7230 的 token 定义（tchar）。
+     * 刻意不用 {@code [^{}\s()\[\]<>|,:;"/\\?@=]} 这种「黑名单式」正则 ——
+     * 黑名单永远漏字符，而头名直接决定我们会不会被注入。
+     */
+    private static final Pattern HEADER_NAME_PATTERN =
+            Pattern.compile("^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$");
+
+    /**
+     * 把入库的 jsonb 文本解析回请求头 Map，供出站建连使用。
+     * <p>解析不了（历史脏数据 / 人工改过库）就退化成空 Map —— 建连时少带一个头，
+     * 好过整个功能直接不可用。
+     */
+    public static Map<String, String> parseHeader(String headerJson) {
+        if (headerJson == null || headerJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> raw = JSONUtil.toBean(headerJson, new TypeReference<Map<String, Object>>() {
+            }, false);
+            if (raw == null || raw.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, String> out = new LinkedHashMap<>();
+            raw.forEach((k, v) -> {
+                if (k != null && v != null) {
+                    out.put(k, String.valueOf(v));
+                }
+            });
+            return out;
+        } catch (Exception e) {
+            log.warn("MCP header 不是合法 JSON，已按空处理：{}", e.getMessage());
+            return Map.of();
+        }
     }
 }
 
