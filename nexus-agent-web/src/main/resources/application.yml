@@ -18,10 +18,14 @@ spring:
     timeout-per-shutdown-phase: 30s
   servlet:
     multipart:
-      # Spring Boot 默认只有 1MB，而技能包常要带模板/参考文档，1MB 一上传就 413。
+      # Spring Boot 默认只有 1MB，而知识库文档（pdf/docx）动辄几 MB，1MB 一上传就报错。
       # 与 SkillController.MAX_UPLOAD_BYTES（8MB）配合：这里拦传输层，那里再校验一次。
-      max-file-size: 8MB
-      max-request-size: 10MB
+      # ⚠️ max-file-size 是**单个文件**上限，max-request-size 是**整个请求**上限 ——
+      #    POST /api/file 支持一次传多个文件，所以后者必须明显大于前者，别写成一样大。
+      max-file-size: 20MB
+      max-request-size: 30MB
+      # ⚠️ 刻意**不开** resolve-lazily：一旦开启，超限会在 Controller 里真正读流时才炸，
+      #    异常不再是 MaxUploadSizeExceededException，全局处理器抓不到（又变 500）。
 logging:
   level:
     com:
@@ -32,6 +36,20 @@ logging:
 # P3-3：优雅停机 + 健康检查
 # ---------------------------------------------------------------------------
 server:
+  tomcat:
+    # 🔴 上传报 502 的元凶（2026-10-04）：
+    #    Tomcat 在「响应已生成、但请求体还没读完」时，会去把剩余请求体吞掉（swallow）。
+    #    吞不完（超过 max-swallow-size）就**直接掐断连接**，响应根本发不出去 ——
+    #    网关 / Vite 代理看到的就是 **502**，后端日志只剩一条
+    #    `SocketTimeoutException at NioEndpoint$NioSocketWrapper.fillReadBuffer`，极难排查。
+    #    默认 max-swallow-size 只有 2MB：传一个 10MB 文件被 multipart 上限拒掉后，
+    #    剩下 8MB 吞不完 → 断连 → 502。
+    #    -1 = 不限制，保证任何时候都能返回我们自己的错误提示；
+    #    代价只是超大文件多耗一点入站带宽（上传已被 max-file-size 挡在 20MB）。
+    max-swallow-size: -1
+    # 读请求体的超时（默认 60s）。弱网传大文件容易被掐断，放宽到 120s。
+    # 注意网关（Nginx/Vite proxy）那边也要同步放宽，否则先超时的是网关。
+    connection-timeout: 120s
   # 优雅停机：收到 SIGTERM 后**先停止接收新请求**，等正在处理的请求跑完才退出。
   # 容器/编排环境（`docker stop`、k8s 滚动更新）默认就是发 SIGTERM ——
   # 不配这项等于把"对话进行到一半"的连接直接掐断，SSE 会断在半句上。

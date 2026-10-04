@@ -2,15 +2,24 @@ package com.huzhijian.nexusagentweb.handler;
 
 import com.huzhijian.nexusagentweb.exception.*;
 import com.huzhijian.nexusagentweb.vo.Result;
+import cn.hutool.json.JSONUtil;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * @author 胡志坚
@@ -65,6 +74,39 @@ public class GlobalExceptionHandler {
         return Result.error(message);
     }
 
+    /**
+     * 上传文件超限（超过 {@code spring.servlet.multipart.max-file-size / max-request-size}）。
+     * <p>
+     * ⚠️ <b>2026-10-04 补：以前这里没有对应处理器，超限会掉进兜底分支变成 500，
+     * 配合 Tomcat 的 swallow 行为还会断连，网关上表现为 502。</b>
+     * 现在明确回 413 + 可读的中文提示（带上限数值），前端可直接展示。
+     * <p>
+     * 注意：这个异常在 Controller 方法**执行之前**（multipart 解析阶段）就抛出了，
+     * 所以 Controller 里的大小校验根本来不及跑 —— 上限只能在配置里调。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        long limit = ex.getMaxUploadSize();
+        // getMaxUploadSize() 为 -1 表示这次是「整个请求超限」而非「单文件超限」，此时不猜数值
+        String limitText = limit > 0 ? (limit / 1024 / 1024) + "MB" : "";
+        log.warn("上传文件超限：{}", ex.getMessage());
+        String msg = limitText.isEmpty()
+                ? "上传内容过大，请减少文件数量或压缩后重试"
+                : "文件过大（单个上限 " + limitText + "），请压缩或分批上传";
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Result.error(msg));
+    }
+
+    /**
+     * 其余 multipart 解析失败（请求体不是合法 multipart、临时文件写失败等）。
+     * 保留 400（客户端的问题），不要兜成 500。
+     */
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<Result> handleMultipart(MultipartException ex) {
+        log.warn("multipart 解析失败：{}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Result.error("上传请求格式不正确，请用 multipart/form-data 重新提交"));
+    }
+
     @ExceptionHandler(NotFoundException.class)
     public Result handleNotFound(NotFoundException ex) {
         return Result.error(ex.getMessage());
@@ -82,7 +124,17 @@ public class GlobalExceptionHandler {
      * ② 其余一律 500 + 通用提示，绝不把堆栈或内部信息返回给调用方。
      */
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Result> handleUnexpected(Exception ex) {
+    public ResponseEntity<Result> handleUnexpected(Exception ex,
+                                                   HttpServletRequest request,
+                                                   HttpServletResponse response) {
+        // ⚠️ 2026-10-04：SSE 流已经开始时（Content-Type 变成 text/event-stream）
+        //    不能再返回 JSON 信封 —— 没有任何 converter 能把 Result 写成 text/event-stream，
+        //    写了只会二次抛 HttpMessageNotWritableException，日志刷一屏、前端还什么都收不到。
+        //    这时直接往流里补一条 error 帧（契约见 docs/sse-contract.md）。
+        if (isEventStream(response)) {
+            writeSseErrorFrame(ex, response);
+            return null;
+        }
         if (ex instanceof ErrorResponse errorResponse) {
             HttpStatus status = HttpStatus.resolve(errorResponse.getStatusCode().value());
             String detail;
@@ -97,5 +149,39 @@ public class GlobalExceptionHandler {
         log.error("未捕获异常，请排查", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Result.error("系统内部错误，请稍后重试或联系管理员"));
+    }
+
+    /** 判断这次请求是不是已经在跑 SSE（Content-Type 被 SseEmitter 切成 event-stream）。 */
+    private boolean isEventStream(HttpServletResponse response) {
+        String contentType = response.getContentType();
+        return contentType != null && contentType.contains(MediaType.TEXT_EVENT_STREAM_VALUE);
+    }
+
+    /**
+     * 往 SSE 流里补一条 error 帧（与 {@code SseResponseConverter#sendErrorEvent} 同格式）。
+     * <p>
+     * 只在「流已经开始、但异常又冒泡到了这里」这种意外情况下兜底 —— 正常情况下
+     * 对话错误由 {@code TokenStream#onError} 处理，根本不会走到全局处理器。
+     */
+    private void writeSseErrorFrame(Exception ex, HttpServletResponse response) {
+        String reason = ex.getMessage() == null
+                ? ex.getClass().getSimpleName()
+                : ex.getMessage().replaceAll("\\s+", " ").strip();
+        if (reason.length() > 200) {
+            reason = reason.substring(0, 200) + "...";
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "error");
+        payload.put("message", reason);
+        try {
+//            ⚠️ 必须显式指定 UTF-8：Servlet 容器（含 Tomcat）的 writer 默认按 ISO-8859-1 写，
+//            而错误原因几乎总是中文 —— 不设这里，前端收到的就是一串问号。
+//            （SseEmitter 那条主路径由 Spring 的 converter 负责编码，不存在这个问题。）
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+            response.getWriter().write("event: error\ndata: " + JSONUtil.toJsonStr(payload) + "\n\n");
+            response.getWriter().flush();
+        } catch (IOException ignored) {
+            // 连接已经没了，没法再告诉前端任何事
+        }
     }
 }

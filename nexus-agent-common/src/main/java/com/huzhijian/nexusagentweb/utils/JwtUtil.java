@@ -4,6 +4,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import lombok.extern.slf4j.Slf4j;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +33,7 @@ import static io.jsonwebtoken.SignatureAlgorithm.HS256;
  *   <li>注入器把新值塞进来后，下一次访问会重新解析。</li>
  * </ol>
  */
+@Slf4j
 public class JwtUtil {
 
     // 默认过期时间：7天
@@ -163,6 +165,9 @@ public class JwtUtil {
             Claims claims = holder().parser().parseSignedClaims(token).getPayload();
             return Optional.of(claims);
         } catch (Exception e) {
+            // token 过期/被篡改属正常客户端行为，用 debug 而不是 warn，避免日志被刷屏；
+            // 但必须留一行，否则「签名密钥换了导致全员掉线」这类问题只能靠猜
+            log.debug("JWT 解析失败（过期/签名不符/格式错误）：{}", e.getMessage());
             return Optional.empty();
         }
     }

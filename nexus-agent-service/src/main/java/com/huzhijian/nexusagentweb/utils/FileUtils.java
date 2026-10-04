@@ -1,6 +1,5 @@
 package com.huzhijian.nexusagentweb.utils;
 
-import com.aliyuncs.exceptions.ClientException;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import dev.langchain4j.data.document.Document;
@@ -46,7 +45,7 @@ public class FileUtils {
      * @param file   附件信息（fileUrl 必填、extension 用于选解析器）
      * @param userId 附件所有者；null 直接拒绝
      */
-    public Document getDocument(SysFile file, Long userId) throws ClientException, IOException {
+    public Document getDocument(SysFile file, Long userId) throws IOException {
         if (file == null || file.getFileUrl() == null || file.getFileUrl().isBlank()) {
             throw new ValidationException("附件地址为空");
         }

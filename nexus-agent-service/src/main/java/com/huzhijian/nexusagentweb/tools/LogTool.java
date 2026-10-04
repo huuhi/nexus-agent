@@ -6,6 +6,7 @@ import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Component;
  * 创造日期 2026/5/6
  * 说明:
  */
+@Slf4j
 @Component
 public class LogTool implements AgentToolSet {
 
@@ -43,14 +45,17 @@ public class LogTool implements AgentToolSet {
         if (blocked != null) {
             return blocked;
         }
-        SystemLog log = SystemLog.builder()
+        // 变量名不能叫 log：会和 @Slf4j 生成的静态 log 字段冲突，导致 log.error(...) 编译不过
+        SystemLog systemLog = SystemLog.builder()
                 .aiMessage(message)
                 .type("AI")
                 .build();
         try {
-            systemLogService.save(log);
+            systemLogService.save(systemLog);
         } catch (Exception e) {
-            return e.getMessage();
+            // 以前直接 return e.getMessage()：异常没堆栈、message 为 null 时模型收到空串，等于静默失败
+            log.error("记录反馈日志失败。message={}", message, e);
+            return "记录失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         }
         return "success";
     }

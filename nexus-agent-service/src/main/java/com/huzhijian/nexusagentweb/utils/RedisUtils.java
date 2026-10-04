@@ -86,6 +86,8 @@ public class RedisUtils {
                     StreamOffset.create(key, ReadOffset.lastConsumed())
             );
         } catch (Exception e) {
+            // 静默吞掉会让「消息一直消费不到」变成无头案子：必须留日志
+            log.error("Redis Stream 读取失败，本次返回空列表。key={}, group={}, consumer={}", key, group, c, e);
             return Collections.emptyList();
         }
     }
@@ -275,7 +277,8 @@ public class RedisUtils {
             return groups.stream()
                     .anyMatch(g -> group.equals(g.groupName()));
         } catch (Exception e) {
-            // 如果 key 不存在或发生其他错误，返回 false
+            // key 不存在时会走进这里，属正常分支；但连不上 Redis 也走这里，不能一声不吭
+            log.warn("检查消费者组失败，按「不存在」处理。key={}, group={}", key, group, e);
             return false;
         }
     }

@@ -7,10 +7,9 @@ import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.common.auth.CredentialsProvider;
 import com.aliyun.oss.common.auth.CredentialsProviderFactory;
 import com.aliyun.oss.common.auth.DefaultCredentialProvider;
-import com.aliyun.oss.common.auth.EnvironmentVariableCredentialsProvider;
 import com.aliyun.oss.common.comm.SignVersion;
 import com.aliyun.oss.model.OSSObject;
-import com.aliyuncs.exceptions.ClientException;
+import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.properties.AliOssProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -36,6 +35,13 @@ public class AliOssUtil {
     /**
      * 取 OSS 凭证：**配置优先，环境变量兜底**。
      * <p>
+     * ⚠️ <b>2026-10-04 修正：原先这里（以及下面的上传方法）catch / throws 的是
+     * {@code com.aliyuncs.exceptions.ClientException}（aliyun-java-sdk-core 里的那个），
+     * 而 OSS SDK 真正抛的是 {@code com.aliyun.oss.ClientException} 与
+     * {@code com.aliyun.oss.OSSException} —— 两个完全不同的类、包名只差一点。</b>
+     * 结果：凭证错、endpoint 不通、上传超时全部**没被捕获**，一路冒泡到兜底 handler 变成 500，
+     * 日志里只有一句"系统内部错误"，很难定位。现在统一捕获正确的类型并转成业务异常。
+     * <p>
      * 优先用 {@code spring.aliyun.access-key-id/secret}；没配才回退到 SDK 的
      * {@code EnvironmentVariableCredentialsProvider}（读 {@code OSS_ACCESS_KEY_ID} /
      * {@code OSS_ACCESS_KEY_SECRET} 两个环境变量）。
@@ -47,7 +53,7 @@ public class AliOssUtil {
      * 这一半配置（endpoint / bucket / region）走 Spring、另一半（凭证）走环境变量，
      * 本身就自相矛盾，这里统一成"两者都认"。
      */
-    private CredentialsProvider credentialsProvider() throws ClientException {
+    private CredentialsProvider credentialsProvider() {
         String id = aliOssProperties.getAccessKeyId();
         String secret = aliOssProperties.getAccessKeySecret();
         if (id != null && !id.isBlank() && secret != null && !secret.isBlank()) {
@@ -58,7 +64,42 @@ public class AliOssUtil {
                 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET。注意：环境变量不经过 Spring，\
                 写在 yml 或 .env.properties 里是读不到的 —— 上传文件会报 \
                 InvalidCredentialsException。建议显式配置这两项。""");
-        return CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        try {
+            return CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider();
+        } catch (com.aliyuncs.exceptions.ClientException e) {
+            // 这是唯一真的会抛 com.aliyuncs.exceptions.ClientException 的调用点：
+            // 环境变量里压根没有 OSS_ACCESS_KEY_ID / SECRET。
+            throw new ValidationException("OSS 凭证缺失：既没配 spring.aliyun.access-key-id/secret，"
+                    + "环境变量 OSS_ACCESS_KEY_ID/SECRET 也没读到");
+        }
+    }
+
+    /**
+     * 统一的 OSS 客户端参数。
+     * <p>
+     * 🔴 <b>超时是必须显式设的</b>：不设时 SDK 用默认超时 + 默认重试，
+     * 服务器出网受限或 endpoint 不可达时，一次 putObject 可以挂好几分钟 ——
+     * 期间前端/网关先超时，表现就是 502 / 504，而后端日志里连一条错误都没有。
+     * 这里收口成：连接 10s、读写 60s、最多重试 2 次，最坏约 3 分钟必然有结果。
+     */
+    private ClientBuilderConfiguration clientConfig() {
+        ClientBuilderConfiguration config = new ClientBuilderConfiguration();
+        config.setSignatureVersion(SignVersion.V4);
+        config.setConnectionTimeout(10_000);
+        config.setSocketTimeout(60_000);
+        config.setMaxErrorRetry(2);
+        return config;
+    }
+
+    /** 把 OSS 的两种异常翻译成可读的业务异常（区分"网络/凭证"与"服务端拒绝"）。 */
+    private ValidationException ossFailure(String action, com.aliyun.oss.ClientException e) {
+        log.error("OSS {}失败（客户端/网络）：{}", action, e.getMessage());
+        return new ValidationException(action + "失败（网络不通或凭证错误）：" + e.getMessage());
+    }
+
+    private ValidationException ossFailure(String action, com.aliyun.oss.OSSException e) {
+        log.error("OSS {}失败（服务端返回 {}）：{}", action, e.getErrorCode(), e.getErrorMessage());
+        return new ValidationException(action + "失败（OSS 返回 " + e.getErrorCode() + "）：" + e.getErrorMessage());
     }
 
     /**
@@ -68,7 +109,7 @@ public class AliOssUtil {
      * @param originalFilename 原始文件名
      * @return 文件访问路径
      */
-    public String uploadImage(byte[] content, String originalFilename) throws ClientException {
+    public String uploadImage(byte[] content, String originalFilename) {
         String endpoint = aliOssProperties.getEndpoint();
         String bucketName = aliOssProperties.getBucketName();
         String region = aliOssProperties.getRegion();
@@ -99,7 +140,7 @@ public class AliOssUtil {
      * @param userId 用户ID，用于创建用户专属文件夹
      * @return 文件访问路径
      */
-    public String uploadDocument(byte[] content, String fileExtension, Long userId) throws ClientException {
+    public String uploadDocument(byte[] content, String fileExtension, Long userId) {
         String endpoint = aliOssProperties.getEndpoint();
         String bucketName = aliOssProperties.getBucketName();
         String region = aliOssProperties.getRegion();
@@ -134,19 +175,24 @@ public class AliOssUtil {
      * @return 文件访问路径
      */
     private String getUrl(byte[] content, String endpoint, String bucketName, String region, CredentialsProvider credentialsProvider, String objectName) {
-        ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
-        clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
         OSS ossClient = OSSClientBuilder.create()
                 .endpoint(endpoint)
                 .credentialsProvider(credentialsProvider)
-                .clientConfiguration(clientBuilderConfiguration)
+                .clientConfiguration(clientConfig())
                 .region(region)
                 .build();
 
+        long start = System.currentTimeMillis();
         try {
             ossClient.putObject(bucketName, objectName, new ByteArrayInputStream(content));
+        } catch (com.aliyun.oss.ClientException e) {
+            throw ossFailure("文件上传", e);
+        } catch (com.aliyun.oss.OSSException e) {
+            throw ossFailure("文件上传", e);
         } finally {
             ossClient.shutdown();
+            log.info("OSS 上传完成：objectName={}, {} bytes, 耗时 {}ms",
+                    objectName, content.length, System.currentTimeMillis() - start);
         }
 
         return endpoint.split("//")[0] + "//" + bucketName + "." + endpoint.split("//")[1] + "/" + objectName;
@@ -161,7 +207,7 @@ public class AliOssUtil {
      * <p>
      * 对象不存在时 OSS 的 deleteObject 也是幂等成功的，不会抛异常。
      */
-    public void deleteObject(String objectName) throws ClientException {
+    public void deleteObject(String objectName) {
         if (objectName == null || objectName.isBlank()) {
             return;
         }
@@ -170,17 +216,19 @@ public class AliOssUtil {
         String region = aliOssProperties.getRegion();
         CredentialsProvider credentialsProvider = credentialsProvider();
 
-        ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
-        clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
         OSS ossClient = OSSClientBuilder.create()
                 .endpoint(endpoint)
                 .credentialsProvider(credentialsProvider)
-                .clientConfiguration(clientBuilderConfiguration)
+                .clientConfiguration(clientConfig())
                 .region(region)
                 .build();
         try {
             ossClient.deleteObject(bucketName, objectName);
             log.debug("已删除 OSS 对象：{}", objectName);
+        } catch (com.aliyun.oss.ClientException e) {
+            throw ossFailure("删除对象", e);
+        } catch (com.aliyun.oss.OSSException e) {
+            throw ossFailure("删除对象", e);
         } finally {
             ossClient.shutdown();
         }
@@ -230,28 +278,30 @@ public class AliOssUtil {
      * @param objectName OSS中的对象名称
      * @return 文件字节数组
      */
-    public byte[] downloadDocument(String objectName) throws ClientException {
+    public byte[] downloadDocument(String objectName) {
         String endpoint = aliOssProperties.getEndpoint();
         String bucketName = aliOssProperties.getBucketName();
         String region = aliOssProperties.getRegion();
 
         CredentialsProvider credentialsProvider = credentialsProvider();
 
-        ClientBuilderConfiguration clientBuilderConfiguration = new ClientBuilderConfiguration();
-        clientBuilderConfiguration.setSignatureVersion(SignVersion.V4);
         OSS ossClient = OSSClientBuilder.create()
                 .endpoint(endpoint)
                 .credentialsProvider(credentialsProvider)
-                .clientConfiguration(clientBuilderConfiguration)
+                .clientConfiguration(clientConfig())
                 .region(region)
                 .build();
 
-        try {
-            OSSObject ossObject = ossClient.getObject(bucketName, objectName);
+//        ⚠️ OSSObject 是 Closeable：不关会漏底层 HTTP 连接（大文件下载尤其明显）
+        try (OSSObject ossObject = ossClient.getObject(bucketName, objectName)) {
             return ossObject.getObjectContent().readAllBytes();
         } catch (IOException e) {
             log.error("下载文件失败: {}", e.getMessage());
-            throw new RuntimeException("下载文件失败", e);
+            throw new ValidationException("读取 OSS 对象内容失败：" + e.getMessage());
+        } catch (com.aliyun.oss.ClientException e) {
+            throw ossFailure("文件下载", e);
+        } catch (com.aliyun.oss.OSSException e) {
+            throw ossFailure("文件下载", e);
         } finally {
             ossClient.shutdown();
         }

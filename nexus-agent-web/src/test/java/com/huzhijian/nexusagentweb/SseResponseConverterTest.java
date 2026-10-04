@@ -15,6 +15,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -114,5 +115,27 @@ class SseResponseConverterTest {
         writer.disconnect("测试断开");
         writer.onError(new RuntimeException("模型报错"));
         assertEquals(before, sentFrames());
+    }
+
+    /**
+     * 2026-10-04 的修复：以前收尾调 {@code emitter.completeWithError(error)}，
+     * 容器会对这个异步请求做一次 error dispatch（转发到 /error），而响应的
+     * Content-Type 已经是 text/event-stream，没有任何 converter 能写 ——
+     * 于是二次抛 HttpMessageNotWritableException，日志刷一屏且前端收不到干净错误。
+     * 现在改成先发 error 帧、再 {@code complete()} 正常关流。
+     */
+    @Test
+    @DisplayName("报错收尾：先发 error 帧，再用 complete() 关流（绝不用 completeWithError）")
+    void onErrorCompletesNormallyInsteadOfCompleteWithError() throws Exception {
+        SseResponseConverter writer = newWriter();
+        writer.start();
+        int before = sentFrames();
+
+        writer.onError(new IllegalStateException("上游返回 401"));
+
+//        错误帧确实推给了前端（内容有效，不该因为出错就被吞掉）
+        assertEquals(before + 1, sentFrames());
+        verify(emitter).complete();
+        verify(emitter, never()).completeWithError(any(Throwable.class));
     }
 }

@@ -8,6 +8,7 @@ import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.mapper.UserConfigMapper;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
@@ -200,6 +201,10 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
     private String decryptKey(String salt,String encryptKey){
         //            解密，并且只显示前面和末尾
         String apiKey = EncryptorFactory.text(salt).decrypt(encryptKey);
+        // 换过 salt 或密文被改过时解密会拿到 null，下面 .length() 直接 NPE 变 500
+        if (apiKey == null) {
+            throw new ValidationException("MCP APIKEY 解密失败，请重新设置！");
+        }
         int keepPrefix=2;
         int keepSuffix=4;
         if (apiKey.length()>keepSuffix+keepPrefix) {

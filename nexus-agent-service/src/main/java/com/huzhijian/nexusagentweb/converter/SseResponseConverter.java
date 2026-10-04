@@ -322,9 +322,10 @@ public class SseResponseConverter {
         send(SseEventType.ARTIFACT, msg);
     }
 
-    public void onError(Throwable error) {        log.error("Chat stream error runId={} session={}", runId, sessionId, error);
+    public void onError(Throwable error) {
+        log.error("Chat stream error runId={} session={}", runId, sessionId, error);
         sendErrorEvent(error);
-        completeWithError(error);
+        safeComplete();
     }
 
     /**
@@ -372,19 +373,39 @@ public class SseResponseConverter {
             emitter.complete();
             isFinished.set(true);
         } catch (Exception e) {
-            completeWithError(e);
+            // 收尾本身出错（标题生成失败等）：正文已经发完了，记录一下再关流，
+            // 不要把异常继续往外抛 —— 它只会变成容器里的一条无主错误
+            log.warn("SSE 收尾失败（流已关闭，不影响已发内容）：runId={} 原因={}", runId, e.getMessage());
+            safeComplete();
         } finally {
             cancelHeartbeat();
         }
     }
 
-    private void completeWithError(Throwable error) {
-        if (isFinished.getAndSet(true)) return;
+    /**
+     * 收尾：标记结束 + 关闭流。
+     * <p>
+     * 🔴 <b>2026-10-04：这里原来是 {@code emitter.completeWithError(error)}，必须改掉。</b>
+     * 那个方法会让 Servlet 容器对这个异步请求走一次 **error dispatch**（转发到 {@code /error}），
+     * 而 SSE 响应的 Content-Type 已经是 {@code text/event-stream} ——
+     * 没有任何 HttpMessageConverter 能把 {@code /error} 的 Map（或我们的 {@code Result}）
+     * 写成这个类型，于是二次抛出
+     * {@code HttpMessageNotWritableException: No converter for [...] with preset Content-Type
+     * 'text/event-stream'}，接着全局异常处理器试图补一个 {@code Result} 又失败，
+     * 日志里刷出一长串堆栈，前端反而收不到干净的错误。
+     * <p>
+     * 错误内容已经在 {@link #sendErrorEvent(Throwable)} 里作为 {@code error} 事件发给前端了，
+     * 这里只需要把流正常关掉。
+     */
+    private void safeComplete() {
+        if (isFinished.getAndSet(true)) {
+            return;
+        }
         cancelHeartbeat();
         try {
-            emitter.completeWithError(error);
+            emitter.complete();
         } catch (Exception ignored) {
-//            连接可能早已超时/断开：任务收尾到此为止，别让收尾本身再抛异常
+            // 连接可能早已超时 / 已被容器回收：收尾到此为止，别让收尾本身再抛异常
         }
     }
 

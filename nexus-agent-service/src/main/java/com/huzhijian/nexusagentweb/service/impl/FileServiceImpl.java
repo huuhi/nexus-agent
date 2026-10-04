@@ -1,7 +1,6 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
-import com.aliyuncs.exceptions.ClientException;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.SysFile;
@@ -61,10 +60,11 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
             try {
                 url= ossUtil.uploadDocument(file.getBytes(), fileExtension,userId);
                 log.info("添加成功，url:{}",url);
-            } catch (ClientException e) {
-                failReason="配置错误！"+e.getMessage().substring(0,450);
+            } catch (ValidationException e) {
+                // OSS 失败（凭证 / 网络 / 服务端拒绝）—— AliOssUtil 已转成带原因的业务异常
+                failReason="上传失败！"+clip(e.getMessage());
             }catch (IOException e){
-                failReason="IO异常！"+e.getMessage().substring(0,450);
+                failReason="读取文件失败！"+clip(e.getMessage());
             }
             SysFile knowledgeFile = SysFile.builder()
                     .fileSize(file.getSize())
@@ -95,8 +95,8 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         if (FileTypeUtils.isSupportedImage(extension)) {
             try {
                 return ossUtil.uploadImage(file.getBytes(), extension);
-            } catch (ClientException | IOException e) {
-                throw new ValidationException(e.getMessage());
+            } catch (IOException e) {
+                throw new ValidationException("读取上传文件失败：" + e.getMessage());
             }
         }else{
             throw new NotSupportException("不支持的图片类型！");
@@ -142,6 +142,25 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
                 .eq("user_id", userId)
                 .list();
         return BeanUtil.copyToList(sysFiles, KnowledgeFileVO.class);
+    }
+
+    /**
+     * 失败原因入库前的安全截断。
+     * <p>
+     * ⚠️ 原写法 {@code e.getMessage().substring(0,450)} 有两个坑：
+     * <ol>
+     *   <li>{@code getMessage()} 可能是 {@code null}（不少网络/超时异常没有消息）→ 直接 NPE，
+     *       整批上传从"某个文件失败"升级成"整个接口 500"；</li>
+     *   <li>消息不足 450 字符时 {@code substring(450)} 抛 StringIndexOutOfBoundsException。</li>
+     * </ol>
+     * 失败原因要写进 {@code file.fail_reason} 列（有长度约束），所以两头都得收口。
+     */
+    private static String clip(String message) {
+        if (message == null || message.isBlank()) {
+            return "未知原因";
+        }
+        String text = message.trim();
+        return text.length() <= 450 ? text : text.substring(0, 450);
     }
 
 }

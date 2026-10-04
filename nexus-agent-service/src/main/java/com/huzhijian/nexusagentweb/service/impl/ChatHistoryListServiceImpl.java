@@ -28,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -97,9 +98,16 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
             ChatResponse chat = model.chat(systemMessage);
             title = chat.aiMessage().text();
         } catch (Exception e) {
-//          降级  如果出错，就使用用户的问题作为标题
-            int min = Math.min(255, message.length());
-            title=message.substring(0,min).trim();
+//          降级：出错就用用户的问题当标题。
+//          ⚠️ 2026-10-05：原来这里既不打日志，又假设 message 非空 ——
+//             message 为 null 时降级逻辑自己抛 NPE，标题彻底丢失，且 @Async 下异常无处可去。
+            log.warn("标题生成失败，降级为用户问题：session={} 原因={}", sessionId, e.getMessage());
+            String fallback = Objects.toString(message, "");
+            int min = Math.min(255, fallback.length());
+            title = fallback.substring(0, min).trim();
+            if (title.isEmpty()) {
+                title = "新对话";
+            }
         }
         log.info("生成的标题：{}",title);
         ChatHistoryList history = ChatHistoryList.builder().sessionId(sessionId)

@@ -92,7 +92,10 @@ public class MemoryTool implements AgentToolSet {
                     .map(s -> "- " + s)
                     .collect(Collectors.joining("\n"));
         } catch (Exception e) {
-            return "错误，请勿重复" + e.getMessage();
+            // 工具返回值会直接进模型上下文：既要记日志（否则线上无从追查），也不能把 null 丢给模型
+            log.error("检索长期记忆失败。query={}", query, e);
+            return "检索长期记忆失败：" + Objects.toString(e.getMessage(), e.getClass().getSimpleName())
+                    + "。请勿重复调用该工具。";
         }
     }
 

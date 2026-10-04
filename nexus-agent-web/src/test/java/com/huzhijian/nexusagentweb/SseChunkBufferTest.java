@@ -53,10 +53,14 @@ class SseChunkBufferTest {
     @Test
     @DisplayName("超过时间阈值就发送（兜住低速内容，不让它被一直憋着）")
     void flushesOnInterval() throws InterruptedException {
-        SseChunkBuffer buffer = new SseChunkBuffer(10_000, 1);
-        assertNull(buffer.append(CONTENT, "慢"));
+        // ⚠️ 这里**不能**用 1ms 当阈值（原写法 `new SseChunkBuffer(10_000, 1)` + sleep(5)）：
+        // lastFlushAt 在**构造时**就取了当前时间，从构造到第一次 append 只要超过 1ms 就会立刻触发发送，
+        // 而 1ms 在 GC 停顿 / 系统调度抖动下随时可能超 → 第 57 行的 assertNull 偶发失败（本地随机复现）。
+        // 生产配置的阈值是 60ms 量级，这里取 100ms + sleep(150)，留 50ms 安全边界。
+        SseChunkBuffer buffer = new SseChunkBuffer(10_000, 100);
+        assertNull(buffer.append(CONTENT, "慢"), "刚构造完就追加，不该触发按时间发送");
 
-        Thread.sleep(5);
+        Thread.sleep(150);
         SseChunkBuffer.Batch batch = buffer.append(CONTENT, "吞吞");
 
         assertNotNull(batch);
