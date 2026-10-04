@@ -77,4 +77,16 @@ public class SysFile {
      * （用户上传的附件走别的关系，不依赖本列）。
      */
     private String sessionId;
+
+    /**
+     * 产出该文件那次运行的 runId（产物归属，方案 B）。
+     * <p>
+     * 对应 {@code docs/sql/011_add_run_id.sql}。前端用
+     * {@code artifact.runId === message.runId} 把产物内联到「产出它的那一轮回答」末尾；
+     * 对不上就只进右侧「成果文件」面板。
+     * <p>
+     * 语义是「**产出该文件的那次运行**」，不是当前请求的运行 —— 所以必须持久化，
+     * 不能是进程内临时 id（否则重启后归不上）。本列上线前落库的产物为 {@code null}。
+     */
+    private String runId;
 }

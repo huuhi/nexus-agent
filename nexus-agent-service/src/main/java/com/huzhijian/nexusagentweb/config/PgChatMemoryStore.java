@@ -164,6 +164,10 @@ public class PgChatMemoryStore {
                     .sessionId(sessionId)
                     .type(chatMessage.type().name())
                     .content(jsonString)
+                    // 产物归属（方案 B）：把本次运行的 runId 写进每一行历史消息。
+                    // 前端拿它与 sys_file.run_id 做字符串相等匹配，刷新后也能把产物挂回正确那一轮。
+                    // 老数据（本列上线前写的）为 null，前端按「归属不明」跳过。
+                    .runId(runContext.runId())
                     .build();
             insertList.add(chatHistory);
         }
@@ -241,6 +245,9 @@ public class PgChatMemoryStore {
         try {
             return canonicalize(MAPPER.readTree(json)).toString();
         } catch (Exception e) {
+            // 规范化失败会让锚点比对失效（进而整段历史重复写入），不能静默
+            log.warn("消息 JSON 规范化失败，锚点比对将跳过该条。json 长度={}",
+                    json == null ? -1 : json.length(), e);
             return null;
         }
     }

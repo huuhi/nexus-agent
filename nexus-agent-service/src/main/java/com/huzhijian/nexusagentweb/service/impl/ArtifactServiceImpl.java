@@ -84,7 +84,7 @@ public class ArtifactServiceImpl implements ArtifactService {
     }
 
     @Override
-    public SysFile save(Map<String, Object> artifact, Long userId, String sessionId) {
+    public SysFile save(Map<String, Object> artifact, Long userId, String sessionId, String runId) {
         if (artifact == null || artifact.isEmpty()) {
             return null;
         }
@@ -105,11 +105,13 @@ public class ArtifactServiceImpl implements ArtifactService {
                 .fileName(asString(artifact.get("name")))
                 .extension(asString(artifact.get("extension")))
                 .fileSize(asLong(artifact.get("size")))
+                // 产物归属（方案 B）：与 chat_memory.run_id 配套，前端按字符串相等匹配
+                .runId(runId)
                 .createTime(new Date())
                 .build();
         fileMapper.insert(file);
-        log.debug("产物已落库：id={} name={} size={} session={}",
-                file.getId(), file.getFileName(), file.getFileSize(), sessionId);
+        log.debug("产物已落库：id={} name={} size={} session={} runId={}",
+                file.getId(), file.getFileName(), file.getFileSize(), sessionId, runId);
         return file;
     }
 

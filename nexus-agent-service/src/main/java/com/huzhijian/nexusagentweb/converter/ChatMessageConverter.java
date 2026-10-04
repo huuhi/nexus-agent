@@ -1,6 +1,5 @@
 package com.huzhijian.nexusagentweb.converter;
 
-import com.aliyuncs.exceptions.ClientException;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.em.UserMessageType;
@@ -72,7 +71,7 @@ public class ChatMessageConverter {
      *                显式传参能让"谁在用"一眼可见，也让单测不必伪造 ThreadLocal。
      */
     public ConvertedMessage toContents(List<ChatUserMessage> messages, boolean vision, Long userId)
-            throws ClientException, IOException {
+            throws IOException {
         List<Content> contents = new ArrayList<>();
         List<Map<String, Object>> attachedFiles = new ArrayList<>();
         for (ChatUserMessage message : messages) {

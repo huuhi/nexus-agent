@@ -24,9 +24,19 @@ public interface ArtifactService {
      * @param artifact  工具返回的 artifact 结构：{@code {name, url, size, extension, sourcePath}}
      * @param userId    归属用户（必填 —— 库里 user_id 是 NOT NULL，拿不到时不落库）
      * @param sessionId 归属会话，用于按会话追溯
+     * @param runId     <b>产出该文件那次运行</b>的 trace_id（产物归属，方案 B）。
+     *                  <p>
+     *                  它会被写进 {@code sys_file.run_id}，前端拿它与
+     *                  {@code GET /api/history/{sessionId}} 每行上的 {@code runId} 做<b>字符串相等</b>匹配，
+     *                  从而把产物内联到「产出它的那一轮回答」末尾 —— 这是刷新页面后唯一可靠的归属依据。
+     *                  </p>
+     *                  <p>
+     *                  可空：非流式/拿不到 runId 的场景传 null，产物仍会落库，只是归属不明
+     *                  （前端放进「成果文件」面板，不会冒充某一轮产出的）。
+     *                  </p>
      * @return 落库后的记录（含生成的 id），供 SSE 事件带上前端；跳过落库时返回 null
      */
-    SysFile save(Map<String, Object> artifact, Long userId, String sessionId);
+    SysFile save(Map<String, Object> artifact, Long userId, String sessionId, String runId);
 
     /**
      * 列出某个会话里的全部产物（按时间倒序）。

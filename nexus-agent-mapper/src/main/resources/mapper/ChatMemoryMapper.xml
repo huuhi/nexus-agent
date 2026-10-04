@@ -11,16 +11,18 @@
             <result property="type" column="type" jdbcType="OTHER"/>
             <result property="createAt" column="create_at" jdbcType="TIMESTAMP"/>
             <result property="sessionId" column="session_id" jdbcType="OTHER"/>
+            <!-- 产物归属（方案 B）：这一行是「哪一次运行」写进来的。老数据为 NULL -->
+            <result property="runId" column="run_id" jdbcType="VARCHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id,user_id,content,
-        type,create_at,session_id
+        type,create_at,session_id,run_id
     </sql>
     <insert id="insertBatch" parameterType="java.util.List">
-        insert into chat_memory(content,type,session_id,user_id) values
+        insert into chat_memory(content,type,session_id,user_id,run_id) values
         <foreach collection="list" item="item" separator=",">
-            (#{item.content}::jsonb,#{item.type}::message_type,#{item.sessionId}::uuid,#{userId})
+            (#{item.content}::jsonb,#{item.type}::message_type,#{item.sessionId}::uuid,#{userId},#{item.runId})
         </foreach>
     </insert>
     <delete id="delAllByMemoryId">
@@ -37,14 +39,14 @@
       显式列出并保持与 resultMap 一致，可彻底避免这个问题。
     -->
     <select id="getAllByMemoryId" resultMap="BaseResultMap">
-        select id,user_id,content,type,create_at,session_id
+        select id,user_id,content,type,create_at,session_id,run_id
         from chat_memory where session_id=#{sessionId}::uuid
         order by create_at
     </select>
 
     <!-- 对外读取历史：同时限定 user_id，防止越权读取他人会话 -->
     <select id="getAllByMemoryIdAndUserId" resultMap="BaseResultMap">
-        select id,user_id,content,type,create_at,session_id
+        select id,user_id,content,type,create_at,session_id,run_id
         from chat_memory
         where session_id=#{sessionId}::uuid
           and user_id=#{userId}

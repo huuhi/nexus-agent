@@ -22,8 +22,9 @@
 | `008_create_lexiang_credential.sql` | 新建 `lexiang_credential`（用户自带 BYOK 接腾讯乐享）。纯新增表，幂等可重放 |
 | `009_drop_local_knowledge_base.sql` | 删除本地 RAG 相关表（`knowledge_base` / `knowledge_base_file` / `knowledge_embedding`），代码同步下线。⚠️ **破坏性**，执行前确认没有存量数据要留 |
 | `010_create_user_skill.sql` | 新建 `user_skill`（用户上传 / AI 生成的技能）。技能**存 DB 不落盘**，`content` 与 `resources` 都是纯文本。幂等可重放。⚠️ 不执行则用户技能接口不可用，但**不影响对话**（代码会降级为「无用户技能」） |
+| `011_add_run_id.sql` | `sys_file` / `chat_memory` 各新增 `run_id` 列（产物归属到「哪一轮对话」，方案 B）。**不加索引**（runId 匹配在前端做，服务端没有按 `run_id` 查的语句）。幂等可重放，无破坏性；不执行则产物只能出现在面板里、不内联到对话 |
 
-> 新环境从零建库：按序号依次执行 `001` → … → `010`。
+> 新环境从零建库：按序号依次执行 `001` → … → `011`。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
 > 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
 > 这是本目录「无真实查询就不加索引」约定的一次完整实践。

@@ -20,10 +20,10 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static com.huzhijian.nexusagentweb.content.MetadataKeyContent.*;
 
@@ -126,19 +126,50 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
         }
         List<ChatHistory> chatHistories = mapper.getAllByMemoryIdAndUserId(sessionId, userId);
         if (chatHistories==null||chatHistories.isEmpty()) return List.of();
-        List<ChatMessage> history = chatHistories.stream().map(entity ->{
-            String content = entity.getContent().toString();
-            if (entity.getType().equals("TOOL_EXECUTION_RESULT")){
-                try {
-                    content = toStandardToolExecutionResult(content);
-                } catch (JsonProcessingException e) {
-                    throw new RuntimeException(e);
-                }
+//        逐行处理（2026-10-05 改）：产物归属要求**每一行**历史带上它自己的 runId，
+//        所以不能再「先映射成 ChatMessage 列表、再统一转 VO」——那样行上的 runId 就丢了。
+        List<MessageVO> result = new ArrayList<>(chatHistories.size());
+        for (ChatHistory entity : chatHistories) {
+            ChatMessage msg = toChatMessage(entity);
+            if (msg == null) {
+                continue;
             }
-            return ChatMessageDeserializer
-                .messageFromJson(content);
-        }).toList();
-        return history.stream().flatMap(msg->{
+            MessageVO vo = toMessageVO(msg);
+            if (vo == null) {
+                continue;
+            }
+//            老数据（run_id 列上线前写的行）这里就是 null，前端按「归属不明」跳过
+            vo.setRunId(entity.getRunId());
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 一行历史 → 一条 langchain4j 消息。脏数据返回 {@code null}（已记日志），由调用方跳过。
+     */
+    private ChatMessage toChatMessage(ChatHistory entity) {
+        // content 是 jsonb 列，历史脏数据可能为 null：跳过而不是让整段会话 500
+        if (entity.getContent() == null) {
+            log.warn("历史消息 content 为空，已跳过。id={}", entity.getId());
+            return null;
+        }
+        String content = entity.getContent().toString();
+        if ("TOOL_EXECUTION_RESULT".equals(entity.getType())) {
+            try {
+                content = toStandardToolExecutionResult(content);
+            } catch (JsonProcessingException e) {
+                // 单条工具结果解析失败不该连累整段历史：记日志后用原始内容兜底
+                log.warn("TOOL_EXECUTION_RESULT 标准化失败，回退原始内容。id={}", entity.getId(), e);
+            }
+        }
+        return ChatMessageDeserializer.messageFromJson(content);
+    }
+
+    /**
+     * 一条消息 → 前端要的 VO。未知类型返回 {@code null}（不出现在历史里）。
+     */
+    private MessageVO toMessageVO(ChatMessage msg) {
             MessageVO.MessageVOBuilder messageVOBuilder = MessageVO
                     .builder();
             switch (msg) {
@@ -217,11 +248,10 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                 }
                 default -> {
                     log.info("其他类型，暂时不处理");
-                    return Stream.empty();
+                    return null;
                 }
             }
-            return Stream.of(messageVOBuilder.build());
-        }).toList();
+            return messageVOBuilder.build();
     }
 
 

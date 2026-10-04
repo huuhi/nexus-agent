@@ -32,6 +32,20 @@ public class MessageVO {
      * {@code id} 是 {@code sys_file} 主键（用于去重与追溯），随 SSE {@code artifact} 事件下发。
      */
     private Map<String, Object> artifact;
+
+    /**
+     * 本行消息属于「哪一次运行」（产物归属，方案 B）。
+     * <p>
+     * 取值就是 SSE 信封里那个 {@code runId}，落库在 {@code chat_memory.run_id}。
+     * 前端做两件事：
+     * <ol>
+     *   <li>{@code GET /api/artifact?sessionId=} 拿到的产物也带 {@code runId}；</li>
+     *   <li>{@code artifact.runId === message.runId} → 把该产物内联到这条消息末尾。</li>
+     * </ol>
+     * <b>老数据为 {@code null}</b>（run_id 列上线之前写的行），前端跳过即可 ——
+     * 不要靠时间或顺序去猜，猜错会把产物挂到没产出它的那一轮，比不显示更糟。
+     */
+    private String runId;
     @Data
     @Builder
     public static class UserMessageVO{

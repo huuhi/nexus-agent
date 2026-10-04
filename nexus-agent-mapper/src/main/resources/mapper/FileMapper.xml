@@ -16,12 +16,13 @@
             <result property="extension" column="extension" jdbcType="VARCHAR"/>
             <result property="bizType" column="biz_type" jdbcType="VARCHAR"/>
             <result property="sessionId" column="session_id" jdbcType="VARCHAR"/>
+            <result property="runId" column="run_id" jdbcType="VARCHAR"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id,user_id,file_url,
         file_name,file_size,fail_reason,
         upload_status,create_time,extension,
-        biz_type,session_id
+        biz_type,session_id,run_id
     </sql>
 </mapper>

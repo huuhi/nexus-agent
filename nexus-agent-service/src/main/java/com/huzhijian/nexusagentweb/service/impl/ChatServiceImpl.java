@@ -1,6 +1,5 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
-import com.aliyuncs.exceptions.ClientException;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.model.ModelCapabilities;
@@ -85,8 +84,12 @@ public class ChatServiceImpl implements ChatService {
 //            图片发成真图还是降级成 URL 文本，取决于本次模型支不支持视觉（2026-10-03）
             ModelCapabilities capabilities = chatContextFactory.resolveCapabilities(chatDTO.model(), userId);
             converted = converter.toContents(messages, capabilities.vision(), userId);
-        } catch (ClientException e) {
-            throw new ValidationException("参数错误!");
+        } catch (ValidationException e) {
+//            附件字段缺失 / 归属校验不过 / OSS 下载失败：转换层现在统一抛业务异常（带可读原因），
+//            直接透传给前端，别再包成一句没有信息的"参数错误"。
+//            ⚠️ 这里以前 catch 的是 com.aliyuncs.exceptions.ClientException —— 那个异常
+//            全仓库没有任何地方会抛（OSS 真正抛的是 com.aliyun.oss.*），等于死代码。
+            throw e;
         } catch (IOException e) {
             throw new ParserFileException("解析文件失败!");
         }
@@ -96,7 +99,12 @@ public class ChatServiceImpl implements ChatService {
         String incomingSessionId = chatDTO.sessionId();
         boolean isNewSession = incomingSessionId == null || incomingSessionId.isEmpty();
         String sessionId = isNewSession ? UUID.randomUUID().toString() : incomingSessionId;
-        RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata());
+
+//        trace_id：贯穿一次 Run 的日志与 SSE 事件，把「用户看到的报错」与「服务端日志」对上。
+//        ⚠️ 必须在 RunContext 之前生成：产物归属（方案 B）要把同一个 runId 同时写进
+//        「本次运行落库的每一条历史消息」和「本次运行产出的每个产物」，RunContext 是第一站。
+        String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata(), runId);
 
 //        工具要拿到 userId，但它运行在**流式回调线程**上 —— 那里 UserContextHolder（ThreadLocal）
 //        必然是 null。所以在这里（请求线程，userId 还在）把 sessionId → userId 登记进注册表，
@@ -104,8 +112,6 @@ public class ChatServiceImpl implements ChatService {
 //        ⚠️ 别再让工具直接用 UserContextHolder —— 那是架构上必然取不到值的写法。
         runUserRegistry.register(sessionId, userId);
 
-//        trace_id：贯穿一次 Run 的日志与 SSE 事件，把「用户看到的报错」与「服务端日志」对上
-        String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 //        本次运行的指标累加器（token / 工具调用 / 耗时），结尾汇总成一行 RUN 日志（见 §6.12）
         RunMetrics metrics = new RunMetrics(runId, sessionId, userId);
 
@@ -187,7 +193,7 @@ public class ChatServiceImpl implements ChatService {
             return;
         }
         try {
-            SysFile saved = artifactService.save(artifact, runContext.userId(), runContext.sessionId());
+            SysFile saved = artifactService.save(artifact, runContext.userId(), runContext.sessionId(), runContext.runId());
             if (saved != null && saved.getId() != null) {
                 // 带上落库 id，前端可用它去重与追溯（列产物时也用它）
                 artifact.put("id", saved.getId());

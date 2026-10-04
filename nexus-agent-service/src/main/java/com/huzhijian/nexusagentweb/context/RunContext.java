@@ -23,11 +23,18 @@ import java.util.Map;
  * @param sessionId       会话 ID（UUID），一次运行期间固定；新会话时由调用方生成
  * @param newSession      本次运行是否开启了一个新会话（决定是否推送 session_id 事件、是否异步生成标题）
  * @param messageMetadata 需要写入用户消息 attributes 的元数据（附件列表等）。可为空 Map。
+ * @param runId           本次运行的 trace_id（产物归属用，见 docs/sql/011）。
+ *                        <p>
+ *                        它会被同时写进「本次运行落库的每一条历史消息」与「本次运行产出的每个产物」，
+ *                        前端按 runId 相等把产物挂到产出它的那一轮。**必须持久化**，所以在这里显式传递
+ *                        —— 流式回调线程上拿不到任何 ThreadLocal。
+ *                        </p>
  */
 public record RunContext(Long userId,
                          String sessionId,
                          boolean newSession,
-                         Map<String, Object> messageMetadata) {
+                         Map<String, Object> messageMetadata,
+                         String runId) {
 
     public RunContext {
         messageMetadata = messageMetadata == null ? Map.of() : Map.copyOf(messageMetadata);

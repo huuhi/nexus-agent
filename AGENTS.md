@@ -17,6 +17,18 @@
 6. **数据库 schema 变更必须同时提供 SQL**（目前无迁移工具，见 [§9](#9-数据库)）。
 7. 新增工具（Tool）时，**必须同时考虑：注册位置、失败降级、超时、是否需要沙盒生命周期**。见 [§6.4](#64-如何新增一个-tool)。
 8. **注释用中文**，与现有代码风格保持一致。
+9. **🔴 只要改动会碰到「前端看得见的东西」，必须在同一次改动里更新前端文档。**
+   前端是用户自己从零写的，唯一依据就是 `docs/前端开发指南.md` —— 后端悄悄加/改一个字段，
+   前端不会知道，表现就是"功能明明做了但页面没反应"。
+   触发条件（**任一命中即必须更新**）：
+   - 新增/删除/重命名**接口**，或改接口的**路径、方法、参数**；
+   - 在响应体（含 VO / 实体直接序列化）里**加字段、删字段、改字段名、改字段语义**；
+   - 改 SSE 事件名、信封结构、或某个事件的载荷字段（权威文档 `docs/sse-contract.md`）；
+   - 改错误码 / 错误消息文案 / HTTP 状态码映射（`GlobalExceptionHandler`）；
+   - 改 Nginx 相关的容器配置（上传大小、超时、缓冲）—— 同步 `docs/前端开发指南.md` 的 Nginx 片段。
+   做法：改完后端**立刻**在 `docs/前端开发指南.md` 对应小节补上字段说明与示例 JSON，
+   并在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 里写一行「前端需要同步：……」。
+   **不写就等于没改完。** 详见 [§8.1](#81-前端文档同步规则)。
 
 ---
 
@@ -32,7 +44,7 @@
 | MCP 接入（仅 streamable_http） | ✅ 可用（有资源泄漏） | `McpInformationServiceImpl` |
 | 沙盒执行代码（**E2B 云沙盒**，非本地 Docker） | ✅ 可用（有路由 bug） | `BoxTool` + `nexus_agent_box/` |
 | 知识库检索（**仅第三方：腾讯乐享**） | ✅ 可用（用户自带 AppKey/AppSecret，BYOK） | `LexiangRagTool` + `lexiang/`（见 §6.17） |
-| ~~RAG 知识库（本地 pgvector）~~ | ❌ **已下线 2026-10-04** | 代码已删、表用 `docs/sql/009` 删除。用户嫌难维护；向量模型（`ALI_AI_KEY`）也不再需要 |
+| ~~RAG 知识库（本地 pgvector）~~ | ❌ **已下线 2026-10-04** | 代码已删、表用 `docs/sql/009` 删除。用户嫌难维护；**向量模型不再需要**。⚠️ 但 `ALI_AI_KEY` **仍然必需** —— 它现在只服务 `nexus.agent.system-models` 里的百炼（qwen）供应商，见 §4.1 |
 | 长期记忆 | ✅ 可用（`pg_trgm` 模糊检索 + 字面匹配兜底，P2-7） | `UserMemoryServiceImpl` + `utils/MemoryQueryParser` / `MemoryTool`（见 §6.15） |
 | Skill 系统（`langchain4j-skills`） | ✅ 可用（官方=本地目录，用户=DB，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `OfficialSkillSource` + `UserSkillServiceImpl` |
 | 技能库（上传 / AI 生成 / 社区共享） | ✅ 可用（2026-10-04 新增，解压**不落盘**） | `SkillPackageParser` + `SkillController` + `user_skill` 表 |
@@ -175,6 +187,38 @@ uv run main.py            # 开发模式
 docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 ```
 
+---
+
+### 3.1 🔴 测试分层：别再只堆 mock 单测（2026-10-04 血泪教训）
+
+**背景**：仓库曾有 374 个纯 mock 单测全绿，但上线后连着炸了三个问题
+（上传 502、SSE 错误刷屏、百炼 401）。原因高度一致 —— **这三类都发生在
+mock 单测看不见的层**：Servlet 容器行为、Spring 配置绑定、文档与配置漂移。
+
+**今后写测试，先问自己"这个 bug 会出现在哪一层"，再选对应的手段：**
+
+| 层 | 能抓到的问题 | 手段 | 现成范例 |
+|---|---|---|---|
+| L0 纯单测 | 业务分支、边界值 | JUnit5 + Mockito | 绝大多数既有测试 |
+| L1 **失败路径契约** | 异常分支返回 null / 空串 / 拼出 "null" | 打桩让依赖抛异常，断言返回值 | `ToolFailureContractTest`、`FileServiceUploadFailureTest` |
+| L2 **容器 / Servlet** | Content-Type 与 `HttpMessageConverter` 打架、error dispatch | `MockHttpServletRequest` / `MockHttpServletResponse`（保留真实 Content-Type 语义） | `SseErrorFrameTest` |
+| L3 **配置真实绑定** | yml 改了但没被 Spring 读到、类型/单位写错 | `ApplicationContextRunner` + `ConfigDataApplicationContextInitializer`（**真读 yml 的迷你容器**，秒级） | `RuntimeConfigBindingTest` |
+| L4 **静态资产一致性** | 文档漂移：yml 要 `${XXX}` 但 `.env.example` 里没有 | 把配置文件**当输入解析并断言** | `EnvPlaceholderDriftTest` |
+| L5 人工集成 | 真实外部服务 | `@Disabled` + `@Tag("manual")` | `BoxToolTest` 等 |
+
+**配套铁律（自检时新增，全仓适用）：**
+1. **任何 `catch` 都必须留日志**（`log.warn`/`log.error`），只有"这条异常本来就
+   在正常分支里"才允许降到 `debug`，且要在注释里写明理由。静默吞异常 = 线上无头案子。
+2. **工具（`@Tool`）的返回值绝不能是 null / 空串 / 含 "null" 字样** —— 它会原样
+   进模型上下文，模型只会瞎编或反复重试。见 §6.5。
+3. 新增外部依赖的配置项时，**同步改 `.env.example`**，`EnvPlaceholderDriftTest` 会兜底。
+4. 改容器相关配置（multipart / tomcat / CORS）时，**同步改 `docs/前端开发指南.md` 的 Nginx 片段**。
+5. **🔴 单测里不许用毫秒级 `sleep` / 毫秒级阈值来断言时序。** 这类用例在 GC 停顿或系统调度抖动下会随机失败，
+   一旦偶发红了，大家就习惯性"重跑一次"，测试的可信度归零（比没有测试更糟）。
+   判据：**阈值与 sleep 之间至少要留一个数量级的安全边界**（例：阈值 100ms + sleep 150ms，而不是 1ms + 5ms）。
+   更优先的做法是把"时间"抽成可注入的时钟，或用 `Awaitility` 轮询等待条件成立。
+   实例：`SseChunkBufferTest.flushesOnInterval` 原为 `interval=1` + `sleep(5)`，已修。
+
 **启动依赖**：PostgreSQL（需 pgvector 扩展）、Redis、E2B API Key、OSS 凭证缺一不可。
 
 ---
@@ -196,7 +240,7 @@ docker compose up -d      # 容器模式（Dockerfile 用 uv sync --frozen）
 |---|---|---|
 | `DEEPSEEK` | 默认流式对话模型 Key | `application-prod.yml` |
 | `MOONSHOT` | 默认同步模型 Key（**标题生成**用，见 §6.6） | `application-prod.yml` |
-| `AI_KEY`（prod yml 现为 `ALI_AI_KEY`） | DashScope 向量模型 Key | `application-prod.yml` |
+| `ALI_AI_KEY`（旧名 `AI_KEY`） | 阿里云百炼（DashScope）Key —— **系统模型列表里 qwen 系列用**（不是向量模型，向量模型已随 pgvector 下线） |
 | `DATABASE` / `REDIS_PWD` | PostgreSQL / Redis 密码（2026-10-01 从写死改为占位符） | `application-prod.yml` |
 | `SERVICE_IP` | PostgreSQL / Redis 主机（**注意：不是 `DOCKER_IP`**，历史上文档与 prod.yml 里写错过，以 `application-dev.yml` 为准） | `application-prod.yml` |
 | `DB_USERNAME` | PostgreSQL **用户名**（2026-10-03 前写死 `postgres`，用户名不是 postgres 的环境怎么改都连不上）。不填默认 `postgres` | `application-prod.yml` |
@@ -274,7 +318,7 @@ nexus-agent (parent, packaging=pom, v0.0.1-SNAPSHOT)
 | MCP | `nexus-agent-service/.../service/impl/McpInformationServiceImpl.java` |
 | ~~知识库入库（切分 + 向量化）~~ | ❌ 已随本地知识库下线（2026-10-04） |
 | 会话列表 / 重命名 / 搜索 | `nexus-agent-service/.../service/impl/ChatHistoryListServiceImpl.java`（合并与排序）+ `nexus-agent-mapper/.../ChatHistoryListMapper.java`（改标题）+ `ChatMemoryMapper.xml#searchHits`（按正文搜）。见 §6.19 |
-| ~~向量库 Bean~~ | ❌ 已随本地知识库下线（2026-10-04）。`langchain4j-pgvector` 依赖与 `ALI_AI_KEY` 一并移除 |
+| ~~向量库 Bean~~ | ❌ 已随本地知识库下线（2026-10-04）。`langchain4j-pgvector` 依赖已移除。⚠️ `ALI_AI_KEY` **没有一起下线** —— 百炼（qwen）模型还在用它，见 §4.1 |
 | 环境变量清单 / 部署前自查 | `.env.example`（清单 + 填法）+ `scripts/check-env.sh`（查缺项 / 占位符 / 写法，密钥打码）。见 §4.1 与 §6.18 |
 | 行尾（CRLF） | `.gitattributes` —— `*.sh` / `Dockerfile` / `*.yml` 强制 LF，避免上 Linux 报 `bad interpreter: /bin/bash^M` |
 
@@ -1061,6 +1105,40 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
   PostgreSQL 要求索引表达式 immutable，**建不了表达式索引** → 目前是全表扫描。
   加速路径与代价记在 `docs/sql/README.md` 的「尚未处理」里。
 
+### 6.20 产物归属：哪个文件是哪一轮产出的（2026-10-05，方案 B）
+
+> 诉求来源：`产物归属-后端诉求.md`（前端侧已回归通过，只差后端补字段）。
+
+**问题**：`GET /api/artifact?sessionId=` 只说"这个会话产出了哪些文件"，不说"哪个是哪一轮产出的"；
+而 `GET /api/history/{sessionId}` 里又通常没有 `ARTIFACT` 行。于是**刷新页面后**，
+前端在数据上无法把产物归到某一轮，只能全部堆进右侧「成果文件」面板。
+
+**方案选型（A / B 二选一，选了 B）**：
+
+| 方案 | 做法 | 为什么不选 |
+|---|---|---|
+| A | 历史里补 `ARTIFACT` 行 | ❌ `chat_memory` **同时是 LangChain4j 的 ChatMemoryStore**：`PgChatMemoryStore.getMessages()` 对查出来的**每一行**执行 `ChatMessageDeserializer`，插非消息行会污染模型上下文；增量写入的「锚点去重」也会被这些行打乱 |
+| **B** | 两边都加持久化的 `runId` | ✅ 只加列、不新增行，**完全不碰记忆语义** |
+
+**落地**（`docs/sql/011_add_run_id.sql`）：
+
+- `sys_file.run_id` / `chat_memory.run_id`，都**可空**。
+- `runId` 在 `ChatServiceImpl` 里生成（16 位十六进制），**必须在 `RunContext` 之前生成** ——
+  `RunContext` 是把它带到流式回调线程（拿不到任何 ThreadLocal）的唯一通道。
+- 同一个 `runId` 同时写进「本次运行落库的每一条历史消息」与「本次运行产出的每个产物」。
+- 前端匹配规则就是**字符串相等**：`artifact.runId === message.runId` → 内联到那条消息末尾。
+
+**两个必须记住的点**：
+
+1. ⚠️ `runId` 是「**产出该文件的那次运行**」，不是当前请求的运行。所以**必须持久化**，
+   进程内临时 id 重启后就归不上了。
+2. ⚠️ `ChatMemoryServiceImpl.getHistoryBySessionId` **必须逐行处理**，不能
+   「先把所有行映射成 `ChatMessage` 列表、再统一转 VO」—— 那样行上的 `runId` 就丢了，
+   补字段也补不出来。这是 2026-10-05 重构的直接原因，回归测试见 `ArtifactRunIdTest`。
+
+**老数据**：`runId` 为 `null`，前端按「归属不明」处理（只进面板、不进对话）。
+**不要**为了覆盖老数据用"按时间/顺序猜"的方案 —— 猜错会把产物挂到没产出它的那一轮，比不显示更糟。
+
 ---
 
 ## 7. API 一览（真实前缀是 `/api`）
@@ -1083,7 +1161,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | GET/DELETE | `/api/user/user-memory[/{id}]` | `UserController` | 长期记忆 查 / 删 |
 | GET | `/api/user/quota` | `UserController` | 当前用户 token 配额与用量（P2-8 遗留，见 §6.13）。失败返回 `degraded=true`，不抛异常 |
 | POST | `/api/file` | `FileController` | 上传文件（`files[]`+`bizType`） |
-| GET | `/api/artifact?sessionId=` | `ArtifactController` | 列出某会话里 AI 交付的产物（P2-10，供前端"本会话文件"面板） |
+| GET | `/api/artifact?sessionId=` | `ArtifactController` | 列出某会话里 AI 交付的产物（P2-10，供前端"本会话文件"面板）。每项带 `runId`，与历史行的 `runId` 匹配可定位到产出它的那一轮（§6.20） |
 | DELETE | `/api/artifact/{id}` | `ArtifactController` | 删除产物：**先删记录、再尽力删 OSS 对象**（P2-10） |
 | POST | `/api/file/image` | `FileController` | 上传图片 |
 | GET | `/api/file` | `FileController` | 当前用户文件列表 |
@@ -1118,6 +1196,33 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 - **❗鉴权/解析类工具方法要区分「抛异常」与「返回 null」。** `JwtUtil` 系列失败时返回 null 而非抛异常，
   调用方只 catch 异常会漏判，导致无效凭证被放行。
 - **格式化**：保持 google-java-format 风格，改动后尽量只提交相关行，避免整文件重排造成 diff 噪音。
+
+### 8.1 前端文档同步规则（2026-10-05 立，对应铁律第 9 条）
+
+**前端是用户自己从零写的，后端文档是他唯一的依据。** 后端改了字段却不写文档，
+前端不会知道 —— 表现永远是"功能明明做了、接口也有数据，但页面没反应"，
+而排查成本极高（前端会先怀疑自己、后端会先怀疑前端）。
+
+**权威文档**：`docs/前端开发指南.md`（接口/字段/SSE/前端行为）。SSE 契约另有 `docs/sse-contract.md`。
+
+**必改清单（命中任一即同步）**：
+
+| 改了什么 | 同步到哪 |
+|---|---|
+| 接口路径 / 方法 / 参数 | `docs/前端开发指南.md` §7 API 一览 + 对应小节示例 |
+| 响应体字段（含 VO / 实体直接序列化） | 对应小节的示例 JSON + 一句"前端怎么用" |
+| SSE 事件名 / 信封 / 载荷字段 | `docs/sse-contract.md` + 前端指南 §6 SSE 小节 |
+| 错误码 / 状态码 / 错误消息文案 | 前端指南的错误处理小节 |
+| 上传大小 / 超时 / 缓冲等容器配置 | 前端指南的 Nginx 片段（`client_max_body_size` 等） |
+
+**写法要求**：
+1. 示例 JSON 用 `jsonc`，字段后跟**行内注释**说明含义与可空性（现有文档就是这个风格，照抄）。
+2. **可空字段必须写明"什么时候为 null、前端该怎么兜底"** —— 这类说明最常被漏，也最容易出线上问题。
+3. 涉及"新字段 + 老数据没有"时，明确写老数据的行为（例：`runId` 上线前的历史行为 `null`，前端跳过）。
+4. 在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 加一行，备注里写「**前端需要同步：……**」。
+
+**不要**：只在代码注释里写清楚就算完（前端看不到 Java 注释）；
+也不要"等前端来问"—— 前端不知道有这个字段，就不会问。
 
 ---
 
@@ -1187,6 +1292,10 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-05 | **产物归属（方案 B）：持久化 `runId`，产物能落回产出它的那一轮** | 新增 `docs/sql/011_add_run_id.sql`、`ArtifactRunIdTest`（9）；改 `SysFile`、`ChatHistory`、`RunContext`、`ChatServiceImpl`、`ArtifactService(+Impl)`、`PgChatMemoryStore`、`ChatMemoryServiceImpl`、`MessageVO`、`ChatMemoryMapper.xml`、`FileMapper.xml`、`docs/sql/README.md`、`docs/前端开发指南.md`；`AGENTS.md` 新增 §6.20、§8.1 与铁律第 9 条 | **前端需要同步**：`GET /api/history/{sessionId}` 每行新增 `runId`、`GET /api/artifact?sessionId=` 每项新增 `runId`（可空）。匹配规则就是**字符串相等**：`artifact.runId === message.runId`。<br>**问题**：产物列表只说"这个会话产出了哪些文件"，不说"哪个是哪一轮产出的"，历史里又通常没有 `ARTIFACT` 行 → 刷新页面后前端在**数据上**无法归属，只能全堆进面板。<br>**为什么选 B 不选 A**：`chat_memory` **同时是 LangChain4j 的 ChatMemoryStore**，`PgChatMemoryStore.getMessages()` 对查出的**每一行**执行 `ChatMessageDeserializer`，插 `ARTIFACT` 行会污染模型上下文，还会打乱增量写入的「锚点去重」。方案 B 只加列、不新增行，不碰记忆语义。<br>⚠️ **两处必须记住**：① `runId` 必须在 `RunContext` **之前**生成（RunContext 是把它带进流式回调线程的唯一通道，那里没有任何 ThreadLocal）；② `getHistoryBySessionId` **必须逐行处理** —— 原来是「先映射成 `ChatMessage` 列表再统一转 VO」，行上的 `runId` 在这一步就丢了，补字段也补不出来，已重构为逐行转换（`toChatMessage` / `toMessageVO`）。<br>**行为兼容**：两列都可空，老数据 `runId=null` → 前端按"归属不明"处理（只进面板、不进对话）；**刻意不加索引**（runId 匹配在前端做，服务端没有 `WHERE run_id=?`，按仓库「无真实查询就不加索引」的约定）。测试 **426**（新增 9），0 失败 |
+| 2026-10-04 | **🔴 全仓自检批次（"测试全绿但线上老炸"）**：补 4 类更高层级的测试，并据此修出 11 处静默失效 | 新增测试：`EnvPlaceholderDriftTest`(3)、`SseErrorFrameTest`(3)、`RuntimeConfigBindingTest`(3)、`ToolFailureContractTest`(3)；修复：`EmailUtils`、`ChatServiceImpl`、`ChatMessageConverter`、`FileUtils`、`AliOssUtil`、`ChatHistoryListServiceImpl`、`ChatMemoryServiceImpl`、`RedisUtils`、`MemoryTool`、`LogTool`、`JwtUtil`、`PgChatMemoryStore`、`UserConfigServiceImpl`；`AGENTS.md` 新增 §3.1 | **起因**：374 个纯 mock 单测全绿，上线却连炸三次，根因都在 mock 看不见的层（Servlet 容器行为 / Spring 配置绑定 / 文档漂移）。新增的四类测试层级见 **§3.1**。修出的真 bug：① `EmailUtils` 的 `send()` 写在 try **外面**，且 catch `MessagingException` 而 Spring 抛 `MailException`（两者**无继承关系**）→ 验证码已写 Redis 却告诉用户"发送成功"，实际从未发出；② `LogTool` 局部变量叫 `log`，与 `@Slf4j` 生成的字段同名（加日志时必须改名）；③ `ChatMemoryServiceImpl` 里 `entity.getContent().toString()` 与 `entity.getType().equals(...)` 在 jsonb 为 null 时双双 NPE → **一条脏历史让整个会话 500**；④ `UserConfigServiceImpl.decryptKey()` 解密返回 null 时 `.length()` NPE；⑤ 全仓 3 处声明 `throws com.aliyuncs.exceptions.ClientException` 但**无任何抛出点**（死代码）。新测试本身也抓出 2 个 bug（SSE 帧未设 UTF-8 致中文变问号；注释里的 `${}` 被误判为必需环境变量）。测试 **417**，0 失败 |
+| 2026-10-04 | **修：SSE 报错时日志刷一屏** `HttpMessageNotWritableException ... preset Content-Type 'text/event-stream'`；顺带更正 `ALI_AI_KEY` 的文档错误 | `SseResponseConverter`（收尾由 `emitter.completeWithError(error)` 改为 `complete()`）、`GlobalExceptionHandler`（检测到已在 SSE 流里就直接写 error 帧，不再返回 JSON 信封）、`SseResponseConverterTest`（+1）；`.env.example`、`AGENTS.md` §1/§4.1/§5.2 | ❗**根因**：`SseEmitter.completeWithError(ex)` 会让 Servlet 容器对这个异步请求做一次 **error dispatch**（转发到 `/error`），而 SSE 响应的 Content-Type 已经是 `text/event-stream`，没有任何 HttpMessageConverter 能把 `/error` 的 Map（或我们的 `Result`）写成这个类型 → 二次抛 `HttpMessageNotWritableException` → 全局 advice 试图补一个 `Result` 又失败 → 一屏堆栈，前端反而收不到干净错误。错误信息早就由 `sendErrorEvent` 作为 `error` 事件发给前端了，收尾只需 `complete()` 关流。❗ **文档错误（会直接坑到人）**：`.env.example` 与 `AGENTS.md` 三处写着「向量模型下线后 `ALI_AI_KEY` 不再需要」是**错的** —— 它仍被 `nexus.agent.system-models` 里的百炼（qwen）供应商使用：不填启动就失败，填错/填成 OSS 的 AccessKey 就是对话时报 `Incorrect API key provided`。测试 **374**，0 失败 |
+| 2026-10-04 | **修：上传文件报 502**（Tomcat 吞请求体超限 → 直接断连），顺带修 OSS 异常 catch 错类型 | `application.yml`（multipart 8→20MB/30MB、`server.tomcat.max-swallow-size=-1`、`connection-timeout=120s`）、`GlobalExceptionHandler`（新增 `MaxUploadSizeExceededException`→**413**、`MultipartException`→400）、`AliOssUtil`（catch 换成 `com.aliyun.oss.ClientException`/`OSSException`、加连接 10s / 读写 60s / 重试 2 次的超时、上传耗时日志）、`FileServiceImpl`（新增 `clip()`）、`docs/前端开发指南.md`（Nginx 补 `client_max_body_size 30m` 等）；新增 `FileServiceUploadFailureTest`（3） | ❗**502 不是后端报错导致的**：文件超过 `max-file-size` 时 Spring 在 multipart 解析阶段抛 `MaxUploadSizeExceededException`，而 Tomcat 必须先把剩余请求体吞完才发得了响应 —— **默认 `maxSwallowSize` 只有 2MB**，吞不完就**直接掐断连接**，网关/代理看到的就是 **502**，后端日志只剩一句 `SocketTimeoutException at NioEndpoint$NioSocketWrapper.fillReadBuffer`。同时全仓**没有**该异常的处理器，就算响应发出去也是 500。→ 两处一起修才能拿到可读的 413。❗ **OSS 那边一直 catch 错了类**：写的是 `com.aliyuncs.exceptions.ClientException`（aliyun-java-sdk-core），而 OSS SDK 真正抛 `com.aliyun.oss.ClientException` / `OSSException`（包名只差一点）→ 凭证错、网络超时**一个都没被捕获**，整批上传直接 500；现已降级为「单文件 FAILED + 可读原因」。❗ `e.getMessage().substring(0,450)` 在 message 为 null 时 NPE、不足 450 字符时越界，换成 `clip()`。测试 **373**（361 通过 + 12 人工跳过），0 失败 |
 | 2026-10-04 | **技能库：用户上传 / AI 生成 / 社区共享**（对应 minmax 的「技能」页）。官方技能仍走部署目录，用户技能存 `user_skill` 表，**解压不落盘** | 新增 `docs/sql/010_create_user_skill.sql`、`domain/UserSkill`、`mapper/UserSkillMapper`、`em/SkillVisibility`、`em/SkillSource`、`skills/OfficialSkillSource`、`skills/SkillPackageParser`、`skills/SkillGeneratePrompt`、`service/UserSkillService(+Impl)`、`controller/SkillController`、`dto/SkillGenerateDTO`、`dto/SkillSaveDTO`、`vo/SkillVO`、`vo/SkillDetailVO`；`SkillLoader` 重写；新增 `SkillPackageParserTest`(24) 并改 `SkillLoaderTest`(14)；`application.yml` 加 `spring.servlet.multipart` | **关键决策**：不把 zip 解压到 `skills/users/` —— 那要处理 zip slip、zip 炸弹、删除时机、多用户隔离四件事，而 `Skills.from(Collection<? extends Skill>)` 接受任意实现，`DefaultSkill.builder()` 能直接在内存里造技能，**落盘这一步被整个消掉**。代价是 `SkillLoader` 类型必须从 `FileSystemSkill` 放宽为 `Skill` 接口（原来等于把「技能只能来自文件系统」写进了类型）。踩到三个坑：① `isCollectable` 不能排除 `SKILL.md`，否则所有 zip 包都报「未找到 SKILL.md」；② frontmatter 必须**先剥引号再去行尾注释**，否则 `description: "C# 相关 # 重点"` 会被截断；③ `ZipInputStream` 遇非法数据不抛异常只返回 null 条目，「一条都没读到」要单独报「不是有效 zip」而非误报「缺 SKILL.md」。另：`or()` 不带括号会让可见性条件把「自己的技能」OR 掉 |
 | 2026-10-04 | **🔴 修 MCP 登记 500**（`null value in column "header" ... violates not-null constraint`），顺带清掉同链路上 4 个未爆雷 | `McpInformationServiceImpl`、`McpInformation`、`McpInformationMapper.xml`、`McpClientRegistry`、`McpServerItemVO`、`docs/sql/README.md`、`docs/前端开发指南.md`；新增 `McpInformationServiceImplTest`（13 个单测） | **主因**：`JSONUtil.toJsonStr(null)` 在 hutool 里返回 `null` 而非 `"null"`，而 `header` 是 `jsonb NOT NULL`；触发路径是「服务商预置列表一键添加」—— `McpServerItemVO` **刻意不含 header**（凭据不该进列表接口），回传时必然为 null。**连带修**：① `updateMCP` 的 `header` 缺 `::jsonb`（同 `llm_api_token` 那条，一改就报类型不匹配）；② `available` 是 `boolean NOT NULL`，DTO 不传时写了 null；③ `header` 存了但 `McpClientRegistry` **从未传给 transport**，配了鉴权头的服务必然连不上；④ `Collectors.toMap` 遇 `str_id IS NULL` 的历史行直接 NPE（PG 唯一约束里 NULL 不算冲突，拦不住）。另加请求头**换行注入**防护（tchar 白名单正则，非黑名单） |
 | 2026-10-04 | **🗑 下线 WebSocket**（标题推送），连带移除 `spring-boot-starter-websocket` | 删：`WebSocketService`、`WebSocketConfiguration`、`WebSocketAuthInterceptor`、`WebSocketAuthInterceptorTest`、`docs/WebSocket接入（前端）.md`；改：`ChatHistoryListServiceImpl`（只入库不推送）、`ChatHistoryListServiceImplTest`、`BoxToolTest`、`nexus-agent-service/pom.xml` | 整个 WS 只为"标题实时到"这一个非关键字段存在，却要引入握手鉴权 + 来源限制 + 重连 + 前端单例 + 双端心跳，收益与成本不成比例。前端改为拉 `GET /api/history` 拿标题，用户无感。**附带好处**：原本零鉴权（可枚举他人推送）的漏洞面随功能一起归零。详见 §6.6 |
