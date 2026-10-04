@@ -34,7 +34,8 @@
 | 知识库检索（**仅第三方：腾讯乐享**） | ✅ 可用（用户自带 AppKey/AppSecret，BYOK） | `LexiangRagTool` + `lexiang/`（见 §6.17） |
 | ~~RAG 知识库（本地 pgvector）~~ | ❌ **已下线 2026-10-04** | 代码已删、表用 `docs/sql/009` 删除。用户嫌难维护；向量模型（`ALI_AI_KEY`）也不再需要 |
 | 长期记忆 | ✅ 可用（`pg_trgm` 模糊检索 + 字面匹配兜底，P2-7） | `UserMemoryServiceImpl` + `utils/MemoryQueryParser` / `MemoryTool`（见 §6.15） |
-| Skill 系统（`langchain4j-skills`） | ✅ 可用（本地目录扫描，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `skills/` 目录 |
+| Skill 系统（`langchain4j-skills`） | ✅ 可用（官方=本地目录，用户=DB，`ChatDTO.skills` 生效） | `skills/SkillLoader` + `OfficialSkillSource` + `UserSkillServiceImpl` |
+| 技能库（上传 / AI 生成 / 社区共享） | ✅ 可用（2026-10-04 新增，解压**不落盘**） | `SkillPackageParser` + `SkillController` + `user_skill` 表 |
 | JWT 登录 / 邮件验证码 / WS 推送 / OSS 上传 | ✅ 可用 | `LoginCheckInterceptor` 等 |
 | 前端 | ❌ 无（仅 `static/showHistory.html` 调试页） | — |
 
@@ -521,15 +522,16 @@ public class XxxTool implements AgentToolSet {
 > （shell 命令被当 Python 代码执行）。现经 `sandbox/SandboxClient` 走 `POST /execute/cmd` + `{cmd, box_id}`，
 > 已于 2026-09-23 端到端实测通过（见 §12.0）。
 
-### 6.9 Skill 系统（本地目录扫描，已接通）
+### 6.9 Skill 系统（官方=目录 + 用户=DB，已接通）
 
-**方案**：决策 D3 —— Skill 是服务端本地目录，扫描 `SKILL.md` 注册，**不入库、不支持上传**
-（避开 B/S 下解压落盘与路径穿越风险）。旧的 DB 注册表方案（实体/Mapper/Service/表）已整体删除。
+**方案**：决策 D3 —— Skill 是「一个文件夹 + 一个 SKILL.md」，**不是可执行代码**。
+官方技能来自本地目录；用户技能（上传 / AI 生成）存 DB，**解压不落盘**，见下方 §6.9.1。
+旧的 DB 注册表方案（实体/Mapper/Service/表）已整体删除（`docs/sql/002`）。
 
 **目录约定**（由 `langchain4j-skills` 的 `FileSystemSkillLoader` 定义，完整说明见 `skills/README.md`）：
 
 ```
-skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指定（默认 "skills"）
+skills/                      ← 官方技能根目录，由 nexus.agent.skill.root-dir 指定（默认 "skills"）
 └── my-skill/                ← 一个子目录 = 一个技能；无 SKILL.md 的子目录被静默跳过
     ├── SKILL.md             ← 必需；YAML frontmatter 提供 name / description
     ├── notes.txt            ← 文档资源：被索引 → 模型可 read_resource（加载时读入内存）
@@ -543,11 +545,12 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 **运行链路**：
 
 ```
-启动/缓存过期 → SkillLoader.scan()          （默认 60s TTL，refreshInterval 可配）
-每次对话      → SkillLoader.formatForPrompt(chatDTO.skills())
-                → 填充系统提示词 {{runtimeCapabilities}}
-                → ChatContextFactory 注册 Skills.toolProvider()（activate_skill / read_resource）
-模型按需      → activate_skill(name) 取技能正文 → 严格按步骤执行
+官方技能：启动/缓存过期 → OfficialSkillSource.scan()   （默认 60s TTL）
+用户技能：每次对话     → UserSkillServiceImpl.loadForChat(userId)（实时查库，无缓存）
+两者合并  → SkillLoader.available(userId) → resolve(requested, userId)
+          → ChatServiceImpl.formatForPrompt 填 {{runtimeCapabilities}}
+          → ChatContextFactory 注册 Skills.toolProvider()（activate_skill / read_resource）
+模型按需 → activate_skill(name) 取技能正文 → 严格按步骤执行
 ```
 
 **请求侧语义（`ChatDTO.skills`）**：不传或空 → 启用**全部**；传名称列表 → 只启用指定的；
@@ -559,14 +562,58 @@ skills/                      ← 根目录，由 nexus.agent.skill.root-dir 指�
 |---|---|
 | 能力说明必须走 Mustache 变量 | `@SystemMessage` 是静态文本，而「有哪些技能 / 哪些 MCP 连不上」都是运行期才知道的 → `ChatAssistant.chat(..., @V("runtimeCapabilities") String)` 显式传入。不注入的话：模型不知道能调 `activate_skill`，也会把「配了但连不上」说成「我没有这个能力」。（该变量 P2-9 前叫 `availableSkills`，因同时承载 MCP 状态而改名） |
 | **Skill 与 MCP 必须合并注册** | 两者都是 `ToolProvider`，连续调 `builder.toolProvider(a)` / `toolProvider(b)` 会**互相覆盖**，只剩最后一个生效。必须收集为 `List` 后一次 `toolProviders(list)`（`ChatContextFactory` 已按此实现） |
+| **类型必须是 `Skill` 接口，不是 `FileSystemSkill`** | 用户技能是 `DefaultSkill`（内存态），官方技能是 `FileSystemSkill`。原先把 `cached` 声明成具体类型 `FileSystemSkill`，等于把「技能只能来自文件系统」写进了类型系统里。加用户技能时必须放宽为接口 |
+| **`or()` 必须显式包住整个或条件** | MyBatis-Plus 的 `.eq(A).or().eq(B)` 里 `or()` **不带括号**，前一个 `eq` 会被 OR 掉。写用户技能可见性条件时用 `.and(w -> w.eq(...).or().eq(...))` 包起来，否则等于「所有人都能看到所有技能」 |
+| **必须传 userId** | `resolve` / `formatForPrompt` 都加了 `userId` 参数（两处调用点：`ChatContextFactory` 用 `runContext.userId()`、`ChatServiceImpl` 已有局部变量）。漏传会让用户技能按「未登录」处理 —— 表现为别人的技能永远不生效，且没有任何报错 |
 | 扫描失败不阻塞启动 | 目录不存在/读失败都降级为「无技能」并打日志，不让应用起不来 |
-| 缓存的代价 | 新增技能最多延迟 `refreshInterval` 生效；`SkillLoader.reload()` 可手动刷新；设 `0s` 则每次请求重扫 |
-| 路径穿越 | 库按**预索引资源清单**匹配名称，不做运行时拼路径 → 传 `../../etc/passwd` 只会匹配失败。详见 `skills/README.md` 的安全说明 |
+| **缺迁移要降级而不是抛** | `loadForChat` 全程 try-catch：`010` 没跑时表不存在，此时静默降级为「无用户技能」，绝不能让整个对话挂掉 |
+| 缓存策略的不对称 | 官方技能走 TTL（部署期固定），用户技能**实时查库** —— 让用户上传完还要等 60 秒才生效是很糟的体验 |
+| 路径穿越 | 官方：库按**预索引资源清单**匹配名称，不做运行时拼路径。用户：见 §6.9.1 的解析器 |
 
-**配置**：`nexus.agent.skill.enabled` / `root-dir` / `refresh-interval`，见 §15。
+**配置**：`nexus.agent.skill.enabled` / `root-dir` / `refresh-interval`（**仅对官方技能生效**），见 §15。
 **冒烟**：仓库内置 `skills/verify-skill`（问「今天的暗号是什么」应回答含 `BANANA-7731`），
 用于快速验证「扫描 → 提示词注入 → activate_skill → 按步骤作答」整条链路。
-**将来支持用户自定义**：在 `SkillLoader.scan()` 里追加扫描 `<root>/users/<userId>` 即可，其余逻辑无需改动。
+
+#### 6.9.1 用户技能：为什么存 DB 而不是解压落盘
+
+用户上传 `.zip` / `.skill` / `.md`，或让模型生成技能。**刻意不落盘**：
+
+解压到 `skills/users/<userId>/` 要处理四件事 —— **zip slip 路径穿越、zip 炸弹、
+删除时机、多用户目录隔离**。而 `Skills.from(Collection<? extends Skill>)` 接受任意实现，
+`DefaultSkill.builder()` 能在内存里直接造技能（正文 + `DefaultSkillResource` 资源一起装）。
+**落盘这一步被整个消掉**，前三个问题随之不存在。
+
+代价是 `SkillLoader` 的类型必须从 `FileSystemSkill` 放宽为 `Skill`（见上表）。
+
+**安全边界**（`SkillPackageParser`，24 个单测逐条覆盖）：
+
+| 风险 | 处理 |
+|---|---|
+| zip slip | 条目名含 `..` / 绝对路径 / 反斜杠 / 冒号 → **整包拒绝** |
+| zip 炸弹 | 条目数 ≤200、单条目 ≤1MB、总解压 ≤4MB；**用实际读到的字节计数**，不信 zip 头声明的 size（可伪造） |
+| 可执行内容 | 只收白名单文本扩展名；`scripts/` 直接忽略 |
+| 技能名注入 | 必须 `^[a-z0-9][a-z0-9-]{0,63}$` 且**全局唯一**（模型 `activate_skill` 只认名字，重名会让路由变糊） |
+| 越权 | 改/删只能操作自己的；私有技能对别人返回 404 而非 403（不泄露「它存在」） |
+
+⚠️ **不防「技能内容有害」**：技能正文只是提示词，模型读它然后行动。
+真正的行为边界在工具层（`ToolCallGuard` 幂等、沙盒隔离、配额）。开放社区前要清楚这点。
+
+**解析器的两个易错点**（都真踩过）：
+
+| 问题 | 现象 |
+|---|---|
+| `isCollectable` **不能**排除 `SKILL.md` | 排除后后面从 entries 找它永远找不到，**所有 zip 包都报「未找到 SKILL.md」**。SKILL.md 不作为资源暴露是在定位到它之后 `remove` 掉的 |
+| **先剥引号再去行尾注释** | 反过来的话 `description: "做 C# 相关 # 重点"` 里的 # 会在引号还在时被当注释，把后半句连引号砍掉 |
+
+⚠️ `ZipInputStream` 遇非法数据**不抛异常**，只是 `getNextEntry()` 一直返回 null。
+所以「一条都没读到」必须单独报「文件不是有效 zip 包」，否则会误报成「包内未找到 SKILL.md」，把用户的问题指歪。
+
+**两步提交**：上传（`/upload`）与 AI 生成（`/ai-generate`）**都只返回草稿，不落库**，
+用户确认后调 `/save` 才入库。理由：解析可能失败，且让人有机会看清模型到底写了什么。
+AI 生成的结果走**与上传完全相同的校验路径**（提示词要求模型输出纯 Markdown 原文），
+模型起名不合规会被同一个解析器拦下。
+
+接口清单见 `docs/前端开发指南.md` 与 `SkillController` 的 Swagger 注解。
 
 ### 6.10 启动配置自检（P1-10）
 
@@ -1140,6 +1187,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-04 | **技能库：用户上传 / AI 生成 / 社区共享**（对应 minmax 的「技能」页）。官方技能仍走部署目录，用户技能存 `user_skill` 表，**解压不落盘** | 新增 `docs/sql/010_create_user_skill.sql`、`domain/UserSkill`、`mapper/UserSkillMapper`、`em/SkillVisibility`、`em/SkillSource`、`skills/OfficialSkillSource`、`skills/SkillPackageParser`、`skills/SkillGeneratePrompt`、`service/UserSkillService(+Impl)`、`controller/SkillController`、`dto/SkillGenerateDTO`、`dto/SkillSaveDTO`、`vo/SkillVO`、`vo/SkillDetailVO`；`SkillLoader` 重写；新增 `SkillPackageParserTest`(24) 并改 `SkillLoaderTest`(14)；`application.yml` 加 `spring.servlet.multipart` | **关键决策**：不把 zip 解压到 `skills/users/` —— 那要处理 zip slip、zip 炸弹、删除时机、多用户隔离四件事，而 `Skills.from(Collection<? extends Skill>)` 接受任意实现，`DefaultSkill.builder()` 能直接在内存里造技能，**落盘这一步被整个消掉**。代价是 `SkillLoader` 类型必须从 `FileSystemSkill` 放宽为 `Skill` 接口（原来等于把「技能只能来自文件系统」写进了类型）。踩到三个坑：① `isCollectable` 不能排除 `SKILL.md`，否则所有 zip 包都报「未找到 SKILL.md」；② frontmatter 必须**先剥引号再去行尾注释**，否则 `description: "C# 相关 # 重点"` 会被截断；③ `ZipInputStream` 遇非法数据不抛异常只返回 null 条目，「一条都没读到」要单独报「不是有效 zip」而非误报「缺 SKILL.md」。另：`or()` 不带括号会让可见性条件把「自己的技能」OR 掉 |
 | 2026-10-04 | **🔴 修 MCP 登记 500**（`null value in column "header" ... violates not-null constraint`），顺带清掉同链路上 4 个未爆雷 | `McpInformationServiceImpl`、`McpInformation`、`McpInformationMapper.xml`、`McpClientRegistry`、`McpServerItemVO`、`docs/sql/README.md`、`docs/前端开发指南.md`；新增 `McpInformationServiceImplTest`（13 个单测） | **主因**：`JSONUtil.toJsonStr(null)` 在 hutool 里返回 `null` 而非 `"null"`，而 `header` 是 `jsonb NOT NULL`；触发路径是「服务商预置列表一键添加」—— `McpServerItemVO` **刻意不含 header**（凭据不该进列表接口），回传时必然为 null。**连带修**：① `updateMCP` 的 `header` 缺 `::jsonb`（同 `llm_api_token` 那条，一改就报类型不匹配）；② `available` 是 `boolean NOT NULL`，DTO 不传时写了 null；③ `header` 存了但 `McpClientRegistry` **从未传给 transport**，配了鉴权头的服务必然连不上；④ `Collectors.toMap` 遇 `str_id IS NULL` 的历史行直接 NPE（PG 唯一约束里 NULL 不算冲突，拦不住）。另加请求头**换行注入**防护（tchar 白名单正则，非黑名单） |
 | 2026-10-04 | **🗑 下线 WebSocket**（标题推送），连带移除 `spring-boot-starter-websocket` | 删：`WebSocketService`、`WebSocketConfiguration`、`WebSocketAuthInterceptor`、`WebSocketAuthInterceptorTest`、`docs/WebSocket接入（前端）.md`；改：`ChatHistoryListServiceImpl`（只入库不推送）、`ChatHistoryListServiceImplTest`、`BoxToolTest`、`nexus-agent-service/pom.xml` | 整个 WS 只为"标题实时到"这一个非关键字段存在，却要引入握手鉴权 + 来源限制 + 重连 + 前端单例 + 双端心跳，收益与成本不成比例。前端改为拉 `GET /api/history` 拿标题，用户无感。**附带好处**：原本零鉴权（可枚举他人推送）的漏洞面随功能一起归零。详见 §6.6 |
 | 2026-10-04 | **🔴 安全修复批次（P0 3 项 + P1 5 项）**：① 邮箱验证码用后即删（原来可无限重放）；② MCP URL 加 SSRF 校验；③ box `upload_file` 加 SSRF/体积/重定向防护 | 新增 `UrlGuard`、`OssUrlGuard`、`box/app/utils/url_guard.py`；重写 `FileUtils`；改 `ChatMessageConverter`、`FileServiceImpl`、`UserServiceImpl`、`UserConfig`、`EncryptorFactory`、`LexiangClient`、`McpClientRegistry`、`McpInformationServiceImpl`；新增 4 个测试类 | ⚠️ 单测抓出 2 个「防护写了但从未生效」的真 bug（① IPv6 ULA 因 signed byte 比较 `(b[0]&0xFE)==(byte)0xFC` 永不成立 → 所有 `fc00::/7` 私网此前都能绕过 SSRF；② 文档归属校验只在 `FileUtils` 内部，入口层无独立防线）。另 `UserConfig` 三字段加 `@JsonIgnore`、`queryFileByids` 补 `user_id`（原来谁的 id 都查得到）、主密钥 <16 字符打 ERROR、乐享日志脱敏。prod CORS 按用户要求豁免（前后端分离，启动时动态填前端域名） |
@@ -1442,6 +1490,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.history.snippet-radius` | `40` | 命中片段在关键词前后各保留的字符数
 | `springdoc.api-docs.enabled` | `true`（prod `false`） | 是否暴露 `/v3/api-docs`（P3-4）。⚠️ 文档路径**免鉴权**，关掉它才是关掉暴露（见 §6.17） |
 | `springdoc.swagger-ui.enabled` | `true`（prod `false`） | 是否启用 `/swagger-ui.html` |
+| `spring.servlet.multipart.max-file-size` | `8MB` | 单个上传文件上限。⚠️ Spring Boot **默认只有 1MB**，技能包常要带模板/参考资料会被 413 拒掉。`SkillController` 里再叠一层同样的 8MB 应用层校验 |
+| `spring.servlet.multipart.max-request-size` | `10MB` | 单次请求总上限 |
 
 > ⚠️ **不要把 `memory.max-tokens` 设得比系统提示词还小**（提示词约 200 token）。
 > `TokenWindowChatMemory` 会**永远保留系统消息**，窗口过小时它会挤掉全部对话消息，

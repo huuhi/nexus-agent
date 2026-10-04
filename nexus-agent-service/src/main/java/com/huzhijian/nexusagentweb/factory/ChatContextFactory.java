@@ -119,8 +119,8 @@ public class ChatContextFactory {
 //        ⚠️ 必须收集到一个集合里用 toolProviders(...) 注册一次 ——
 //        连续调用 toolProvider(...) 会相互覆盖，导致只剩最后一个生效。
         List<ToolProvider> toolProviders = new ArrayList<>();
-//        Skill：扫描本地目录（见 SkillLoader），请求未指定名称时启用全部
-        Skills skills = skillLoader.resolve(chatDTO.skills());
+//        Skill：官方（部署目录）+ 该用户的（上传/AI 生成的），请求未指定名称时启用全部
+        Skills skills = skillLoader.resolve(chatDTO.skills(), userId);
         if (skills != null) {
             toolProviders.add(skills.toolProvider());
         }

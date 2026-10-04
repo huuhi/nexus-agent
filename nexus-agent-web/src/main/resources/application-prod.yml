@@ -195,12 +195,13 @@ nexus:
       #    关闭时启动日志会打 WARN 提醒。
       enabled: true
     skill:
-      # 是否启用技能（本地目录扫描）
+      # 是否启用技能（总开关：官方 + 用户技能都受影响）
       enabled: true
-      # 技能根目录：每个子目录一个技能，内含 SKILL.md（frontmatter 提供 name/description）
+      # ⚠️ 仅「官方技能」的根目录：每个子目录一个技能，内含 SKILL.md（frontmatter 提供 name/description）
       # 目录约定与用法见 skills/README.md
+      # ⚠️ **绝对不要指向用户可写的目录** —— 用户上传的技能存 DB（user_skill 表），不解压落盘
       root-dir: skills
-      # 目录扫描结果缓存时长。新增技能最多延迟这段时间生效，不需要重启
+      # ⚠️ 仅影响官方技能。用户技能是实时查库的，上传完立即生效，不受此缓存影响
       refresh-interval: 60s
     startup:
       # 启动配置自检发现「必需配置缺失」时是否直接阻止启动。

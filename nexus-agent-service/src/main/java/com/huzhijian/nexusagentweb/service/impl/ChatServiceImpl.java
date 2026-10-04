@@ -116,7 +116,7 @@ public class ChatServiceImpl implements ChatService {
 //        运行时能力说明必须在调用前注入系统提示词：@SystemMessage 是静态文本，
 //        而「有哪些技能 / 哪些 MCP 连不上」都是运行期才知道的，只能通过 Mustache 变量传入
         String runtimeCapabilities = composeCapabilities(
-                skillLoader.formatForPrompt(chatDTO.skills()),
+                skillLoader.formatForPrompt(chatDTO.skills(), userId),
                 chatContext.getMcpUnavailable());
         log.debug("注入提示词的运行时能力说明：{}", runtimeCapabilities);
         TokenStream tokenStream = chatAssistant.chat(converted.contents(), sessionId, runtimeCapabilities);

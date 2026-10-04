@@ -16,6 +16,12 @@ spring:
     # P3-3 优雅停机的等待上限，到期强制关闭。太长会让 `docker stop` 卡到 Docker 的 10s
     # 超时后被 SIGKILL（等于白配优雅停机）；30s 够一次长对话收尾。
     timeout-per-shutdown-phase: 30s
+  servlet:
+    multipart:
+      # Spring Boot 默认只有 1MB，而技能包常要带模板/参考文档，1MB 一上传就 413。
+      # 与 SkillController.MAX_UPLOAD_BYTES（8MB）配合：这里拦传输层，那里再校验一次。
+      max-file-size: 8MB
+      max-request-size: 10MB
 logging:
   level:
     com:

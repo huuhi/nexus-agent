@@ -19,11 +19,16 @@
 | `005_add_sys_file_session_index.sql` | `sys_file` 增加 `(session_id, user_id)` 索引（P2-10 产物列表查询）。幂等可重放，无破坏性 |
 | `006_add_user_memory_trgm_index.sql` | `CREATE EXTENSION pg_trgm` + `user_memory.content` 的 `gin_trgm_ops` 索引（P2-7 长期记忆检索，决策 D4）。**不加列、不动数据**，幂等可重放 |
 | `007_add_user_token_quota_period.sql` | `users` 新增 `token_period` / `token_period_start` 两列（P2-8 遗留，配额按日/月重置）。默认值 `'NONE'`，**存量行为不变**；幂等可重放。⚠️ **必须执行**（缺列会让登录/注册等查用户的接口 500，见下方） |
+| `008_create_lexiang_credential.sql` | 新建 `lexiang_credential`（用户自带 BYOK 接腾讯乐享）。纯新增表，幂等可重放 |
+| `009_drop_local_knowledge_base.sql` | 删除本地 RAG 相关表（`knowledge_base` / `knowledge_base_file` / `knowledge_embedding`），代码同步下线。⚠️ **破坏性**，执行前确认没有存量数据要留 |
+| `010_create_user_skill.sql` | 新建 `user_skill`（用户上传 / AI 生成的技能）。技能**存 DB 不落盘**，`content` 与 `resources` 都是纯文本。幂等可重放。⚠️ 不执行则用户技能接口不可用，但**不影响对话**（代码会降级为「无用户技能」） |
 
-> 新环境从零建库：按序号依次执行 `001` → `002` → `003` → `004` → `005` → `006` → `007`（最终 11 张表）。
+> 新环境从零建库：按序号依次执行 `001` → … → `010`。
 > 已执行过 `001` 的环境：按序补跑后续增量即可。
 > 📌 `004` 建列时**刻意没建索引**（当时还没有按会话查产物的接口）；`005` 是在接口做出来后才补的 ——
 > 这是本目录「无真实查询就不加索引」约定的一次完整实践。
+> 📌 `010` 里的两个 trgm 索引用 `DO $$ ... $$` 包着，**`pg_trgm` 没装时会跳过而不是报错中断** ——
+> 否则用户会误以为整张表没建成功（其实前面的 CREATE TABLE 已经提交了）。
 
 ### ⚠️ jsonb 列的两条铁律（2026-10-04 加，踩过两次）
 
