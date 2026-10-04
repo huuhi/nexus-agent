@@ -18,15 +18,17 @@
 7. 新增工具（Tool）时，**必须同时考虑：注册位置、失败降级、超时、是否需要沙盒生命周期**。见 [§6.4](#64-如何新增一个-tool)。
 8. **注释用中文**，与现有代码风格保持一致。
 9. **🔴 只要改动会碰到「前端看得见的东西」，必须在同一次改动里更新前端文档。**
-   前端是用户自己从零写的，唯一依据就是 `docs/前端开发指南.md` —— 后端悄悄加/改一个字段，
+   前端是用户自己写的，唯一依据就是文档 —— 后端悄悄加/改一个字段，
    前端不会知道，表现就是"功能明明做了但页面没反应"。
    触发条件（**任一命中即必须更新**）：
    - 新增/删除/重命名**接口**，或改接口的**路径、方法、参数**；
    - 在响应体（含 VO / 实体直接序列化）里**加字段、删字段、改字段名、改字段语义**；
    - 改 SSE 事件名、信封结构、或某个事件的载荷字段（权威文档 `docs/sse-contract.md`）；
    - 改错误码 / 错误消息文案 / HTTP 状态码映射（`GlobalExceptionHandler`）；
-   - 改 Nginx 相关的容器配置（上传大小、超时、缓冲）—— 同步 `docs/前端开发指南.md` 的 Nginx 片段。
-   做法：改完后端**立刻**在 `docs/前端开发指南.md` 对应小节补上字段说明与示例 JSON，
+   - 改 Nginx 相关的容器配置（上传大小、超时、缓冲）—— 同步前端文档里的 Nginx 片段。
+   做法：✅ **写进 `docs/前端增量变更.md`**（只写增量，见 [§8.1](#81-前端文档同步规则)）；
+   ❌ **不要**去改 `docs/前端开发指南.md` —— 那是「从零搭前端」的冻结教程，前端早已搭好，
+   改它只会让用户看不出这次到底动了什么（2026-10-05 踩过：写成教程式的长段落被明确退回）。
    并在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 里写一行「前端需要同步：……」。
    **不写就等于没改完。** 详见 [§8.1](#81-前端文档同步规则)。
 
@@ -212,7 +214,8 @@ mock 单测看不见的层**：Servlet 容器行为、Spring 配置绑定、文�
 2. **工具（`@Tool`）的返回值绝不能是 null / 空串 / 含 "null" 字样** —— 它会原样
    进模型上下文，模型只会瞎编或反复重试。见 §6.5。
 3. 新增外部依赖的配置项时，**同步改 `.env.example`**，`EnvPlaceholderDriftTest` 会兜底。
-4. 改容器相关配置（multipart / tomcat / CORS）时，**同步改 `docs/前端开发指南.md` 的 Nginx 片段**。
+4. 改容器相关配置（multipart / tomcat / CORS）时，**同步写 `docs/前端增量变更.md`**，
+   并注明 Nginx 侧要跟着改什么（`client_max_body_size` / 超时 / 缓冲）—— 网关层拦掉的话后端日志是空的。
 5. **🔴 单测里不许用毫秒级 `sleep` / 毫秒级阈值来断言时序。** 这类用例在 GC 停顿或系统调度抖动下会随机失败，
    一旦偶发红了，大家就习惯性"重跑一次"，测试的可信度归零（比没有测试更糟）。
    判据：**阈值与 sleep 之间至少要留一个数量级的安全边界**（例：阈值 100ms + sleep 150ms，而不是 1ms + 5ms）。
@@ -867,6 +870,9 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 > 所以那一份就是前端的唯一权威入口（环境/CORS、鉴权、全接口结构、SSE 前端视角、
 > 页面清单与三轮迭代范围、极简黑白色板与组件规范、联调顺序、上线 Checklist、后端未做清单）。
 > SSE 帧结构的权威说明仍在 `docs/sse-contract.md`，本文 §7（API 一览）与 §6.2 是简表索引。
+>
+> 🔴 **2026-10-05 起：那份指南冻结，后续改动一律写 [`docs/前端增量变更.md`](./docs/前端增量变更.md)**
+> （只写增量："改了什么 / 你要动哪几行"）。前端早已搭好，不需要教程。见 [§8.1](#81-前端文档同步规则)。
 
 ---
 
@@ -1199,30 +1205,45 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 ### 8.1 前端文档同步规则（2026-10-05 立，对应铁律第 9 条）
 
-**前端是用户自己从零写的，后端文档是他唯一的依据。** 后端改了字段却不写文档，
+**前端是用户自己写的，后端文档是他唯一的依据。** 后端改了字段却不写文档，
 前端不会知道 —— 表现永远是"功能明明做了、接口也有数据，但页面没反应"，
 而排查成本极高（前端会先怀疑自己、后端会先怀疑前端）。
 
-**权威文档**：`docs/前端开发指南.md`（接口/字段/SSE/前端行为）。SSE 契约另有 `docs/sse-contract.md`。
+### 8.1.1 两份文档，各管一段（2026-10-05 定）
+
+| 文档 | 定位 | 什么时候动 |
+|---|---|---|
+| **`docs/前端增量变更.md`** ✅ 默认写这里 | **只写增量**：这次改了什么 + 前端要动哪几行。按日期倒序追加 | **每次**碰到前端可见的改动 |
+| `docs/前端开发指南.md` 🔒 冻结 | 「从零搭前端」的完整教程，按后端 P0–P3 冻结时的状态写成 | **不动**。用户前端早已搭好，改它只会让 diff 淹掉真正的增量 |
+| `docs/sse-contract.md` | SSE 契约权威版 | 改事件名 / 信封 / 载荷字段时 |
+
+> 为什么拆成两份：2026-10-05 第一版把 runId 写进了完整指南（7 处、带伪代码和边界表），
+> 用户反馈"太全面了，我只需要需要更新的部分，因为我前端已经搭好了"。
+> —— 已搭好的前端不需要教程，只需要 diff。
 
 **必改清单（命中任一即同步）**：
 
 | 改了什么 | 同步到哪 |
 |---|---|
-| 接口路径 / 方法 / 参数 | `docs/前端开发指南.md` §7 API 一览 + 对应小节示例 |
-| 响应体字段（含 VO / 实体直接序列化） | 对应小节的示例 JSON + 一句"前端怎么用" |
-| SSE 事件名 / 信封 / 载荷字段 | `docs/sse-contract.md` + 前端指南 §6 SSE 小节 |
-| 错误码 / 状态码 / 错误消息文案 | 前端指南的错误处理小节 |
-| 上传大小 / 超时 / 缓冲等容器配置 | 前端指南的 Nginx 片段（`client_max_body_size` 等） |
+| 接口路径 / 方法 / 参数 | `docs/前端增量变更.md`（新增 / 变更 / 删除分别写清） |
+| 响应体字段（含 VO / 实体直接序列化） | 增量文档：字段名 + 类型 + **可空性** + 一句"前端怎么用" |
+| SSE 事件名 / 信封 / 载荷字段 | `docs/sse-contract.md` + 增量文档 |
+| 错误码 / 状态码 / 错误消息文案 | 增量文档（前端错误分支要跟着改的才写） |
+| 上传大小 / 超时 / 缓冲等容器配置 | 增量文档，并写明 **Nginx 侧要同步什么**（`client_max_body_size` 等） |
+| 需要用户先执行 SQL 才能生效 | 🔴 **必须单独写一条**并给 `psql` 命令 —— 否则用户看到全是 `null` 会以为后端没做 |
 
 **写法要求**：
-1. 示例 JSON 用 `jsonc`，字段后跟**行内注释**说明含义与可空性（现有文档就是这个风格，照抄）。
-2. **可空字段必须写明"什么时候为 null、前端该怎么兜底"** —— 这类说明最常被漏，也最容易出线上问题。
-3. 涉及"新字段 + 老数据没有"时，明确写老数据的行为（例：`runId` 上线前的历史行为 `null`，前端跳过）。
-4. 在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 加一行，备注里写「**前端需要同步：……**」。
+1. 🔴 **只写增量，不写教程。** 读者要的是「这次改了什么、我那边要动哪几行」。
+   判断标准：**写出来的内容在本次改动之前就已经成立 → 那是教程，删掉。**
+2. 结构固定为：背景一句话 → 后端改了什么（表格）→ 你要动哪几处（编号）→ 不用动/注意（短列表）。
+3. **不要**堆实现步骤、JS 伪代码、长篇要点列表、边界情况表格 —— 2026-10-05 第一版就写成这样被退回。
+4. **可空字段必须写明"什么时候为 null、前端该怎么兜底"** —— 最常被漏，也最容易出线上问题。
+5. 涉及"新字段 + 老数据没有"时，明确写老数据的行为（例：`runId` 上线前的历史行为 `null`，前端跳过）。
+6. 在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 加一行，备注里写「**前端需要同步：……**」。
 
 **不要**：只在代码注释里写清楚就算完（前端看不到 Java 注释）；
-也不要"等前端来问"—— 前端不知道有这个字段，就不会问。
+也不要"等前端来问"—— 前端不知道有这个字段，就不会问；
+更**不要**借"同步文档"的机会重写整份指南 —— 那会让用户看不出这次到底改了什么。
 
 ---
 
@@ -1292,7 +1313,8 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
-| 2026-10-05 | **产物归属（方案 B）：持久化 `runId`，产物能落回产出它的那一轮** | 新增 `docs/sql/011_add_run_id.sql`、`ArtifactRunIdTest`（9）；改 `SysFile`、`ChatHistory`、`RunContext`、`ChatServiceImpl`、`ArtifactService(+Impl)`、`PgChatMemoryStore`、`ChatMemoryServiceImpl`、`MessageVO`、`ChatMemoryMapper.xml`、`FileMapper.xml`、`docs/sql/README.md`、`docs/前端开发指南.md`；`AGENTS.md` 新增 §6.20、§8.1 与铁律第 9 条 | **前端需要同步**：`GET /api/history/{sessionId}` 每行新增 `runId`、`GET /api/artifact?sessionId=` 每项新增 `runId`（可空）。匹配规则就是**字符串相等**：`artifact.runId === message.runId`。<br>**问题**：产物列表只说"这个会话产出了哪些文件"，不说"哪个是哪一轮产出的"，历史里又通常没有 `ARTIFACT` 行 → 刷新页面后前端在**数据上**无法归属，只能全堆进面板。<br>**为什么选 B 不选 A**：`chat_memory` **同时是 LangChain4j 的 ChatMemoryStore**，`PgChatMemoryStore.getMessages()` 对查出的**每一行**执行 `ChatMessageDeserializer`，插 `ARTIFACT` 行会污染模型上下文，还会打乱增量写入的「锚点去重」。方案 B 只加列、不新增行，不碰记忆语义。<br>⚠️ **两处必须记住**：① `runId` 必须在 `RunContext` **之前**生成（RunContext 是把它带进流式回调线程的唯一通道，那里没有任何 ThreadLocal）；② `getHistoryBySessionId` **必须逐行处理** —— 原来是「先映射成 `ChatMessage` 列表再统一转 VO」，行上的 `runId` 在这一步就丢了，补字段也补不出来，已重构为逐行转换（`toChatMessage` / `toMessageVO`）。<br>**行为兼容**：两列都可空，老数据 `runId=null` → 前端按"归属不明"处理（只进面板、不进对话）；**刻意不加索引**（runId 匹配在前端做，服务端没有 `WHERE run_id=?`，按仓库「无真实查询就不加索引」的约定）。测试 **426**（新增 9），0 失败 |
+| 2026-10-05 | **前端文档拆成两份**：`前端开发指南.md` 冻结（"从零搭前端"教程），新增 `前端增量变更.md` 只写增量 | 回滚 `docs/前端开发指南.md`（撤掉上一版塞进去的 7 处教程式 runId 段落）；**新增** `docs/前端增量变更.md`；`AGENTS.md` 铁律第 9 条与 §8.1 改写 | **起因**：上一版把 runId 写进完整指南（含 JS 伪代码、要点列表、边界表共 7 处），用户反馈"太全面了，我只需要需要更新的部分，因为我前端已经搭好了"。<br>→ 定为规则：**主指南冻结不动，所有前端可见的增量一律写进 `docs/前端增量变更.md`**，按日期倒序，结构固定为「改了什么（表）/ 你要动哪几处（编号）/ 不用动的（短列表）」。<br>→ 判断标准写进 §8.1：**写出来的内容在本次改动之前就已成立 → 那是教程，删掉。**<br>增量文档里另外补了两条最容易被漏的：① `runId` 必须先执行 `docs/sql/011_add_run_id.sql`，否则两列全是 `null`，用户会以为后端没做；② Nginx 侧要同步 `client_max_body_size 30m`，否则网关默认 1m 就把上传拦了，后端日志里什么都看不到 |
+| 2026-10-05 | **产物归属（方案 B）：持久化 `runId`，产物能落回产出它的那一轮** | 新增 `docs/sql/011_add_run_id.sql`、`ArtifactRunIdTest`（9）；改 `SysFile`、`ChatHistory`、`RunContext`、`ChatServiceImpl`、`ArtifactService(+Impl)`、`PgChatMemoryStore`、`ChatMemoryServiceImpl`、`MessageVO`、`ChatMemoryMapper.xml`、`FileMapper.xml`、`docs/sql/README.md`、`docs/前端增量变更.md`（**新建**）；`AGENTS.md` 新增 §6.20、§8.1 与铁律第 9 条 | **前端需要同步（已写进 `docs/前端增量变更.md`，前端只看这一份）**：`GET /api/history/{sessionId}` 每行新增 `runId`、`GET /api/artifact?sessionId=` 每项新增 `runId`（可空）。匹配规则就是**字符串相等**：`artifact.runId === message.runId`。<br>**问题**：产物列表只说"这个会话产出了哪些文件"，不说"哪个是哪一轮产出的"，历史里又通常没有 `ARTIFACT` 行 → 刷新页面后前端在**数据上**无法归属，只能全堆进面板。<br>**为什么选 B 不选 A**：`chat_memory` **同时是 LangChain4j 的 ChatMemoryStore**，`PgChatMemoryStore.getMessages()` 对查出的**每一行**执行 `ChatMessageDeserializer`，插 `ARTIFACT` 行会污染模型上下文，还会打乱增量写入的「锚点去重」。方案 B 只加列、不新增行，不碰记忆语义。<br>⚠️ **两处必须记住**：① `runId` 必须在 `RunContext` **之前**生成（RunContext 是把它带进流式回调线程的唯一通道，那里没有任何 ThreadLocal）；② `getHistoryBySessionId` **必须逐行处理** —— 原来是「先映射成 `ChatMessage` 列表再统一转 VO」，行上的 `runId` 在这一步就丢了，补字段也补不出来，已重构为逐行转换（`toChatMessage` / `toMessageVO`）。<br>**行为兼容**：两列都可空，老数据 `runId=null` → 前端按"归属不明"处理（只进面板、不进对话）；**刻意不加索引**（runId 匹配在前端做，服务端没有 `WHERE run_id=?`，按仓库「无真实查询就不加索引」的约定）。测试 **426**（新增 9），0 失败 |
 | 2026-10-04 | **🔴 全仓自检批次（"测试全绿但线上老炸"）**：补 4 类更高层级的测试，并据此修出 11 处静默失效 | 新增测试：`EnvPlaceholderDriftTest`(3)、`SseErrorFrameTest`(3)、`RuntimeConfigBindingTest`(3)、`ToolFailureContractTest`(3)；修复：`EmailUtils`、`ChatServiceImpl`、`ChatMessageConverter`、`FileUtils`、`AliOssUtil`、`ChatHistoryListServiceImpl`、`ChatMemoryServiceImpl`、`RedisUtils`、`MemoryTool`、`LogTool`、`JwtUtil`、`PgChatMemoryStore`、`UserConfigServiceImpl`；`AGENTS.md` 新增 §3.1 | **起因**：374 个纯 mock 单测全绿，上线却连炸三次，根因都在 mock 看不见的层（Servlet 容器行为 / Spring 配置绑定 / 文档漂移）。新增的四类测试层级见 **§3.1**。修出的真 bug：① `EmailUtils` 的 `send()` 写在 try **外面**，且 catch `MessagingException` 而 Spring 抛 `MailException`（两者**无继承关系**）→ 验证码已写 Redis 却告诉用户"发送成功"，实际从未发出；② `LogTool` 局部变量叫 `log`，与 `@Slf4j` 生成的字段同名（加日志时必须改名）；③ `ChatMemoryServiceImpl` 里 `entity.getContent().toString()` 与 `entity.getType().equals(...)` 在 jsonb 为 null 时双双 NPE → **一条脏历史让整个会话 500**；④ `UserConfigServiceImpl.decryptKey()` 解密返回 null 时 `.length()` NPE；⑤ 全仓 3 处声明 `throws com.aliyuncs.exceptions.ClientException` 但**无任何抛出点**（死代码）。新测试本身也抓出 2 个 bug（SSE 帧未设 UTF-8 致中文变问号；注释里的 `${}` 被误判为必需环境变量）。测试 **417**，0 失败 |
 | 2026-10-04 | **修：SSE 报错时日志刷一屏** `HttpMessageNotWritableException ... preset Content-Type 'text/event-stream'`；顺带更正 `ALI_AI_KEY` 的文档错误 | `SseResponseConverter`（收尾由 `emitter.completeWithError(error)` 改为 `complete()`）、`GlobalExceptionHandler`（检测到已在 SSE 流里就直接写 error 帧，不再返回 JSON 信封）、`SseResponseConverterTest`（+1）；`.env.example`、`AGENTS.md` §1/§4.1/§5.2 | ❗**根因**：`SseEmitter.completeWithError(ex)` 会让 Servlet 容器对这个异步请求做一次 **error dispatch**（转发到 `/error`），而 SSE 响应的 Content-Type 已经是 `text/event-stream`，没有任何 HttpMessageConverter 能把 `/error` 的 Map（或我们的 `Result`）写成这个类型 → 二次抛 `HttpMessageNotWritableException` → 全局 advice 试图补一个 `Result` 又失败 → 一屏堆栈，前端反而收不到干净错误。错误信息早就由 `sendErrorEvent` 作为 `error` 事件发给前端了，收尾只需 `complete()` 关流。❗ **文档错误（会直接坑到人）**：`.env.example` 与 `AGENTS.md` 三处写着「向量模型下线后 `ALI_AI_KEY` 不再需要」是**错的** —— 它仍被 `nexus.agent.system-models` 里的百炼（qwen）供应商使用：不填启动就失败，填错/填成 OSS 的 AccessKey 就是对话时报 `Incorrect API key provided`。测试 **374**，0 失败 |
 | 2026-10-04 | **修：上传文件报 502**（Tomcat 吞请求体超限 → 直接断连），顺带修 OSS 异常 catch 错类型 | `application.yml`（multipart 8→20MB/30MB、`server.tomcat.max-swallow-size=-1`、`connection-timeout=120s`）、`GlobalExceptionHandler`（新增 `MaxUploadSizeExceededException`→**413**、`MultipartException`→400）、`AliOssUtil`（catch 换成 `com.aliyun.oss.ClientException`/`OSSException`、加连接 10s / 读写 60s / 重试 2 次的超时、上传耗时日志）、`FileServiceImpl`（新增 `clip()`）、`docs/前端开发指南.md`（Nginx 补 `client_max_body_size 30m` 等）；新增 `FileServiceUploadFailureTest`（3） | ❗**502 不是后端报错导致的**：文件超过 `max-file-size` 时 Spring 在 multipart 解析阶段抛 `MaxUploadSizeExceededException`，而 Tomcat 必须先把剩余请求体吞完才发得了响应 —— **默认 `maxSwallowSize` 只有 2MB**，吞不完就**直接掐断连接**，网关/代理看到的就是 **502**，后端日志只剩一句 `SocketTimeoutException at NioEndpoint$NioSocketWrapper.fillReadBuffer`。同时全仓**没有**该异常的处理器，就算响应发出去也是 500。→ 两处一起修才能拿到可读的 413。❗ **OSS 那边一直 catch 错了类**：写的是 `com.aliyuncs.exceptions.ClientException`（aliyun-java-sdk-core），而 OSS SDK 真正抛 `com.aliyun.oss.ClientException` / `OSSException`（包名只差一点）→ 凭证错、网络超时**一个都没被捕获**，整批上传直接 500；现已降级为「单文件 FAILED + 可读原因」。❗ `e.getMessage().substring(0,450)` 在 message 为 null 时 NPE、不足 450 字符时越界，换成 `clip()`。测试 **373**（361 通过 + 12 人工跳过），0 失败 |
