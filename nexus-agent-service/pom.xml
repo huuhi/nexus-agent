@@ -52,11 +52,10 @@
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
         </dependency>
-        <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-pgvector</artifactId>
-        </dependency>
 
+<!--        ⚠️ 2026-10-04：langchain4j-pgvector 已随本地知识库下线一并移除。
+            这三个解析器**不是**知识库专用：FileUtils 仍被 ChatMessageConverter
+            用来解析聊天的会话附件（PDF / Word / 其它），删了会话发文档就只剩纯文本。 -->
 <!--        读取文件，解析器-->
 <!--        PDF-->
         <dependency>
