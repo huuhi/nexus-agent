@@ -1,6 +1,5 @@
 package com.huzhijian.nexusagentweb.service.impl;
 
-import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
@@ -13,7 +12,6 @@ import com.huzhijian.nexusagentweb.mapper.ChatHistoryListMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
-import com.huzhijian.nexusagentweb.service.WebSocketService;
 import com.huzhijian.nexusagentweb.vo.ChatSessionSearchVO;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -61,19 +59,30 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
     private final OpenAiChatModel model;
     private final ChatHistoryListMapper mapper;
     private final ChatMemoryService chatMemoryService;
-    private final WebSocketService webSocketService;
     private final AgentProperties props;
 
     public ChatHistoryListServiceImpl(OpenAiChatModel model1, ChatHistoryListMapper mapper,
-                                      ChatMemoryService chatMemoryService, WebSocketService webSocketService,
+                                      ChatMemoryService chatMemoryService,
                                       AgentProperties props) {
         this.model = model1;
         this.mapper = mapper;
         this.chatMemoryService = chatMemoryService;
-        this.webSocketService = webSocketService;
         this.props = props;
     }
 
+    /**
+     * 异步生成标题并入库。
+     * <p>
+     * ⚠️ <b>2026-10-04：不再向前端推送（WebSocket 已整体下线）。</b>
+     * 原来生成完会 {@code sendToClient} 推一条 {@code {type:"title", data:...}}，
+     * 但整个 WebSocket 只为这一个标题服务：为了一个非关键字段，
+     * 要额外引入握手鉴权、来源限制、连接重连、单例约束、前后端两边的心跳处理 ——
+     * 收益与成本完全不成比例。前端改为<b>下次拉会话列表时自然拿到新标题</b>
+     * （{@code GET /api/history}），用户无感。
+     * <p>
+     * 标题是 {@code @Async} 生成的，返回时往往还没写完，
+     * 所以<b>刚发完消息立刻拉列表可能拿到空标题</b>，这是既有行为、未改变。
+     */
     @Override
     @Async
     public void createTitle(String sessionId, String message,String answer,Long userId) {
@@ -98,10 +107,6 @@ public class ChatHistoryListServiceImpl extends ServiceImpl<ChatHistoryListMappe
                 .userId(userId)
                 .build();
         mapper.save(history);
-//        发送给前端
-        Map<String, String> map = Map.of("type", "title", "data", title);
-        String jsonStr = JSONUtil.toJsonStr(map);
-        webSocketService.sendToClient(userId.toString(),jsonStr);
     }
 
     @Override

@@ -35,11 +35,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
-<!--        websock-->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-websocket</artifactId>
-        </dependency>
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-mcp</artifactId>
@@ -96,6 +91,21 @@
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-webmvc</artifactId>
+        </dependency>
+
+        <!-- ⚠️ 2026-10-04：移除 spring-boot-starter-websocket 后暴露出来的隐式依赖。
+             本模块的 LoginCheckInterceptor / CorsConfig 直接用 HttpServletRequest、
+             HttpServletResponse 写的是 **Servlet**（不是 reactive），此前 servlet API 是
+             「顺带」由 spring-boot-starter-websocket → spring-boot-starter-web 传递进来的
+             —— spring-webmvc 自身**不提供** jakarta.servlet 包（它只依赖它）。
+             WebSocket 下线后编译直接报「找不到符号 HttpServletRequest」。
+             这里显式声明，provided 作用域表示：编译需要，运行时由 nexus-agent-web
+             的 spring-boot-starter-web（内嵌 Tomcat）提供，本模块不打包容器。
+             版本由 spring-boot-starter-parent 的 dependencyManagement 管理，不写死。 -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
         </dependency>
 <!--        加密-->
 

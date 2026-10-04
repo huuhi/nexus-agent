@@ -61,7 +61,7 @@
 `langchain4j`、`langchain4j-open-ai-spring-boot-starter`、`langchain4j-mcp`、`langchain4j-skills`、`langchain4j-pgvector`、
 `langchain4j-document-parser-apache-pdfbox`、`langchain4j-document-parser-apache-poi`、`langchain4j-document-parser-apache-tika`
 
-**Spring Boot starters**：`web`、`webflux`（沙盒 HTTP 调用）、`websocket`、`mail`、`data-redis`、`validation`、`actuator`、`test`、`spring-security-crypto`（加密）
+**Spring Boot starters**：`web`、`webflux`（沙盒 HTTP 调用）、`mail`、`data-redis`、`validation`、`actuator`、`test`、`spring-security-crypto`（加密）。❗**已移除 `websocket`**（2026-10-04，标题推送下线，见 §6.6）
 
 > ⚠️ **注意**：`langchain4j-skills` 已接入业务流程（见 §6.9），且版本为 `1.12.1-beta21` ——
 > beta API 属破坏性变更高风险点，升级前必读 changelog 并回归 Skill 链路。
@@ -456,44 +456,34 @@ public class XxxTool implements AgentToolSet {
 ③ 提示词里如果涉及"失败禁止重试"要在 `ModelSystemContent.CHAT_PROMPT` 补充；④ 考虑外部调用超时；
 ⑤ **工具名（`@Tool(name=...)`）一旦上线不要改**，模型侧提示词与前端都可能依赖它。
 
-### 6.6 标题生成与 WebSocket
+### 6.6 标题生成
 
 `ChatHistoryListServiceImpl.createTitle()` 标注 `@Async`（启动类已 `@EnableAsync`）：
 - 用 **Moonshot** (`OpenAiChatModel` 同步模型) 生成标题
 - 失败**降级**为"用户问题前 255 字符"
-- 生成后通过 `webSocketService.sendToClient(userId, {type:"title", data:title})` 推送
+- 生成后 `mapper.save(history)` **只入库，不推送**
 - ⚠️ `@Async` + 内部读 `UserContextHolder` 会在**新线程**执行 → ThreadLocal 取不到值，靠显式传参规避
-- 因为是 `@Async`，标题通常在流式结束**几秒后**才推到前端，前端"标题自己跳一下"是正常的
 
-**🔴 WebSocket 鉴权（2026-10-04 安全修复，P0）**
+**🗑 WebSocket 已整体下线（2026-10-04）**
 
-端点 `/api/ws/{userId}`。修复前是 `@ServerEndpoint` + `ServerEndpointExporter`：
+原来生成完标题会推一条 `{type:"title", data:...}` 到 `/api/ws/{userId}`，
+**但整个 WebSocket 只为这一个标题存在**。为了让这个非关键字段实时到，
+代价是：握手鉴权 + 来源限制 + 连接重连 + 前端全局单例 + 双端心跳处理，
+外加一路安全修复。**收益与成本完全不成比例，故整体删除。**
 
-- 那是 **JSR-356 原生端点**，由 Servlet 容器直接创建，**不经过 DispatcherServlet**
-  → `LoginCheckInterceptor` 对它 **100% 无效**
-- `ServerEndpointExporter` **没有** `setHandshakeInterceptors` 方法（已用 `javap` 核对
-  spring-websocket-6.2.17 的实际 API）→ 走那条路**根本无法注入握手鉴权**，
-  这就是"零鉴权"能长期存在的根因
-- 当时 `onOpen` 直接 `CLIENTS.put(userId, session)`，而 userId 是自增整数
-  → **任何人都能枚举订阅别人的推送**；又因 WebSocket 不受同源策略约束，任意网站都能连
+- 已删：`WebSocketService`、`WebSocketConfiguration`、`WebSocketAuthInterceptor`、
+  `WebSocketAuthInterceptorTest`、`docs/WebSocket接入（前端）.md`
+- 已删依赖：`nexus-agent-service/pom.xml` 的 `spring-boot-starter-websocket`
+- 前端改为**下次拉会话列表时自然拿到新标题**（`GET /api/history`），用户无感
+- ⚠️ 标题是 `@Async` 生成的，**刚发完消息立刻拉列表可能拿到空标题** ——
+  这是既有行为，下线推送后更容易被注意到，但**不是本次引入的**
+- ⚠️ 被删的那条链路曾经**零鉴权**（`@ServerEndpoint` 不经过 DispatcherServlet，
+  `LoginCheckInterceptor` 对它 100% 无效，且 userId 是自增整数 → 可枚举他人推送）。
+  **这正是"功能越少越安全"的典型**：功能下线，漏洞面同时归零，无需再维护鉴权。
 
-现在改为 `@EnableWebSocket` + `WebSocketConfigurer`（`WebSocketConfiguration`），
-挂 `WebSocketAuthInterceptor`（`HandshakeInterceptor`）在握手阶段校验：
-
-- **token 来源三选一**（优先级：请求头 `token` → 子协议 → `?token=`）。
-  浏览器**不能自定义请求头**，只能走子协议：`new WebSocket(url, ["nexus-token", token])`。
-  ⚠️ 发出去的是 `Sec-WebSocket-Protocol: nexus-token, eyJ...`（**独立两项**），
-  不是拼接形式 —— 只认拼接会让浏览器**根本连不上**（这个 bug 由单测抓出）
-- 🔴 **必须比对 `token.user_id == URL 里的 userId`**，否则"任何登录用户都能订阅任何人"，枚举照样畅通
-- `WebSocketService` 只读 session 属性里的**已验证**身份，**绝不回退解析 URL**
-- 同一 userId 重复连接：先记旧的再关掉旧的（原来无条件覆盖 → 攻击者能挤掉受害者，DoS）；
-  `afterConnectionClosed` 必须 `remove(key, session)` 比对，否则旧连接的关闭回调会删掉新连接
-- `WebSocketSession` **非线程安全**：JSR-356 的 `getBasicRemote()` 自带串行，
-  换 Spring 的 `sendMessage` 后该保证消失 → 显式 `synchronized (session)`
-- 鉴权开关与 `LoginCheckInterceptor` 同源（`nexus.agent.security.enabled`），
-  本地调试关掉时**打 WARN**，避免"本地没开"被误当成"线上也没开"
-
-前端文档：`docs/WebSocket接入（前端）.md`。
+> 📌 **将来若真需要实时推送**（多端同步、任务完成通知等），
+> 别重新手搓 WS。优先复用现有 SSE（`/api/chat/stream` 那套 `{seq, runId, event, data}`
+> 信封已有前端解析代码）。**先确认需求真实存在再动手。**
 
 ### 6.7 MCP
 
@@ -1054,7 +1044,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | GET | `/api/mcp/service` | `McpController` | 从服务端拉 MCP 列表 |
 | GET/POST/PUT | `/api/mcp` | `McpController` | 查 / 存 / 改 |
 | GET/DELETE | `/api/mcp/{id}` | `McpController` | 详情 / 删除 |
-| WS | `/api/ws/{userId}` | `WebSocketService` | 标题等实时推送。⚠️ **2026-10-04 起必须带 token**，见 §6.6 |
+| ~~WS~~ | ~~`/api/ws/{userId}`~~ | — | — | ❌ **已删除 2026-10-04**（标题推送下线，见 §6.6）。前端改为拉 `/api/history` 拿标题 |
 
 **鉴权约定**：请求头 `token: <JWT>`（❗不是 `Authorization: Bearer`）。
 `LoginCheckInterceptor` 拦截 `/**`，白名单：`/api/user/login|register|password`、`/api/common/email`、
@@ -1150,7 +1140,8 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
-| 2026-10-04 | **🔴 安全修复批次（P0 4 项 + P1 5 项）**：① WebSocket 由 `@ServerEndpoint` 改 `@EnableWebSocket` + 握手鉴权（原来零鉴权，可枚举他人推送）；② 邮箱验证码用后即删（原来可无限重放）；③ MCP URL 加 SSRF 校验；④ box `upload_file` 加 SSRF/体积/重定向防护 | 新增 `WebSocketAuthInterceptor`、`UrlGuard`、`OssUrlGuard`、`config/WebSocketConfiguration`、`box/app/utils/url_guard.py`；重写 `WebSocketService`（JSR-356→Spring）、`FileUtils`；改 `ChatMessageConverter`、`FileServiceImpl`、`UserServiceImpl`、`UserConfig`、`EncryptorFactory`、`LexiangClient`、`McpClientRegistry`、`McpInformationServiceImpl`；新增 5 个测试类 | **前端破坏性变更**：WS 必须带 token（浏览器走子协议 `["nexus-token", token]`）且 userId 须与 token 一致 → `docs/WebSocket接入（前端）.md`；⚠️ 单测抓出 3 个「防护写了但从未生效」的真 bug（IPv6 ULA 因 signed byte 比较从未拦截 / 子协议只认拼接导致浏览器连不上 / 文档归属校验只在 `FileUtils` 内部无入口防线）。测试 375 全通过。prod CORS 按用户要求豁免（前后端分离，启动时动态填前端域名） |
+| 2026-10-04 | **🗑 下线 WebSocket**（标题推送），连带移除 `spring-boot-starter-websocket` | 删：`WebSocketService`、`WebSocketConfiguration`、`WebSocketAuthInterceptor`、`WebSocketAuthInterceptorTest`、`docs/WebSocket接入（前端）.md`；改：`ChatHistoryListServiceImpl`（只入库不推送）、`ChatHistoryListServiceImplTest`、`BoxToolTest`、`nexus-agent-service/pom.xml` | 整个 WS 只为"标题实时到"这一个非关键字段存在，却要引入握手鉴权 + 来源限制 + 重连 + 前端单例 + 双端心跳，收益与成本不成比例。前端改为拉 `GET /api/history` 拿标题，用户无感。**附带好处**：原本零鉴权（可枚举他人推送）的漏洞面随功能一起归零。详见 §6.6 |
+| 2026-10-04 | **🔴 安全修复批次（P0 3 项 + P1 5 项）**：① 邮箱验证码用后即删（原来可无限重放）；② MCP URL 加 SSRF 校验；③ box `upload_file` 加 SSRF/体积/重定向防护 | 新增 `UrlGuard`、`OssUrlGuard`、`box/app/utils/url_guard.py`；重写 `FileUtils`；改 `ChatMessageConverter`、`FileServiceImpl`、`UserServiceImpl`、`UserConfig`、`EncryptorFactory`、`LexiangClient`、`McpClientRegistry`、`McpInformationServiceImpl`；新增 4 个测试类 | ⚠️ 单测抓出 2 个「防护写了但从未生效」的真 bug（① IPv6 ULA 因 signed byte 比较 `(b[0]&0xFE)==(byte)0xFC` 永不成立 → 所有 `fc00::/7` 私网此前都能绕过 SSRF；② 文档归属校验只在 `FileUtils` 内部，入口层无独立防线）。另 `UserConfig` 三字段加 `@JsonIgnore`、`queryFileByids` 补 `user_id`（原来谁的 id 都查得到）、主密钥 <16 字符打 ERROR、乐享日志脱敏。prod CORS 按用户要求豁免（前后端分离，启动时动态填前端域名） |
 | 2026-10-04 | **🔴 下线本地知识库（pgvector）**，知识库检索只保留乐享 | 删：`KnowledgeController`/`RagTool`/`KnowledgeBase*Service(Impl)`/`KnowledgeBase*Mapper(+xml)`/`PgVectorEmbeddingFactory`/`Knowledge*DTO`/`KnowledgeBase*` 实体；改：`ChatDTO`（去 `enableRag`）、`ToolSelection`（单字段）、`nexus-agent-service/pom.xml`（去 pgvector）、`application-prod.yml`、`.env.example`、`scripts/check-env.sh`；新增 `docs/sql/009` | **行为变更**：① `POST /api/chat/stream` 不再接受 `enableRag`；② `/api/knowledge*` 全部 404；③ `${ALI_AI_KEY}` 不再必填。**⚠️ 聊天附件不受影响** —— `/api/file` 与三个 document-parser 依赖都保留（`FileUtils` 仍被 `ChatMessageConverter` 用）。表由 `009` 删。测试 299 全通过 |
 | 2026-10-03 | **新增乐享知识库接入（只读检索）**：`LexiangRagTool` + `LexiangClient` + `LexiangTokenProvider` + `lexiang_credential` 表；`ChatDTO` 新增 `enableLexiangRag` | `docs/sql/008`、`lexiang/`、`LexiangController`、`ChatDTO`、`ToolSelection` | 只做检索不做上传；token 双层缓存（进程内+Redis）因限频 20 次/10 分钟；前端文档 `docs/乐享知识库接入（前端）.md` |
 | 2026-09-23 | 新建 `AGENTS.md`，替代已过期的 `CLAUDE.md` 作为开发入口 | `AGENTS.md` | 核对基准 `86f3a07` |

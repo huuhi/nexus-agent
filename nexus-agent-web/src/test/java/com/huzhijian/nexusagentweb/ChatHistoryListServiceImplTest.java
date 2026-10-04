@@ -1,7 +1,6 @@
 package com.huzhijian.nexusagentweb;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.ChatHistoryList;
 import com.huzhijian.nexusagentweb.domain.ChatMemorySearchHit;
@@ -11,7 +10,6 @@ import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.ChatHistoryListMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
-import com.huzhijian.nexusagentweb.service.WebSocketService;
 import com.huzhijian.nexusagentweb.service.impl.ChatHistoryListServiceImpl;
 import com.huzhijian.nexusagentweb.vo.ChatSessionSearchVO;
 import org.junit.jupiter.api.AfterEach;
@@ -60,8 +58,7 @@ class ChatHistoryListServiceImplTest {
         mapper = mock(ChatHistoryListMapper.class);
         chatMemoryService = mock(ChatMemoryService.class);
         props = new AgentProperties();
-        service = new ChatHistoryListServiceImpl(null, mapper, chatMemoryService,
-                mock(WebSocketService.class), props);
+        service = new ChatHistoryListServiceImpl(null, mapper, chatMemoryService, props);
         UserContextHolder.saveId(UID);
     }
 

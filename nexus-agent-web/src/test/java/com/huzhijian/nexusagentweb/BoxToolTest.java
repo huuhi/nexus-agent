@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.util.List;
@@ -26,7 +25,6 @@ import java.util.Map;
 @Tag("manual")
 @SpringBootTest
 @Slf4j
-@EnableAutoConfiguration(excludeName = "com.huzhijian.nexusagentweb.config.WebSocketConfiguration")
 public class BoxToolTest {
 
     @Autowired
