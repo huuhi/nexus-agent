@@ -3,16 +3,17 @@
 # @File    : file.py
 # @Time    : 2026/4/24 17:33
 from pathlib import Path
-from urllib.request import urlopen
 
 from app.schema.file import FileUpload, FileDownload, CreateFile
 from app.utils.oss_utils import str_upload_file
+from app.utils.url_guard import UrlNotAllowed, download_bytes
 from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
 from fastapi import APIRouter
 
 router=APIRouter(prefix="/file")
 load_dotenv()
+
 
 # 判断文件/路径是否存在
 @router.get("/exists")
@@ -58,10 +59,17 @@ def create_file(file:CreateFile):
 def upload_file(file:FileUpload):
     try:
         sbx=Sandbox.connect(file.box_id)
-        with urlopen(file.file_url) as response:
-            sbx.files.write(file.file_path,response.read())
+        # ⚠️ 2026-10-04：这里原本是裸 urlopen(...).read()，可被用来打内网 / 读本机文件 /
+        # 挂死线程 / OOM。现在走 download_bytes，内含协议白名单、内网判定、
+        # 禁重定向、超时与体积上限五道防线。
+        sbx.files.write(file.file_path,download_bytes(file.file_url))
         return {
             "path":file.file_path
+        }
+    except UrlNotAllowed as e:
+        # 输入不合法：明确回话，让 LLM 能把原因讲给用户，而不是笼统的 error
+        return {
+            "error":f"下载地址被拒绝：{e}"
         }
     except Exception as e:
         return {

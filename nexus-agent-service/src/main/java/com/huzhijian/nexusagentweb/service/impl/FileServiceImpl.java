@@ -116,12 +116,31 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         return BeanUtil.copyToList(list, KnowledgeFileVO.class);
     }
 
+    /**
+     * 按 id 批量取文件信息。
+     * <p>
+     * ⚠️ <b>2026-10-04 安全修复：补上 {@code user_id} 过滤。</b>
+     * 原实现只有 {@code .in("id", fileIds)} —— 谁的 id 都查得到，
+     * 拿到别人的文件 id 就能读出他的文件名与 OSS 地址（越权）。
+     * <p>
+     * 用户身份取 {@link UserContextHolder}（请求线程写入），
+     * <b>不接受任何入参</b>，与 {@code getFileByUserId} 保持同一套约束。
+     * <p>
+     * 传别人的 id 时返回空列表（而不是报错）：调用方是详情页拼文件名，
+     * 少一个附件不该让整页 500。
+     */
     @Override
     public List<KnowledgeFileVO> queryFileByids(List<Long> fileIds) {
         if (fileIds==null|| fileIds.isEmpty()){
             return List.of();
         }
-        List<SysFile> sysFiles = query().in("id",fileIds).list();
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null){
+            throw new UnauthorizedException("用户未登录！");
+        }
+        List<SysFile> sysFiles = query().in("id",fileIds)
+                .eq("user_id", userId)
+                .list();
         return BeanUtil.copyToList(sysFiles, KnowledgeFileVO.class);
     }
 

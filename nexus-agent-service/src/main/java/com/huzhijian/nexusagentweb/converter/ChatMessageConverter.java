@@ -6,6 +6,7 @@ import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.em.UserMessageType;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.utils.FileUtils;
+import com.huzhijian.nexusagentweb.utils.OssUrlGuard;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.Content;
 import dev.langchain4j.data.message.ImageContent;
@@ -34,9 +35,11 @@ import static com.huzhijian.nexusagentweb.content.MetadataKeyContent.*;
 @Slf4j
 public class ChatMessageConverter {
     private final FileUtils fileUtils;
+    private final OssUrlGuard ossUrlGuard;
 
-    public ChatMessageConverter(FileUtils fileUtils) {
+    public ChatMessageConverter(FileUtils fileUtils, OssUrlGuard ossUrlGuard) {
         this.fileUtils = fileUtils;
+        this.ossUrlGuard = ossUrlGuard;
     }
 
     /**
@@ -49,19 +52,26 @@ public class ChatMessageConverter {
     public record ConvertedMessage(List<Content> contents, Map<String, Object> metadata) {
     }
 
-    public ConvertedMessage toContents(List<ChatUserMessage> messages) throws ClientException, IOException {
-        return toContents(messages, true);
-    }
-
     /**
+     * ⚠️ 这里<b>刻意没有</b>「不传 userId」的重载。
+     * <p>
+     * 2026-10-04 之前存在 {@code toContents(messages, vision)}：附件地址直接采信前端，
+     * 于是任何登录用户都能把别人的 OSS 文件地址填进来、被服务端用自身凭证下载并读进 prompt。
+     * 留一个「便捷重载」等于给这个漏洞留后门 —— 哪天新代码图省事调了它，问题就静默回来了。
+     * 所以只有带 userId 的这一个入口。
+     *
      * @param vision 本次使用的模型是否支持图片输入。
      *               <b>false 时图片降级为 URL 文本</b> —— 不支持视觉的模型收到 image_url
      *               会被上游 API 直接拒绝；降级最多让模型"看不到图"，不会 400。
      *               <p>
      *               降级文本用的仍是 FILE/IMAGE 包裹标记格式，历史读取时会被
      *               {@code ChatMemoryServiceImpl#stripLegacyWrappers} 剥掉，不会污染前端显示。
+     * @param userId  当前登录用户。附件地址是<b>前端传的</b>，服务端会拿它去 OSS
+     *                下载并解析，所以必须靠这个 id 校验归属（详见 {@link OssUrlGuard}）。
+     *                不能从 {@code UserContextHolder} 隐式取 —— 本方法在请求线程上跑，
+     *                显式传参能让"谁在用"一眼可见，也让单测不必伪造 ThreadLocal。
      */
-    public ConvertedMessage toContents(List<ChatUserMessage> messages, boolean vision)
+    public ConvertedMessage toContents(List<ChatUserMessage> messages, boolean vision, Long userId)
             throws ClientException, IOException {
         List<Content> contents = new ArrayList<>();
         List<Map<String, Object>> attachedFiles = new ArrayList<>();
@@ -74,8 +84,14 @@ public class ChatMessageConverter {
                     //解析
                     String url = requireMetadata(metadata, FILE_URL, UserMessageType.FILE.name());
                     String extension = resolveExtension(metadata, url);
+                    // ⚠️ 2026-10-04：在**入口这一层**就校验归属。
+                    // 刻意不只依赖 FileUtils 内部那道 —— 那是纵深防御的最后一道，
+                    // 但如果它被替换/重构/被 mock 掉（单测里就是这样），
+                    // 这一层必须有独立防线，否则漏洞会静默回归且没有任何测试能发现。
+                    ossUrlGuard.validateOwnedBy(url, userId, "文档附件");
                     SysFile knowledgeFile = SysFile.builder().fileUrl(url).extension(extension).build();
-                    Document document = fileUtils.getDocument(knowledgeFile);
+                    // userId 必须传下去，FileUtils 侧会再做一次（防绕过本类的其他调用方）
+                    Document document = fileUtils.getDocument(knowledgeFile, userId);
                     String fileName = textOrDefault(metadata, FILE_NAME, "未命名文件");
                     String fileText = """
                     %s
@@ -90,6 +106,10 @@ public class ChatMessageConverter {
 //                    结果是模型收到的只是一串 URL 文字：支持视觉的模型也说"我没看到图"，
 //                    然后拿沙盒代码去瞎折腾。token 计算的坑已由 MultimodalTokenCountEstimator 解决。
                     String url = requireMetadata(metadata, FILE_URL, UserMessageType.IMAGE.name());
+                    // ⚠️ 2026-10-04：图片只校验 host（图片目录里没有 userId，
+                    // 路径形如 imageDir/{uuid}.ext，归属只能靠 host 限制在自家 OSS 上）。
+                    // 不校验的话等于「模型替我去访问任意外部 URL」，是个现成的 SSRF/数据外带通道。
+                    ossUrlGuard.validateHost(url, "图片附件");
                     attachedFiles.add(metadata);
                     if (vision) {
 //                        多模态模型：发真正的 image_url，模型直接读图像像素

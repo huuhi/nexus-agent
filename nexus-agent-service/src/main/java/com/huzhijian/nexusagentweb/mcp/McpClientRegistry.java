@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.mcp;
 
 import com.huzhijian.nexusagentweb.domain.McpInformation;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
+import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.mcp.client.DefaultMcpClient;
 import dev.langchain4j.mcp.client.McpClient;
 import dev.langchain4j.mcp.client.transport.http.StreamableHttpMcpTransport;
@@ -43,6 +44,18 @@ import java.util.concurrent.ConcurrentHashMap;
 public class McpClientRegistry {
 
     private final AgentProperties agentProperties;
+
+    /**
+     * 出网地址校验（SSRF 防护）。
+     * <p>
+     * ⚠️ <b>2026-10-04 新增</b>：修复前这里对用户填的 URL 零校验，
+     * {@code checkHealth()} 直接让服务端连过去，等于让任意登录用户
+     * 用本服务探测内网 / 读取云元数据。
+     * <p>
+     * 刻意在<b>建连前</b>再校验一次（而不是只在保存配置时校验）：
+     * 库里可能存着加 UrlGuard 之前写入的旧数据，只在写入侧校验会漏掉它们。
+     */
+    private final UrlGuard urlGuard;
 
     /** key = mcp_information.id */
     private final Map<Long, McpClient> clients = new ConcurrentHashMap<>();
@@ -96,6 +109,11 @@ public class McpClientRegistry {
     }
 
     private McpClient create(McpInformation info) {
+        // ⚠️ 出网前必须校验 URL（SSRF 防护）。抛异常而非返回 null：
+        // 地址有问题属于「配置不合法」，与「连不上」是两回事，不该被静默降级成 available=false，
+        // 否则用户会以为服务不可用，而真正的问题是地址指向内网被拦了。
+        urlGuard.validate(info.getUrl(), "MCP 服务地址（" + info.getName() + "）");
+
         StreamableHttpMcpTransport transport = StreamableHttpMcpTransport.builder()
                 .url(info.getUrl())
                 .timeout(agentProperties.getMcp().getHealthTimeout())

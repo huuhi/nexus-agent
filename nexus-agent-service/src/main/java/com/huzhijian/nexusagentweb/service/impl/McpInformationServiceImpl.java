@@ -17,6 +17,7 @@ import com.huzhijian.nexusagentweb.mcp.McpClientRegistry;
 import com.huzhijian.nexusagentweb.service.McpInformationService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
+import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import com.huzhijian.nexusagentweb.vo.McpDetailVO;
 import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
 import dev.langchain4j.mcp.McpToolProvider;
@@ -43,13 +44,21 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
     private final McpInformationMapper mcpInformationMapper;
     private final UserConfigService userConfigService;
     private final McpClientRegistry mcpClientRegistry;
+    /**
+     * 出网 URL 校验（SSRF 防护）。
+     * <p>在**保存时**先校验一次，让用户当场拿到明确报错；
+     * {@link McpClientRegistry} 在真正建连前还会再校验一次（覆盖历史脏数据）。
+     */
+    private final UrlGuard urlGuard;
 
     public McpInformationServiceImpl(HttpUtils httpUtils, McpInformationMapper mcpInformationMapper,
-                                     UserConfigService userConfigService, McpClientRegistry mcpClientRegistry) {
+                                     UserConfigService userConfigService, McpClientRegistry mcpClientRegistry,
+                                     UrlGuard urlGuard) {
         this.httpUtils = httpUtils;
         this.mcpInformationMapper = mcpInformationMapper;
         this.userConfigService = userConfigService;
         this.mcpClientRegistry = mcpClientRegistry;
+        this.urlGuard = urlGuard;
     }
 
     /**
@@ -234,8 +243,15 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
     }
 
     private McpInformation transformMcpInformation(McpServerItemDTO mcp,Long userId) {
+        // ⚠️ 2026-10-04：先校验 URL 再入库，防 SSRF（用户填内网地址/云元数据地址）。
+        // 原来这里原样入库，随后 McpClientRegistry.checkHealth() 直接让服务端出网。
+        urlGuard.validate(mcp.url(), "MCP 服务地址（" + mcp.name() + "）");
         String header = JSONUtil.toJsonStr(mcp.header());
-        log.debug("header:{}", mcp);
+        // ⚠️ 不要打整个 DTO：header 里通常带鉴权 token（用户自己填的凭据），
+        // 落到日志里等于凭据多了一份副本。只打标识信息。
+        log.debug("登记 MCP 服务：name={} strId={} url={} header字段数={}",
+                mcp.name(), mcp.strId(), mcp.url(),
+                mcp.header() == null ? 0 : mcp.header().size());
         return McpInformation.builder()
                 .type(mcp.type())
                 .description(mcp.description())

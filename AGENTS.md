@@ -463,6 +463,37 @@ public class XxxTool implements AgentToolSet {
 - 失败**降级**为"用户问题前 255 字符"
 - 生成后通过 `webSocketService.sendToClient(userId, {type:"title", data:title})` 推送
 - ⚠️ `@Async` + 内部读 `UserContextHolder` 会在**新线程**执行 → ThreadLocal 取不到值，靠显式传参规避
+- 因为是 `@Async`，标题通常在流式结束**几秒后**才推到前端，前端"标题自己跳一下"是正常的
+
+**🔴 WebSocket 鉴权（2026-10-04 安全修复，P0）**
+
+端点 `/api/ws/{userId}`。修复前是 `@ServerEndpoint` + `ServerEndpointExporter`：
+
+- 那是 **JSR-356 原生端点**，由 Servlet 容器直接创建，**不经过 DispatcherServlet**
+  → `LoginCheckInterceptor` 对它 **100% 无效**
+- `ServerEndpointExporter` **没有** `setHandshakeInterceptors` 方法（已用 `javap` 核对
+  spring-websocket-6.2.17 的实际 API）→ 走那条路**根本无法注入握手鉴权**，
+  这就是"零鉴权"能长期存在的根因
+- 当时 `onOpen` 直接 `CLIENTS.put(userId, session)`，而 userId 是自增整数
+  → **任何人都能枚举订阅别人的推送**；又因 WebSocket 不受同源策略约束，任意网站都能连
+
+现在改为 `@EnableWebSocket` + `WebSocketConfigurer`（`WebSocketConfiguration`），
+挂 `WebSocketAuthInterceptor`（`HandshakeInterceptor`）在握手阶段校验：
+
+- **token 来源三选一**（优先级：请求头 `token` → 子协议 → `?token=`）。
+  浏览器**不能自定义请求头**，只能走子协议：`new WebSocket(url, ["nexus-token", token])`。
+  ⚠️ 发出去的是 `Sec-WebSocket-Protocol: nexus-token, eyJ...`（**独立两项**），
+  不是拼接形式 —— 只认拼接会让浏览器**根本连不上**（这个 bug 由单测抓出）
+- 🔴 **必须比对 `token.user_id == URL 里的 userId`**，否则"任何登录用户都能订阅任何人"，枚举照样畅通
+- `WebSocketService` 只读 session 属性里的**已验证**身份，**绝不回退解析 URL**
+- 同一 userId 重复连接：先记旧的再关掉旧的（原来无条件覆盖 → 攻击者能挤掉受害者，DoS）；
+  `afterConnectionClosed` 必须 `remove(key, session)` 比对，否则旧连接的关闭回调会删掉新连接
+- `WebSocketSession` **非线程安全**：JSR-356 的 `getBasicRemote()` 自带串行，
+  换 Spring 的 `sendMessage` 后该保证消失 → 显式 `synchronized (session)`
+- 鉴权开关与 `LoginCheckInterceptor` 同源（`nexus.agent.security.enabled`），
+  本地调试关掉时**打 WARN**，避免"本地没开"被误当成"线上也没开"
+
+前端文档：`docs/WebSocket接入（前端）.md`。
 
 ### 6.7 MCP
 
@@ -1023,7 +1054,7 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 | GET | `/api/mcp/service` | `McpController` | 从服务端拉 MCP 列表 |
 | GET/POST/PUT | `/api/mcp` | `McpController` | 查 / 存 / 改 |
 | GET/DELETE | `/api/mcp/{id}` | `McpController` | 详情 / 删除 |
-| WS | `/ws/{userId}` | `WebSocketService` | 标题等实时推送 |
+| WS | `/api/ws/{userId}` | `WebSocketService` | 标题等实时推送。⚠️ **2026-10-04 起必须带 token**，见 §6.6 |
 
 **鉴权约定**：请求头 `token: <JWT>`（❗不是 `Authorization: Bearer`）。
 `LoginCheckInterceptor` 拦截 `/**`，白名单：`/api/user/login|register|password`、`/api/common/email`、
@@ -1119,6 +1150,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-04 | **🔴 安全修复批次（P0 4 项 + P1 5 项）**：① WebSocket 由 `@ServerEndpoint` 改 `@EnableWebSocket` + 握手鉴权（原来零鉴权，可枚举他人推送）；② 邮箱验证码用后即删（原来可无限重放）；③ MCP URL 加 SSRF 校验；④ box `upload_file` 加 SSRF/体积/重定向防护 | 新增 `WebSocketAuthInterceptor`、`UrlGuard`、`OssUrlGuard`、`config/WebSocketConfiguration`、`box/app/utils/url_guard.py`；重写 `WebSocketService`（JSR-356→Spring）、`FileUtils`；改 `ChatMessageConverter`、`FileServiceImpl`、`UserServiceImpl`、`UserConfig`、`EncryptorFactory`、`LexiangClient`、`McpClientRegistry`、`McpInformationServiceImpl`；新增 5 个测试类 | **前端破坏性变更**：WS 必须带 token（浏览器走子协议 `["nexus-token", token]`）且 userId 须与 token 一致 → `docs/WebSocket接入（前端）.md`；⚠️ 单测抓出 3 个「防护写了但从未生效」的真 bug（IPv6 ULA 因 signed byte 比较从未拦截 / 子协议只认拼接导致浏览器连不上 / 文档归属校验只在 `FileUtils` 内部无入口防线）。测试 375 全通过。prod CORS 按用户要求豁免（前后端分离，启动时动态填前端域名） |
 | 2026-10-04 | **🔴 下线本地知识库（pgvector）**，知识库检索只保留乐享 | 删：`KnowledgeController`/`RagTool`/`KnowledgeBase*Service(Impl)`/`KnowledgeBase*Mapper(+xml)`/`PgVectorEmbeddingFactory`/`Knowledge*DTO`/`KnowledgeBase*` 实体；改：`ChatDTO`（去 `enableRag`）、`ToolSelection`（单字段）、`nexus-agent-service/pom.xml`（去 pgvector）、`application-prod.yml`、`.env.example`、`scripts/check-env.sh`；新增 `docs/sql/009` | **行为变更**：① `POST /api/chat/stream` 不再接受 `enableRag`；② `/api/knowledge*` 全部 404；③ `${ALI_AI_KEY}` 不再必填。**⚠️ 聊天附件不受影响** —— `/api/file` 与三个 document-parser 依赖都保留（`FileUtils` 仍被 `ChatMessageConverter` 用）。表由 `009` 删。测试 299 全通过 |
 | 2026-10-03 | **新增乐享知识库接入（只读检索）**：`LexiangRagTool` + `LexiangClient` + `LexiangTokenProvider` + `lexiang_credential` 表；`ChatDTO` 新增 `enableLexiangRag` | `docs/sql/008`、`lexiang/`、`LexiangController`、`ChatDTO`、`ToolSelection` | 只做检索不做上传；token 双层缓存（进程内+Redis）因限频 20 次/10 分钟；前端文档 `docs/乐享知识库接入（前端）.md` |
 | 2026-09-23 | 新建 `AGENTS.md`，替代已过期的 `CLAUDE.md` 作为开发入口 | `AGENTS.md` | 核对基准 `86f3a07` |

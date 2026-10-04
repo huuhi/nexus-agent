@@ -136,11 +136,26 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     }
 
 
+    /**
+     * 校验邮箱验证码。
+     * <p>
+     * <b>2026-10-04 修复：验证码一次性，用后即删。</b>
+     * 原来这里只读不删，而 Redis 里的验证码 TTL 是 5 分钟 ——
+     * 同一份码在 5 分钟内能无限次重复使用。而 {@code PUT /api/user/password}
+     * 是**免鉴权**路径（忘密码场景），于是任何拿到一份验证码的人都能在 5 分钟内
+     * 反复改掉**任意已知邮箱**的密码 → 账号接管。
+     * <p>
+     * 顺序刻意是「先比对再删除」：若先删再比对，用户输错一次就得重新收邮件，
+     * 体验很差。比对失败时不删（码还有效，用户可以重试）。
+     */
     private void validCode(String email,String userCode){
-        String code = redisUtils.get(EMAIL_CODE_PREFIX + email);
+        String key = EMAIL_CODE_PREFIX + email;
+        String code = redisUtils.get(key);
         if (code==null||!code.equals(userCode)) {
             throw new ValidationException("验证码错误/过期！");
         }
+        // 校验通过 → 立即失效，杜绝同一份码被重复使用
+        redisUtils.delete(key);
     }
 
 

@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.factory;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.encrypt.Encryptors;
 import org.springframework.security.crypto.encrypt.TextEncryptor;
 
@@ -23,6 +24,7 @@ import org.springframework.security.crypto.encrypt.TextEncryptor;
  *   <li>注入器塞入新值后，下一次访问会重新解析。</li>
  * </ol>
  */
+@Slf4j
 public class EncryptorFactory {
 
     /** 由 Spring 注入的配置值（{@code nexus.agent.api-key-secret}） */
@@ -79,6 +81,39 @@ public class EncryptorFactory {
                     "缺少用户 API Key 的加密主密钥。"
                             + "请在 nexus.agent.api-key-secret 配置项或 API_KEY_SECRET 环境变量中配置后再启动。");
         }
+        assertStrongEnough(key);
         return key;
+    }
+
+    /**
+     * 主密钥强度下限。
+     * <p>
+     * <b>为什么要卡这一条</b>：这里的主密钥是<b>所有用户全部凭据</b>的唯一根 ——
+     * 一旦它被猜到或泄漏到 git 历史里，攻击者可以离线解开
+     * {@code user_config} 里所有用户的 LLM Key 与 MCP Token（密文本身也在同一个库里）。
+     * Spring 的 {@code Encryptors.text(secret, salt)} 用 PBKDF2 从这个字符串派生 AES 密钥，
+     * 所以它的熵值就是整条链的熵值下限。
+     * <p>
+     * 门槛定 16 是权衡：太短会误伤真实配置，但
+     * {@code API_KEY_SECRET=123456} / {@code nexus-agent} 这类随手写的值必须挡住。
+     * <p>
+     * 这里刻意<b>不阻断启动</b>，只打 ERROR：密钥是历史存量，
+     * 一上线就抛异常会导致「换密钥前应用完全起不来」，那是更大的事故。
+     * 换成日志后可以让运维先确认影响面，再决定何时强制。
+     */
+    private static final int MIN_SECRET_LENGTH = 16;
+
+    private static void assertStrongEnough(String key) {
+        if (key.length() < MIN_SECRET_LENGTH) {
+            log.error("""
+
+                    ⚠️⚠️ 用户凭据加密主密钥过短（{} 字符 < 建议 {} 字符）⚠️⚠️
+                    这把密钥是**所有用户全部 LLM API Key / MCP Token 的唯一根**。
+                    一旦被猜到或泄漏，user_config 表里的密文可被批量离线解密。
+                    攻击者不需要攻破数据库，只要拿到密文即可。
+                    请立即更换为至少 {} 位的随机串，并执行密钥轮换（现有密文需用新密钥重新加密）。
+                    如果这是本地开发环境、且数据库里只有你自己的测试 Key，可忽略本条告警。
+                    """, key.length(), MIN_SECRET_LENGTH, MIN_SECRET_LENGTH);
+        }
     }
 }

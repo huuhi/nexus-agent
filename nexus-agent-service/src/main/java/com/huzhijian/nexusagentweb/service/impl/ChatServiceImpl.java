@@ -84,7 +84,7 @@ public class ChatServiceImpl implements ChatService {
         try {
 //            图片发成真图还是降级成 URL 文本，取决于本次模型支不支持视觉（2026-10-03）
             ModelCapabilities capabilities = chatContextFactory.resolveCapabilities(chatDTO.model(), userId);
-            converted = converter.toContents(messages, capabilities.vision());
+            converted = converter.toContents(messages, capabilities.vision(), userId);
         } catch (ClientException e) {
             throw new ValidationException("参数错误!");
         } catch (IOException e) {

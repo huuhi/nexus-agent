@@ -67,7 +67,8 @@ public class LexiangClient {
             return resp.getAccess_token();
         } catch (WebClientResponseException e) {
             // 400 = app_key 无效；401 = app_secret 错误；429 = 撞了 20 次/10 分钟 的限频
-            log.warn("乐享换取 token 失败：status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            // ⚠️ 只记 status + 脱敏后的响应体摘要，不打完整 body（见 truncateForLog）
+            log.warn("乐享换取 token 失败：status={} body={}", e.getStatusCode(), truncateForLog(e.getResponseBodyAsString()));
             throw new IllegalStateException(describeTokenError(e), e);
         } catch (IllegalStateException e) {
             throw e;
@@ -75,6 +76,36 @@ public class LexiangClient {
             log.warn("乐享换取 token 异常：{}", e.getMessage());
             throw new IllegalStateException("连接乐享失败，请稍后重试：" + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 错误响应体截断 + 脱敏后再进日志。
+     * <p>
+     * ⚠️ <b>2026-10-04</b>：原先直接 {@code log.warn("... body={}", e.getResponseBodyAsString())}。
+     * 乐享的错误响应里可能带 <b>access_token / app_secret 回显</b>，
+     * 而日志是被广泛聚合、转发、长期留存的 —— 一条 error 日志就等于一份凭据副本。
+     * <p>
+     * 另外响应体也可能很大（错误页返回整段 HTML），完整打出来会撑爆日志。
+     * 所以这里做两件事：截断到固定长度 + 打码常见凭据字段。
+     * <p>
+     * 排查时若确实需要原文，临时把这个方法的日志级别提到 DEBUG 即可
+     * （那时数据已经在被刻意记录，风险自负）。
+     */
+    private static String truncateForLog(String body) {
+        if (body == null || body.isBlank()) {
+            return "(空)";
+        }
+        String masked = body
+                // JSON 形式："access_token":"xxx" / "app_secret":"xxx"
+                .replaceAll("(?i)(\"(?:access_token|app_secret|app_key|token|secret)\"\\s*:\\s*)\"[^\"]*\"",
+                        "$1\"***\"")
+                // 表单形式：access_token=xxx
+                .replaceAll("(?i)((?:access_token|app_secret|app_key|token|secret)=)[^&\\s]*",
+                        "$1***");
+        final int limit = 500;
+        return masked.length() <= limit
+                ? masked
+                : masked.substring(0, limit) + "...(已截断，原长度 " + body.length() + ")";
     }
 
     private String describeTokenError(WebClientResponseException e) {
@@ -212,7 +243,8 @@ public class LexiangClient {
         } catch (IllegalStateException e) {
             throw e;
         } catch (WebClientResponseException e) {
-            log.warn("乐享检索失败：status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            // ⚠️ 同样脱敏 + 截断：检索错误响应可能回显查询内容与凭据
+            log.warn("乐享检索失败：status={} body={}", e.getStatusCode(), truncateForLog(e.getResponseBodyAsString()));
             throw new IllegalStateException(describeSearchError(e), e);
         } catch (Exception e) {
             log.warn("乐享检索异常：{}", e.getMessage());
