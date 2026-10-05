@@ -1,4 +1,4 @@
-package com.huhuhuzhijian.nexusagentweb;
+package com.huzhijian.nexusagentweb;
 
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import org.junit.jupiter.api.DisplayName;

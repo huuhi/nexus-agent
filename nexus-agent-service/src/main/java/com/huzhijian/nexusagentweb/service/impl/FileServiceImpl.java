@@ -13,6 +13,7 @@ import com.huzhijian.nexusagentweb.mapper.FileMapper;
 import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
 import com.huzhijian.nexusagentweb.utils.FileTypeUtils;
+import com.huzhijian.nexusagentweb.vo.BatchDeleteResultVO;
 import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,11 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
 * @author windows
@@ -182,6 +187,79 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         }
         log.warn("删除文件落空：id={} 存在但不属于当前用户（记录归属 userId={}，本次请求 userId={}）",
                 id, anyOwner.getUserId(), userId);
+    }
+
+    /**
+     * 批量删除：一次 {@code IN} 查询定位出「属于当前用户」的那几条，删记录，再逐个尽力删OSS。
+     * <p>
+     * 🔴 <b>为什么必须先查再删，而不是直接 {@code removeByIds(ids)}</b>：
+     * 直接按 id 删等于「知道 id 就能删」，是 IDOR 越权。归属校验只能靠
+     * {@code user_id} 条件，而 {@code removeByIds} 根本不给你加条件的余地。
+     * <p>
+     * ⚠️ <b>去重是必须的，不是优化</b>：前端「全选」很容易重复传同一个 id，
+     * 而结果要按「删了几条」对账给前端，重复 id 会让计数对不上。
+     * 这里用 {@code LinkedHashSet} —— 既去重又<b>保持传入顺序</b>，
+     * 这样返回的 {@code deletedIds} 顺序与前端勾选顺序一致，便于前端核对。
+     * <p>
+     * ⚠️ <b>不用 {@code @Transactional}</b>：这里<b>刻意</b>不加事务。
+     * 逐条独立提交才符合「部分成功」的语义 —— 一条失败就整批回滚，
+     * 前端拿到的就只剩「全失败」，反而更难处理。
+     * 记录删除与 OSS 删除本来就不是一个原子操作，套事务也原子不了。
+     */
+    @Override
+    public BatchDeleteResultVO batchDelete(List<Long> ids, Long userId) {
+        // 清洗：去重 + 剔掉 null，并保持传入顺序
+        Set<Long> distinct = ids == null
+                ? Set.of()
+                : ids.stream().filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+
+        if (distinct.isEmpty() || userId == null) {
+            if (userId == null) {
+                log.warn("批量删除文件：拿不到 userId（ids 数量={}），整批跳过", distinct.size());
+            }
+            return new BatchDeleteResultVO(0, 0, 0, List.of(), List.of());
+        }
+
+        // ⚠️ user_id 条件是越权防护的核心，与单条 delete 同一个口径
+        List<SysFile> owned = query().in("id", distinct)
+                .eq("user_id", userId)
+                .list();
+
+        Set<Long> foundIds = new LinkedHashSet<>(owned.size());
+        for (SysFile f : owned) {
+            foundIds.add(f.getId());
+        }
+
+        List<String> deletedIds = new ArrayList<>(foundIds.size());
+        if (!foundIds.isEmpty()) {
+            removeByIds(foundIds);
+            for (SysFile f : owned) {
+                deletedIds.add(String.valueOf(f.getId()));
+                // 记录已删，对象残留只是存储成本 —— 失败只记 WARN（deleteByUrl 内部已吞异常）
+                ossUtil.deleteByUrl(f.getFileUrl());
+            }
+        }
+
+        // 传了但没查到的 = 不存在或不属于当前用户。不区分具体原因（防探测），只记日志
+        List<String> failedIds = distinct.stream()
+                .filter(id -> !foundIds.contains(id))
+                .peek(id -> logDeleteMiss(id, userId))
+                .map(String::valueOf)
+                .toList();
+
+        if (!failedIds.isEmpty()) {
+            log.info("批量删除文件：请求 {} 条，成功 {} 条，未删{} 条（不存在或不属于当前用户）",
+                    distinct.size(), deletedIds.size(), failedIds.size());
+        } else {
+            log.info("批量删除文件：请求 {} 条，全部成功", distinct.size());
+        }
+
+        return new BatchDeleteResultVO(
+                distinct.size(),
+                deletedIds.size(),
+                failedIds.size(),
+                List.copyOf(deletedIds),
+                failedIds);
     }
 
     /**

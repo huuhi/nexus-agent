@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.dto.BatchDeleteFileDTO;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.service.FileService;
@@ -8,6 +9,7 @@ import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import com.huzhijian.nexusagentweb.vo.Result;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -74,6 +76,36 @@ public class FileController {
     public Result deleteFile(@PathVariable Long id) {
         boolean deleted = fileService.delete(id, currentUserId());
         return deleted ? Result.ok() : Result.error("文件不存在或无权限删除");
+    }
+
+    /**
+     * 批量删除文件（2026-10-05）。
+     * <p>
+     * 为「文件与产物」面板的<b>全选 → 一次删完</b>准备的：
+     * 让前端发 N 次单条请求既慢，又得自己维护「哪些成功了」的状态。
+     * <p>
+     * <h3>⚠️ 与单条删除的关键差异：这是「部分成功」</h3>
+     * 无论全部成功还是部分失败，HTTP 都是 200、{@code code=0}，
+     * <b>逐条结果在 {@code data} 里</b>。前端<b>不要</b>只判断 {@code code}：
+     * <pre>{@code
+     *   data: {
+     *     total: 20, successCount: 18, failCount: 2,
+     *     deletedIds: ["2107...", "2107..."],   // 字符串！原样回传后端给的 id
+     *     failedIds:  ["2107..."]                // 不存在 / 不是你的
+     *   }
+     * }</pre>
+     * 有 {@code failedIds} 时<b>不要整页报错</b>，只把这几行留在面板上即可。
+     */
+    @Operation(summary = "批量删除文件（对话附件 / AI 产物均可）",
+            description = """
+                    部分成功语义：能删的删，删不掉的进 `failedIds`（不区分「不存在」与
+                    「不属于你」）。无论是否有失败，HTTP 与 `code` 都为成功，
+                    **前端必须读 `data.successCount` / `data.failedIds`，不能只看 code**。
+                    `ids` 传后端返回的 id 原文即可（它们是字符串形态的雪花 ID）。
+                    """)
+    @PostMapping("/batch-delete")
+    public Result batchDelete(@RequestBody @Valid BatchDeleteFileDTO dto) {
+        return Result.ok(fileService.batchDelete(dto.getIds(), currentUserId()));
     }
 
     private Long currentUserId() {

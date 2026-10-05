@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.service;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
+import com.huzhijian.nexusagentweb.vo.BatchDeleteResultVO;
 import com.huzhijian.nexusagentweb.vo.KnowledgeFileVO;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -40,4 +41,27 @@ public interface FileService extends IService<SysFile> {
      *         避免通过返回值探测他人文件是否存在）
      */
     boolean delete(Long id, Long userId);
+
+    /**
+     * 批量删除当前用户名下的多条文件记录，并尽力删除对应的 OSS 对象（2026-10-05）。
+     * <p>
+     * <b>语义是「部分成功」而非全有全无</b>：逐条独立判断，一批里有的能删有的不能删时，
+     * 能删的照样删，结果分两组返回。这样前端不必反复重试，也不必猜哪几条成功了。
+     * <p>
+     * <b>实现要点（都是踩过的坑）</b>：
+     * <ol>
+     *   <li><b>必须先按 {@code id + user_id} 一次性查出来</b>，不能直接
+     *       {@code removeByIds(ids)} —— 那样等于把「删自己的文件」变成
+     *       「只要知道 id 就能删任何人的文件」，IDOR。</li>
+     *   <li><b>必须去重</b>：前端全选时很容易把同一批 id 重复传进来，
+     *       而 {@code IN} 查询里重复值会让「删了几条」对不上。</li>
+     *   <li><b>OSS 删除不参与成败判定</b>：对象残留只是存储成本，
+     *       让它把整批操作判成失败，用户会以为文件还在。</li>
+     * </ol>
+     *
+     * @param ids   待删除的 id 集合，允许含重复与null（内部清洗）
+     * @param userId 当前用户 id
+     * @return 逐条结果；ids 为空时返回各列表均为空、计数为 0 的结果对象（不返回 null）
+     */
+    BatchDeleteResultVO batchDelete(List<Long> ids, Long userId);
 }
