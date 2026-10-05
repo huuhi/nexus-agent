@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb;
 
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.service.SystemLogService;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import com.huzhijian.nexusagentweb.tools.LogTool;
@@ -12,8 +13,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -70,14 +75,35 @@ class ToolFailureContractTest {
     void memoryToolReturnsReadableError() {
         UserMemoryService memoryService = mock(UserMemoryService.class);
         ToolCallGuard guard = mock(ToolCallGuard.class);
-        when(memoryService.getMemory(any())).thenThrow(new RuntimeException("pg_trgm 不可用"));
+        RunUserRegistry runUserRegistry = mock(RunUserRegistry.class);
+        // 2026-10-05 起工具走 RunUserRegistry 反查 userId（工具线程上 UserContextHolder 恒为 null）
+        when(runUserRegistry.findUserId(any())).thenReturn(7L);
+        when(memoryService.getMemory(anyLong(), anyString()))
+                .thenThrow(new RuntimeException("pg_trgm 不可用"));
 
-        MemoryTool tool = new MemoryTool(memoryService, guard);
+        MemoryTool tool = new MemoryTool(memoryService, guard, runUserRegistry);
         String result = tool.searchUserMemory("session-1", "饮食偏好");
 
         assertNotNull(result);
         assertFalse(result.isBlank());
         assertFalse(result.contains("null"), "不能把 null 拼进给模型的文案，实际：" + result);
         assertTrue(result.contains("pg_trgm 不可用"), "要带上失败原因，实际：" + result);
+    }
+
+    @Test
+    @DisplayName("MemoryTool：拿不到 userId 时**明确报错**，绝不退化成写一条 user_id 为空的脏数据")
+    void memoryToolRefusesToSaveWithoutUser() {
+        UserMemoryService memoryService = mock(UserMemoryService.class);
+        ToolCallGuard guard = mock(ToolCallGuard.class);
+        RunUserRegistry runUserRegistry = mock(RunUserRegistry.class);
+        when(runUserRegistry.findUserId(any())).thenReturn(null);
+
+        String result = new MemoryTool(memoryService, guard, runUserRegistry)
+                .saveLongMemory("session-1", "用户喜欢看电影", null);
+
+        assertNotNull(result);
+        assertTrue(result.contains("未保存"), "必须让模型知道这次没存上，实际：" + result);
+        // 关键：一次都没写库 —— 否则就是 2026-10-05 那个「接口说 ok、库里啥也没有」的故障
+        verify(memoryService, never()).saveMemory(any());
     }
 }

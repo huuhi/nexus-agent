@@ -2,7 +2,9 @@ package com.huzhijian.nexusagentweb;
 
 import com.huzhijian.nexusagentweb.domain.User;
 import com.huzhijian.nexusagentweb.em.QuotaPeriod;
+import com.huzhijian.nexusagentweb.em.UserRole;
 import com.huzhijian.nexusagentweb.exception.QuotaExceededException;
+import com.huzhijian.nexusagentweb.mapper.FileMapper;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.impl.QuotaServiceImpl;
@@ -37,17 +39,21 @@ import static org.mockito.Mockito.when;
 class QuotaServiceTest {
 
     private QuotaServiceImpl service(UserMapper mapper, boolean enabled) {
-        AgentProperties props = new AgentProperties();
-        props.getQuota().setEnabled(enabled);
-        return new QuotaServiceImpl(mapper, props);
+        return service(mapper, mock(FileMapper.class), enabled, QuotaPeriod.NONE);
     }
 
     /** 带全局周期配置的构造（周期重置相关用例用） */
     private QuotaServiceImpl service(UserMapper mapper, QuotaPeriod globalPeriod) {
+        return service(mapper, mock(FileMapper.class), true, globalPeriod);
+    }
+
+    /** 全参数构造：文件配额用例需要自己塞 FileMapper */
+    private QuotaServiceImpl service(UserMapper mapper, FileMapper fileMapper,
+                                     boolean enabled, QuotaPeriod globalPeriod) {
         AgentProperties props = new AgentProperties();
-        props.getQuota().setEnabled(true);
+        props.getQuota().setEnabled(enabled);
         props.getQuota().setPeriod(globalPeriod);
-        return new QuotaServiceImpl(mapper, props);
+        return new QuotaServiceImpl(mapper, fileMapper, props);
     }
 
     // ------------------------------------------------------------------
@@ -393,5 +399,175 @@ class QuotaServiceTest {
         when(mapper.selectById(7L)).thenReturn(null);
 
         assertTrue(service(mapper, QuotaPeriod.NONE).getQuota(7L).isDegraded());
+    }
+
+    // ------------------------------------------------------------------
+    //  用户分级 + 文件与产物配额（docs/sql/012）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("三档角色的额度与产品口径一致：普通 100 万/100、测试 1000 万/不限、会员 1000 万/1000")
+    void roleTiersMatchSpec() {
+        assertEquals(1_000_000L, UserRole.NORMAL.dailyTokens());
+        assertEquals(100L, UserRole.NORMAL.dailyFiles());
+
+        assertEquals(10_000_000L, UserRole.TEST.dailyTokens());
+        assertEquals(UserRole.FILE_UNLIMITED, UserRole.TEST.dailyFiles());
+        assertTrue(UserRole.TEST.filesUnlimited());
+
+        assertEquals(10_000_000L, UserRole.VIP.dailyTokens());
+        assertEquals(1000L, UserRole.VIP.dailyFiles());
+    }
+
+    @Test
+    @DisplayName("角色名解析：大小写/空白不敏感，无法识别一律回落到最保守的 NORMAL")
+    void parseRoleIsLenient() {
+        assertEquals(UserRole.NORMAL, UserRole.parse(null));
+        assertEquals(UserRole.NORMAL, UserRole.parse("  "));
+        assertEquals(UserRole.TEST, UserRole.parse(" test "));
+        assertEquals(UserRole.VIP, UserRole.parse("VIP"));
+        // 库里出现脏值时宁可给最保守的一档，也不要让注册/对话失败
+        assertEquals(UserRole.NORMAL, UserRole.parse("ADMIN"));
+    }
+
+    @Test
+    @DisplayName("文件额度：达到上限即拦（边界与 token 一致：用完即拦）")
+    void fileQuotaRejectsAtLimit() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("NORMAL").fileQuota(100L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(100L);
+
+        QuotaExceededException ex = assertThrows(QuotaExceededException.class,
+                () -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+
+        assertTrue(ex.getMessage().contains("100"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("文件额度：未达上限放行")
+    void fileQuotaAllowsBelowLimit() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("NORMAL").fileQuota(100L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(99L);
+
+        assertDoesNotThrow(() -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+    }
+
+    @Test
+    @DisplayName("文件额度：role=TEST 时**完全不查文件数**（不限量不该白跑一次 count）")
+    void testRoleSkipsFileCounting() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        // 注册时把 TEST 的 -1 写进了 file_quota
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("TEST").fileQuota(-1L).build());
+
+        assertDoesNotThrow(() -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+        verify(files, never()).countSince(anyLong(), any(LocalDateTime.class));
+    }
+
+    @Test
+    @DisplayName("文件额度：用户列为空时回落到角色默认（存量用户 012 只回填了 role 的情况）")
+    void fileQuotaFallsBackToRole() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("VIP").build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(1000L);
+
+        // VIP 默认 1000 —— 用满即拦，证明走的是角色默认而不是"没限制"
+        assertThrows(QuotaExceededException.class,
+                () -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+    }
+
+    @Test
+    @DisplayName("文件额度：用户自己的 file_quota 优先于角色默认（运营可单独加额度）")
+    void explicitFileQuotaOverridesRole() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        // NORMAL 默认 100，但库里显式给了 5
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("NORMAL").fileQuota(5L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(5L);
+
+        assertThrows(QuotaExceededException.class,
+                () -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+    }
+
+    @Test
+    @DisplayName("文件额度：统计失败降级放行（不能因为 count 报错就传不了文件）")
+    void fileQuotaDegradesOnCountFailure() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder().id(7L).role("NORMAL").fileQuota(1L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class)))
+                .thenThrow(new RuntimeException("relation \"sys_file\" does not exist"));
+
+        assertDoesNotThrow(() -> service(users, files, true, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+    }
+
+    @Test
+    @DisplayName("文件额度：配额开关关闭时直接放行，不查库")
+    void fileQuotaSkippedWhenDisabled() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+
+        assertDoesNotThrow(() -> service(users, files, false, QuotaPeriod.NONE).assertWithinFileQuota(7L));
+        verify(users, never()).selectById(anyLong());
+    }
+
+    @Test
+    @DisplayName("额度查询带上角色与文件额度（前端据此展示「今日文件 3/100」）")
+    void getQuotaExposesRoleAndFileQuota() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder()
+                .id(7L).role("NORMAL").tokenQuota(1_000_000L).tokenUsed(0L)
+                .tokenPeriod("DAILY").fileQuota(100L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(3L);
+
+        QuotaVO vo = service(users, files, true, QuotaPeriod.NONE).getQuota(7L);
+
+        assertEquals("NORMAL", vo.getRole());
+        assertEquals(100L, vo.getFileQuota());
+        assertEquals(3L, vo.getFileUsed());
+        assertEquals(97L, vo.getFileRemaining());
+        assertFalse(vo.isFileUnlimited());
+        // token 部分不受影响
+        assertEquals(1_000_000L, vo.getQuota());
+    }
+
+    @Test
+    @DisplayName("额度查询：测试用户文件不限量时 fileQuota/remaining 为 null，但已用仍有统计意义")
+    void getQuotaMarksTestRoleUnlimited() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder()
+                .id(7L).role("TEST").tokenQuota(10_000_000L).tokenUsed(0L)
+                .tokenPeriod("DAILY").fileQuota(-1L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class))).thenReturn(42L);
+
+        QuotaVO vo = service(users, files, true, QuotaPeriod.NONE).getQuota(7L);
+
+        assertTrue(vo.isFileUnlimited());
+        assertNull(vo.getFileQuota());
+        assertNull(vo.getFileRemaining());
+        assertEquals(42L, vo.getFileUsed());
+    }
+
+    @Test
+    @DisplayName("额度查询：文件数统计失败时 fileUsed 为 null（表示未知），而不是谎报 0")
+    void getQuotaKeepsFileUsedUnknown() {
+        UserMapper users = mock(UserMapper.class);
+        FileMapper files = mock(FileMapper.class);
+        when(users.selectById(7L)).thenReturn(User.builder()
+                .id(7L).role("NORMAL").tokenQuota(1_000_000L).tokenUsed(0L)
+                .tokenPeriod("NONE").fileQuota(100L).build());
+        when(files.countSince(eq(7L), any(LocalDateTime.class)))
+                .thenThrow(new RuntimeException("connection reset"));
+
+        QuotaVO vo = service(users, files, true, QuotaPeriod.NONE).getQuota(7L);
+
+        assertNull(vo.getFileUsed());
+        assertFalse(vo.isDegraded(), "文件数查不到不该把整个配额面板判成不可用");
     }
 }

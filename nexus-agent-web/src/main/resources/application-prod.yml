@@ -257,9 +257,17 @@ nexus:
       # 是否启用 token 配额校验（P2-8）。关闭后不再拦截超支用户，但用量仍会照常累加
       enabled: true
       # 新注册用户的默认 token 配额；<=0 表示不限制（默认）。
+      # ⚠️ 2026-10-06 起注册额度改由**角色档位**决定（docs/sql/012），
+      #    本字段只作为兜底，生产不要再靠它调额度 —— 改额度请改 users.token_quota。
       # 存量用户不受影响（users.token_quota 为 NULL 同样视为不限制）；
       # 要限制谁就在库里给 users.token_quota 设值。见 docs/sql/003_add_user_token_quota.sql
       default-quota: 0
+      # 新注册用户的默认角色（docs/sql/012）：NORMAL / TEST / VIP。
+      #   NORMAL 普通 —— 每日 100 万 token + 100 个文件与产物（注册默认，不要在生产改成别的）
+      #   TEST   测试 —— 每日 1000 万 token + 文件产物不限制
+      #   VIP    会员 —— 预留，暂不发放：每日 1000 万 token + 1000 个文件与产物
+      # 无法识别的值会回落到 NORMAL（配错最多是档位偏保守，不会配出离谱额度）。
+      default-role: NORMAL
       # 配额重置周期：NONE=不重置（累计，与 003 原行为一致）/ DAILY / MONTHLY。
       # 这是全局默认，单个用户可在库里覆盖：
       #   UPDATE users SET token_period='MONTHLY' WHERE id=...;

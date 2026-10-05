@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.tools;
 
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.UserMemory;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
@@ -40,6 +41,12 @@ public class MemoryTool implements AgentToolSet {
 
     private final UserMemoryService memoryService;
     private final ToolCallGuard toolCallGuard;
+    /**
+     * 🔴 工具跑在 LangChain4j 的**流式回调线程**上，那里 {@link UserContextHolder}
+     * 必然取不到值（这不是偶发，是架构上的必然）。要拿 userId 只能靠
+     * 「请求线程登记的 sessionId → userId」反查表，见 {@link RunUserRegistry}。
+     */
+    private final RunUserRegistry runUserRegistry;
     private final String SAVE_USER_MEMORY= """
             用于主动保存用户的长期记忆。
             
@@ -58,9 +65,30 @@ public class MemoryTool implements AgentToolSet {
             
             如果执行失败，禁止重复尝试！
             """;
-    public MemoryTool(UserMemoryService memoryService, ToolCallGuard toolCallGuard) {
+    public MemoryTool(UserMemoryService memoryService, ToolCallGuard toolCallGuard,
+                      RunUserRegistry runUserRegistry) {
         this.memoryService = memoryService;
         this.toolCallGuard = toolCallGuard;
+        this.runUserRegistry = runUserRegistry;
+    }
+
+    /**
+     * 取本次运行的 userId。
+     * <p>
+     * 🔴 <b>绝不能用 {@code UserContextHolder.getUserId()}</b>（2026-10-05 修的线上故障）：
+     * 工具在流式回调线程上执行，那里 ThreadLocal 恒为 null。
+     * 以前这里取到 null 后照常写库，撞上 {@code user_memory.user_id NOT NULL}，
+     * 而 {@code saveMemory} 又是 {@code @Async} 的 —— 异常在异步线程里被吞，
+     * 工具照样返回 {@code "ok"}，用户查库却一条都没有。
+     *
+     * @return userId；查不到返回 null，调用方必须**报错**而不是退化放行
+     */
+    private Long requireUserId(Object memoryId) {
+        Long userId = runUserRegistry.findUserId(memoryId);
+        if (userId == null) {
+            log.warn("长期记忆工具取不到 userId（工具线程无登录态，且注册表未命中）：memoryId={}", memoryId);
+        }
+        return userId;
     }
 
     /**
@@ -77,7 +105,11 @@ public class MemoryTool implements AgentToolSet {
             return blocked;
         }
         try {
-            List<UserMemoryVO> memory = memoryService.getMemory(query);
+            Long userId = requireUserId(memoryId);
+            if (userId == null) {
+                return "检索长期记忆失败：无法确定当前用户（会话上下文缺失）。请勿重复调用该工具。";
+            }
+            List<UserMemoryVO> memory = memoryService.getMemory(userId, query);
             if (memory == null || memory.isEmpty()) {
                 // 以前返回空串，模型无法区分"没查到"和"查到了但内容为空"
                 return "没有检索到与该关键词相关的长期记忆。";
@@ -109,12 +141,18 @@ public class MemoryTool implements AgentToolSet {
         if (blocked != null) {
             return blocked;
         }
-        Long userId = UserContextHolder.getUserId();
-        log.info("用户ID：{}",userId);
+//        🔴 不要用 UserContextHolder：工具线程上它恒为 null（见 requireUserId 的注释）。
+//        取不到用户就**明确报错**，绝不能退化成"随便存一条" —— 那会写出 user_id 为空的脏数据。
+        Long userId = requireUserId(memoryId);
+        if (userId == null) {
+            return "error:无法确定当前用户，本次记忆未保存（会话上下文缺失）。请勿重复调用该工具。";
+        }
+        log.info("保存长期记忆：userId={} content={}", userId, content);
         UserMemory userLongMemory =  UserMemory.builder().content(content).userId(userId).source(sessionId).build();
         try {
             memoryService.saveMemory(userLongMemory);
         } catch (Exception e) {
+            log.error("保存长期记忆失败。userId={} content={}", userId, content, e);
             return "error:"+e.getMessage();
         }
         return "ok";

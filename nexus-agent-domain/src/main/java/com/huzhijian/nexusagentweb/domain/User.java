@@ -93,6 +93,24 @@ public class User implements Serializable {
      * 小于"本次算出的周期起点"时触发清零 —— 惰性重置，没有后台任务。
      */
     private LocalDateTime tokenPeriodStart;
+
+    /**
+     * 用户角色（{@code docs/sql/012}）：{@code NORMAL} / {@code TEST} / {@code VIP}。
+     * <p>
+     * 只决定**额度默认值**，不参与鉴权 —— 想给谁单独加额度，直接改
+     * {@link #tokenQuota} / {@link #fileQuota} 即可（用户级列优先于角色）。
+     * 存字符串而非枚举：与 {@link #tokenPeriod} 保持同一套做法，避开枚举处理器的坑。
+     */
+    private String role;
+
+    /**
+     * 每日「文件 + 产物」数量上限（{@code docs/sql/012}）。
+     * <p>
+     * {@code null} 或 {@code <= 0} 表示<b>不限制</b>（沿用 tokenQuota 的约定）。
+     * 文件与产物共用一份额度 —— 它们都落在 {@code sys_file} 表，
+     * 按 {@code create_time >= 当天 00:00} 统计条数，天然按天滚动，不需要重置。
+     */
+    private Long fileQuota;
     /**
     * githubID
     */

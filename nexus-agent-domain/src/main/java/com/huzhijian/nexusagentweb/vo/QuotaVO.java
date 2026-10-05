@@ -35,10 +35,39 @@ public class QuotaVO {
     /** 配额信息是否不可用（见类注释） */
     private boolean degraded;
 
+    // ==================== 以下为 docs/sql/012 用户分级新增 ====================
+
+    /**
+     * 用户角色：{@code NORMAL} / {@code TEST} / {@code VIP}。
+     * <p>
+     * 前端只做展示（例如头像旁一个角标）；**不要**用它判断能不能上传 ——
+     * 能不能上传一律看 {@code fileUnlimited} / {@code fileRemaining}，
+     * 因为运营可以单独给某人改 {@code users.file_quota}，那时角色与额度并不一致。
+     */
+    private String role;
+
+    /**
+     * 今日文件与产物的条数上限；{@code null} 表示不限制。
+     * <p>
+     * 「文件与产物」在库里是同一张 {@code sys_file}，所以共用一个额度 ——
+     * 与产品口径一致（普通用户每天 100 个文件 + 产物）。
+     */
+    private Long fileQuota;
+
+    /** 今日已产生的文件 + 产物条数（不限量时也有统计意义） */
+    private Long fileUsed;
+
+    /** 今日剩余可产生的条数；不限量时为 {@code null} */
+    private Long fileRemaining;
+
+    /** 文件与产物是否不限量 */
+    private boolean fileUnlimited;
+
     /** 配额信息不可用时返回的占位值 */
     public static QuotaVO degraded() {
         return QuotaVO.builder()
                 .unlimited(true)
+                .fileUnlimited(true)
                 .period("NONE")
                 .degraded(true)
                 .build();

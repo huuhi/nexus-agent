@@ -467,10 +467,21 @@ public class AgentProperties {
         /**
          * 新注册用户的默认 token 配额。{@code <= 0} 表示不限制（默认）。
          * <p>
-         * 存量用户不受影响 —— 他们的 {@code users.token_quota} 为 NULL，同样视为不限制；
-         * 要限谁就在库里给谁设值（或用管理接口，当前没有）。
+         * ⚠️ <b>2026-10-06 起这个字段的优先级已被角色档位取代</b>（{@code docs/sql/012}）：
+         * 注册时 token 额度直接按 {@link #defaultRole} 的档位写入，本字段<b>不再参与注册</b>，
+         * 只作为"角色档位缺失时的兜底"。生产请不要再依赖它调额度，
+         * 改档位请改 {@code users.role} + {@code users.token_quota}。
          */
         private long defaultQuota = 0;
+
+        /**
+         * 新注册用户的默认角色（{@code docs/sql/012}）：{@code NORMAL} / {@code TEST} / {@code VIP}。
+         * <p>
+         * 默认 {@code NORMAL}。测试环境可以整段配成 {@code TEST} 让所有新账号都拿到测试档位，
+         * 免去每次注册后手工改库。无法识别的值会回落到 {@code NORMAL}
+         * （见 {@code UserRole#parse}），配错了不会把用户分到奇怪的档位。
+         */
+        private String defaultRole = "NORMAL";
 
         /**
          * token 配额的**重置周期**（P2-8 遗留）：{@code NONE} / {@code DAILY} / {@code MONTHLY}。

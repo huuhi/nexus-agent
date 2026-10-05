@@ -28,6 +28,24 @@ public interface QuotaService {
     void assertWithinQuota(Long userId);
 
     /**
+     * 校验用户的「文件 + 产物」数量配额，超限则抛 {@link com.huzhijian.nexusagentweb.exception.QuotaExceededException}。
+     * <p>
+     * 2026-10-05 新增（{@code docs/sql/012}）：以前只有 token 配额，
+     * 文件与产物想传多少传多少。现在按角色给默认额度
+     * （普通 100 / 天、会员 1000 / 天、测试不限），额度按
+     * {@code sys_file.create_time} 统计**当天**的条数，天然按天滚动。
+     * <p>
+     * 在**上传 / 产物落库之前**调用：此时文件还没传到 OSS，拦住能省一次无谓的上传。
+     * <p>
+     * ⚠️ 与 {@link #assertWithinQuota} 一样是「事前检查」：判定的是"现在已经用了多少"，
+     * 所以一次批量上传多份文件时可能小幅超额（下一份才会被拒），这是刻意接受的成本。
+     *
+     * @param userId 用户 id；为 null 时直接放行（配额校验不该越权拦住未知身份的请求，
+     *               那属于鉴权的职责）
+     */
+    void assertWithinFileQuota(Long userId);
+
+    /**
      * 累加实际用量。**内部吞掉异常**：记账失败不应该让一次已经成功的对话变成失败。
      *
      * @param totalTokens 本次对话的总 token（in + out）；为 null 或 &lt;=0 时直接忽略

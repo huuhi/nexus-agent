@@ -11,6 +11,7 @@ import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
 import com.huzhijian.nexusagentweb.service.FileService;
+import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
 import com.huzhijian.nexusagentweb.utils.FileTypeUtils;
 import com.huzhijian.nexusagentweb.vo.BatchDeleteResultVO;
@@ -39,9 +40,11 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
     implements FileService{
 
     private final AliOssUtil ossUtil;
+    private final QuotaService quotaService;
 
-    public FileServiceImpl(AliOssUtil ossUtil) {
+    public FileServiceImpl(AliOssUtil ossUtil, QuotaService quotaService) {
         this.ossUtil = ossUtil;
+        this.quotaService = quotaService;
     }
 
     @Override
@@ -52,6 +55,9 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         }
         List<SysFile> fileList =new ArrayList<>();
         Long userId = UserContextHolder.getUserId();
+//        文件 + 产物配额（docs/sql/012）：在上传之前拦 —— 此时还没传到 OSS，拦住最省。
+//        超限抛 QuotaExceededException（HTTP 200 + Result{code=1}，前端按 code 判断）
+        quotaService.assertWithinFileQuota(userId);
         for (MultipartFile file : files) {
             if (file==null||file.isEmpty()) continue;
             String originalFilename = file.getOriginalFilename();

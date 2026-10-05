@@ -1,10 +1,12 @@
 package com.huzhijian.nexusagentweb.tools;
 
-import com.huzhijian.nexusagentweb.context.UserContextHolder;
+import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.dto.UploadFileDTO;
+import com.huzhijian.nexusagentweb.exception.QuotaExceededException;
 import com.huzhijian.nexusagentweb.handler.SafeExecuteToolHandler;
 import com.huzhijian.nexusagentweb.sandbox.SandboxClient;
 import com.huzhijian.nexusagentweb.sandbox.SandboxSessionRegistry;
+import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.tools.registry.AgentToolSet;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -51,15 +53,21 @@ public class BoxTool implements AgentToolSet {
     private final SandboxSessionRegistry sandboxSessions;
     private final SafeExecuteToolHandler safeExecuteToolHandler;
     private final ToolCallGuard toolCallGuard;
+    private final RunUserRegistry runUserRegistry;
+    private final QuotaService quotaService;
 
     public BoxTool(SandboxClient sandboxClient,
                    SandboxSessionRegistry sandboxSessions,
                    SafeExecuteToolHandler safeExecuteToolHandler,
-                   ToolCallGuard toolCallGuard) {
+                   ToolCallGuard toolCallGuard,
+                   RunUserRegistry runUserRegistry,
+                   QuotaService quotaService) {
         this.sandboxClient = sandboxClient;
         this.sandboxSessions = sandboxSessions;
         this.safeExecuteToolHandler = safeExecuteToolHandler;
         this.toolCallGuard = toolCallGuard;
+        this.runUserRegistry = runUserRegistry;
+        this.quotaService = quotaService;
     }
 
     /**
@@ -142,8 +150,11 @@ public class BoxTool implements AgentToolSet {
         if (resolved == null) {
             return noSandbox("download_file");
         }
+        // 🔴 不能用 UserContextHolder.getUserId()：工具跑在流式回调线程上，ThreadLocal 恒为 null，
+        //    结果就是 OSS 侧拿不到 user_id（对象不归属任何用户）。必须走 RunUserRegistry 反查。
+        Long userId = runUserRegistry.findUserId(memoryId);
         return handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file",
-                () -> sandboxClient.downloadFile(path, resolved, UserContextHolder.getUserId())));
+                () -> sandboxClient.downloadFile(path, resolved, userId)));
     }
 
     /**
@@ -173,8 +184,25 @@ public class BoxTool implements AgentToolSet {
         if (resolved == null) {
             return noSandbox("publish_artifact");
         }
+        // 🔴 不能用 UserContextHolder.getUserId()：工具跑在流式回调线程上，ThreadLocal 恒为 null
+        Long userId = runUserRegistry.findUserId(memoryId);
+        if (userId == null) {
+            return structuredFailure("NO_USER", "无法确定当前用户，产物未发布（会话上下文缺失）。",
+                    "不要重复调用该工具。");
+        }
+        // 文件 + 产物配额（docs/sql/012）：**必须在转存 OSS 之前**拦 ——
+        // 一旦走完 downloadFile，文件就已经生成并上传了，此时再拦只能拦住"落库 + 下载卡片"，
+        // 对象会变成 OSS 里的孤儿（还占着存储）。拦在这里才能真正不产生新文件。
+        try {
+            quotaService.assertWithinFileQuota(userId);
+        } catch (QuotaExceededException e) {
+            log.warn("产物被配额拦截：userId={} 原因={}", userId, e.getMessage());
+            return structuredFailure("QUOTA_EXCEEDED", e.getMessage(),
+                    "不要再重试，也不要改用 download_file 绕开 —— 请直接告诉用户文件数量已达今日上限，"
+                            + "并说明明天 00:00 会自动重置。");
+        }
         Map<String, Object> result = handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("publish_artifact",
-                () -> sandboxClient.downloadFile(path, resolved, UserContextHolder.getUserId())));
+                () -> sandboxClient.downloadFile(path, resolved, userId)));
         if (result == null || isFailure(result)) {
             // 失败（含沙盒失效）原样回传：SafeExecuteToolHandler/handleBoxResult 已经给了模型自纠提示
             return result;
@@ -412,6 +440,21 @@ public class BoxTool implements AgentToolSet {
                 "message", "当前会话还没有沙盒",
                 "hint", "请先调用 create_box 创建沙盒，再重试本工具；或在参数中显式传入 boxId。"
         );
+    }
+
+    /**
+     * 结构化失败结果（与 {@link #noSandbox} 同一套字段，模型据此自纠而不是盲试）。
+     * <p>
+     * 刻意保留 {@code success=false} 而不是抛异常：抛出去会被上层当成"工具执行失败"，
+     * 模型只看到一句报错、不知道该怎么办；而结构化结果能把「为什么 + 下一步做什么」讲清楚。
+     */
+    private static Map<String, Object> structuredFailure(String errorCode, String message, String hint) {
+        Map<String, Object> failure = new LinkedHashMap<>();
+        failure.put("success", false);
+        failure.put("errorCode", errorCode);
+        failure.put("message", message);
+        failure.put("hint", hint);
+        return failure;
     }
 
     private static boolean isBlank(String s) {

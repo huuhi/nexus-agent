@@ -2,7 +2,9 @@ package com.huzhijian.nexusagentweb.service.impl;
 
 import com.huzhijian.nexusagentweb.domain.User;
 import com.huzhijian.nexusagentweb.em.QuotaPeriod;
+import com.huzhijian.nexusagentweb.em.UserRole;
 import com.huzhijian.nexusagentweb.exception.QuotaExceededException;
+import com.huzhijian.nexusagentweb.mapper.FileMapper;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.QuotaService;
@@ -45,6 +47,7 @@ import java.time.LocalDateTime;
 public class QuotaServiceImpl implements QuotaService {
 
     private final UserMapper userMapper;
+    private final FileMapper fileMapper;
     private final AgentProperties agentProperties;
 
     @Override
@@ -176,6 +179,12 @@ public class QuotaServiceImpl implements QuotaService {
         // 该 UPDATE 幂等（见 resetQuotaPeriod 的 WHERE），GET 重复调用没有副作用。
         long used = resetPeriodIfDue(userId, user);
 
+        // docs/sql/012：文件与产物额度（与 token 额度相互独立，互不影响判定）
+        Long fileQuota = effectiveFileQuota(user);
+        boolean fileUnlimited = fileQuota == null || fileQuota <= 0;
+        Long fileUsed = todayFileCount(userId);
+        long fileUsedSafe = fileUsed == null ? 0L : fileUsed;
+
         Long quota = user.getTokenQuota();
         boolean unlimited = quota == null || quota <= 0;
 
@@ -186,8 +195,92 @@ public class QuotaServiceImpl implements QuotaService {
                 .unlimited(unlimited)
                 .period(period.name())
                 .periodStart(period.resets() ? period.startOf(LocalDate.now()) : null)
+                // docs/sql/012：角色 + 文件与产物额度。查询失败返回 null（不限制口径），
+                // 但 token 部分仍然可信 —— 所以这里不整段降级成 degraded()。
+                .role(UserRole.parse(user.getRole()).name())
+                .fileQuota(fileUnlimited ? null : fileQuota)
+                .fileUsed(fileUsed)
+                .fileRemaining(fileUnlimited ? null : Math.max(0, fileQuota - fileUsedSafe))
+                .fileUnlimited(fileUnlimited)
                 .degraded(false)
                 .build();
+    }
+
+    /**
+     * 今日已产生的「文件 + 产物」条数。
+     * <p>
+     * 统计失败返回 {@code null}（表示"不知道"，前端显示"--"），
+     * 而不是返回 0 —— 0 会被当成"一个都没用"，与真实情况可能完全相反。
+     */
+    private Long todayFileCount(Long userId) {
+        try {
+            return fileMapper.countSince(userId, LocalDate.now().atStartOfDay());
+        } catch (Exception e) {
+            log.warn("统计今日文件数失败：userId={} 原因={}。若提示缺列/缺表，请检查 sys_file",
+                    userId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 文件 + 产物配额校验（{@code docs/sql/012}）。
+     * <p>
+     * 判定用的是**当天已落库的条数**，而文件额度天然按天滚动（按 create_time 统计），
+     * 所以这里不需要像 token 那样做惰性重置。
+     */
+    @Override
+    public void assertWithinFileQuota(Long userId) {
+        if (userId == null || !agentProperties.getQuota().isEnabled()) {
+            return;
+        }
+        User user;
+        try {
+            user = userMapper.selectById(userId);
+        } catch (Exception e) {
+//            与 token 配额同一套取舍：缺列（012 没执行）不该把上传打挂，降级放行 + 明确提示
+            log.warn("文件配额校验已跳过（查询用户失败，本次放行）：userId={} 原因={}。"
+                    + "若日志提示缺列，请执行 docs/sql/012_add_user_role_and_file_quota.sql", userId, e.getMessage());
+            return;
+        }
+        if (user == null) {
+            return;
+        }
+        Long quota = effectiveFileQuota(user);
+        if (quota == null || quota <= 0) {
+            return; // 不限制（测试用户就是这一档）
+        }
+        long used;
+        try {
+            used = fileMapper.countSince(userId, LocalDate.now().atStartOfDay());
+        } catch (Exception e) {
+            log.warn("统计文件数失败（本次放行）：userId={} 原因={}", userId, e.getMessage());
+            return;
+        }
+        if (used >= quota) {
+            log.warn("文件/产物数量超限，本次被拒绝：userId={} 今日已用={} 上限={} 角色={}",
+                    userId, used, quota, user.getRole());
+            throw new QuotaExceededException(
+                    "今日文件与产物数量已达上限（已用 %d / 上限 %d），明天 00:00 自动重置。"
+                            .formatted(used, quota));
+        }
+    }
+
+    /**
+     * 生效的文件额度：**用户自己的 file_quota 优先**，没有时回落到角色默认值。
+     * <p>
+     * ⚠️ 刻意只在「用户列为 null」时才回落到角色：
+     * 库里一旦写了值就是显式意图（比如给测试用户临时限量），不该被角色默认值盖回去。
+     */
+    public static Long effectiveFileQuota(User user) {
+        if (user == null) {
+            return null;
+        }
+        Long own = user.getFileQuota();
+        if (own != null) {
+            return own;
+        }
+        long roleDefault = UserRole.parse(user.getRole()).dailyFiles();
+        return roleDefault == UserRole.FILE_UNLIMITED ? null : roleDefault;
     }
 
     /**

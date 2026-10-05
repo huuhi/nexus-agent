@@ -13,7 +13,6 @@ import com.huzhijian.nexusagentweb.utils.MemoryQueryParser;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -68,11 +67,24 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
     //  写入
     // ------------------------------------------------------------------
 
-    @Async
+    /**
+     * 保存一条长期记忆。
+     * <p>
+     * ⚠️ <b>2026-10-05 去掉 {@code @Async}</b>：异步执行时异常被吞，
+     * 「写库失败」在工具侧表现为**返回 ok 而库里什么都没有**（线上真实故障）。
+     * 代价只是工具调用多等一次 INSERT，换来失败可见。
+     */
     @Override
     public void saveMemory(UserMemory userMemory) {
         if (userMemory == null) {
             return;
+        }
+        Long userId = userMemory.getUserId();
+        if (userId == null) {
+//            🔴 必须是**显式报错**而不是静默 return：走到这里说明调用方在流式回调线程里
+//            取了 UserContextHolder（必然 null）。以前这一条会一路插到 user_id NOT NULL 的列上，
+//            在异步线程里炸掉且无人知晓 —— 用户看到的是"保存成功"，实际一条都没进库。
+            throw new UnauthorizedException("长期记忆缺少用户归属，拒绝写入（工具必须用 RunUserRegistry 反查 userId）");
         }
         String content = MemoryQueryParser.normalize(userMemory.getContent());
         if (content == null) {
@@ -85,8 +97,8 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
             log.warn("长期记忆内容过长（{} 字），截断到 {} 字", content.length(), maxLen);
             content = content.substring(0, maxLen);
         }
-        Long userId = userMemory.getUserId();
-        if (userId != null && isDuplicate(userId, content)) {
+        Long owner = userMemory.getUserId();
+        if (owner != null && isDuplicate(owner, content)) {
             log.info("重复记忆，跳过写入：{}", content);
             return;
         }
@@ -129,6 +141,18 @@ public class UserMemoryServiceImpl extends ServiceImpl<UserMemoryMapper, UserMem
         Long userId = UserContextHolder.getUserId();
         if (userId == null) {
             // 原来是 eq("user_id", null)，SQL 变成 user_id = NULL → 恒为空，静默返回"没记忆"
+            throw new UnauthorizedException("用户未登录！");
+        }
+        return getMemory(userId, key);
+    }
+
+    /**
+     * 检索长期记忆（显式 userId）。真正的实现在这里，{@link #getMemory(String)} 只是
+     * 「从 ThreadLocal 取用户」的薄封装 —— 这样工具侧就能绕过 ThreadLocal 直接调用。
+     */
+    @Override
+    public List<UserMemoryVO> getMemory(Long userId, String key) {
+        if (userId == null) {
             throw new UnauthorizedException("用户未登录！");
         }
         AgentProperties.Memory cfg = props.getMemory();

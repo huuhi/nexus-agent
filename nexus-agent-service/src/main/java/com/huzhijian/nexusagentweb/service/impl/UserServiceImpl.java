@@ -7,6 +7,8 @@ import com.huzhijian.nexusagentweb.dto.UserLoginDTO;
 import com.huzhijian.nexusagentweb.dto.UserPasswordDTO;
 import com.huzhijian.nexusagentweb.dto.UserRegisterDTO;
 import com.huzhijian.nexusagentweb.em.LoginType;
+import com.huzhijian.nexusagentweb.em.QuotaPeriod;
+import com.huzhijian.nexusagentweb.em.UserRole;
 import com.huzhijian.nexusagentweb.exception.NotFoundException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
@@ -112,12 +114,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
 //        TODO 头像 之后写一个头像集合，随机一个头像
         String url="https://nexus-agent-file.oss-cn-guangzhou.aliyuncs.com/user/avatar/76041334-9f55-41bb-b298-77da76572eab.jpg";
 
+        // docs/sql/012：注册一律走「默认角色」（生产是 NORMAL）。
+        // TEST / VIP 不由注册接口产出 —— 那两档是运营在库里改 users.role 授予的。
+        UserRole role = defaultRole();
         User user = User.builder().email(email)
                 .username(username)
                 .avatarImg(url)
-//                P2-8：新用户默认 token 配额（未配置则存 null = 不限制，避免库里出现 0 这种歧义值）
-                .tokenQuota(defaultTokenQuota())
+                .role(role.name())
+//                P2-8：新用户的 token 额度。2026-10-06 起按**角色档位**写死，
+//                而不是留 NULL 让校验时回落 —— 库里显式有值，运营查一次就能知道"这人是哪档"，
+//                也不会出现"改了 role 但额度还是老值"的错觉（改档位必须同时改这两列）。
+                .tokenQuota(role.dailyTokens())
                 .tokenUsed(0L)
+//                角色档位都是**按天**的口径（每天 100 万 / 1000 万），周期必须显式写 DAILY：
+//                全局默认 period=NONE 是"累计不重置"，沿用会让"每天"变成"一辈子"。
+                .tokenPeriod(QuotaPeriod.DAILY.name())
+                .fileQuota(role.dailyFiles())
                 .build();
         save(user);
 
@@ -125,14 +137,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     }
 
     /**
-     * 新注册用户的默认 token 配额。
+     * 新注册用户的默认角色（{@code docs/sql/012}）。
      * <p>
-     * {@code <=0} 时返回 null（= 不限制）。刻意不写 0：库里 0 与 NULL 虽然判定结果一样，
-     * 但 NULL 明确表示"从未设过配额"，0 看起来像"配额是 0 却还能用"，排查时容易绕。
+     * 取 {@code nexus.agent.quota.default-role}；无法识别的值由 {@link UserRole#parse}
+     * 回落到 {@code NORMAL} —— 配错配置最多是"档位偏保守"，不会配出一个额度离谱的档位。
      */
-    private Long defaultTokenQuota() {
-        long quota = agentProperties.getQuota().getDefaultQuota();
-        return quota > 0 ? quota : null;
+    private UserRole defaultRole() {
+        return UserRole.parse(agentProperties.getQuota().getDefaultRole());
     }
 
 
