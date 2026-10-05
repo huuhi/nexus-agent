@@ -27,4 +27,26 @@ public class McpServerItemVO {
     private String logoUrl;
     private String type;
     private Boolean available;
+
+    /**
+     * 🔴 <b>2026-10-05 新增</b>：这一项是否已经在<b>当前用户</b>的已配置列表里。
+     * <p>
+     * 只由 {@code GET /api/mcp/service}（服务商预置列表）填充 —— 它是「能不能点添加」的唯一依据。
+     * 没有它的时候，前端只能拿 {@code strId} 自己去比对 {@code GET /api/mcp} 的结果，
+     * 而 strId 可能是 <b>null / 空串 / 带前后空格</b>（历史脏数据），比对必然有漏 ——
+     * 表现就是「明明已经添加过了，预置列表里还挂着『添加』按钮，点一下又插一条」。
+     * 现在由后端直接给答案，前端只看这一个布尔值即可。
+     * <p>
+     * {@code GET /api/mcp}（已配置列表）里恒为 {@code true}（它们本来就是已添加的）。
+     */
+    private Boolean added;
+
+    /**
+     * 已添加时，本地 {@code mcp_information} 记录的主键（字符串形式，避免前端 JS 精度问题）。
+     * <p>
+     * 用途：预置列表里「已添加」的卡片要能直接跳到编辑 / 删除，
+     * 而不用前端先去 {@code GET /api/mcp} 里按 strId 反查一遍。
+     * 未添加时为 {@code null}。
+     */
+    private String localId;
 }

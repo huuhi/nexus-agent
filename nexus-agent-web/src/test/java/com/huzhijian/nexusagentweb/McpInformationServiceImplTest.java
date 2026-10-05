@@ -12,6 +12,7 @@ import com.huzhijian.nexusagentweb.service.impl.McpInformationServiceImpl;
 import com.huzhijian.nexusagentweb.service.impl.UserConfigServiceImpl;
 import com.huzhijian.nexusagentweb.utils.HttpUtils;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
+import com.huzhijian.nexusagentweb.vo.McpServerItemVO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -205,6 +206,62 @@ class McpInformationServiceImplTest {
         verify(mapper).updateMCP(captor.capture());
         assertEquals(7L, captor.getValue().getId());
         verify(registry).evict(7L);
+    }
+
+    // ============ 2026-10-05：预置服务能被重复添加 ============
+    //
+    // 现象：「已添加的服务」里已经有这条了，「预置服务」里还挂着「添加」按钮，点一次多一条。
+    // 根因分两层：
+    //   ① 预置列表没告诉前端哪些已添加（见下面 added 字段的两条用例）；
+    //   ② 后端去重只认 strId —— strId 一旦缺失（前端从预置列表组装 payload 时很容易丢），
+    //      就直接走 insert，而 str_id 为 NULL 时 PG 的唯一约束又不生效，于是能无限插重复行。
+    // 这里把第 ② 层钉死：**strId 匹配不上时，必须再用 url 兜一次**。
+
+    @Test
+    @DisplayName("前端漏传 strId 时按 url 兜底去重：走更新分支，绝不插入重复行")
+    void updateByUrlWhenStrIdMissing() {
+        when(mapper.selectList(any())).thenReturn(List.of(
+                McpInformation.builder().id(7L).strId("@MrCare/mcp_tool").url(SAFE_URL)
+                        .userId(USER_ID).build()));
+
+        // strId 传 null —— 模拟前端从预置列表组装 payload 时把 strId 丢了
+        service.saveMcp(List.of(new McpServerItemDTO(null, null, SAFE_URL,
+                "一个极简的天气查询工具", "天气查询工具", null, "streamable_http", null, null)));
+
+        verify(mapper, never()).saveBatch(anyList());
+        ArgumentCaptor<McpInformation> captor = ArgumentCaptor.forClass(McpInformation.class);
+        verify(mapper).updateMCP(captor.capture());
+        assertEquals(7L, captor.getValue().getId(), "要更新到已有的那条上，而不是新建");
+    }
+
+    @Test
+    @DisplayName("url 只差末尾斜杠（或前后空格）：算同一个服务，不重复登记")
+    void urlIsNormalizedBeforeMatching() {
+        when(mapper.selectList(any())).thenReturn(List.of(
+                McpInformation.builder().id(7L).strId("whatever").url(SAFE_URL + "/")
+                        .userId(USER_ID).build()));
+
+        service.saveMcp(List.of(new McpServerItemDTO(null, null, "  " + SAFE_URL + "  ",
+                "天气", "天气查询工具", null, "streamable_http", null, null)));
+
+        verify(mapper, never()).saveBatch(anyList());
+        ArgumentCaptor<McpInformation> captor = ArgumentCaptor.forClass(McpInformation.class);
+        verify(mapper).updateMCP(captor.capture());
+        assertEquals(7L, captor.getValue().getId());
+    }
+
+    @Test
+    @DisplayName("GET /api/mcp（已配置列表）里 added 恒为 true、localId 等于自己的 id")
+    void configuredListIsMarkedAsAdded() {
+        when(mapper.selectList(any())).thenReturn(List.of(
+                McpInformation.builder().id(7L).strId("s-1").url(SAFE_URL).userId(USER_ID).build()));
+
+        List<McpServerItemVO> vos = service.getMcpInformation();
+
+        assertEquals(1, vos.size());
+        assertEquals(Boolean.TRUE, vos.get(0).getAdded());
+        assertEquals("7", vos.get(0).getLocalId(),
+                "已添加的条目要带上本地 id，前端才能直接跳编辑而不用再反查一次");
     }
 
     @Test

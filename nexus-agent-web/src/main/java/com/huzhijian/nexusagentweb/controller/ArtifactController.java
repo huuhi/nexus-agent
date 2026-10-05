@@ -47,12 +47,19 @@ public class ArtifactController {
     }
 
     /**
-     * 删除一个产物。
+     * 删除一个文件记录（先删数据库记录、再尽力删 OSS 对象）。
      * <p>
-     * 删除语义：先删数据库记录、再尽力删 OSS 对象。记录不存在或不属于当前用户时，
-     * 返回统一的错误提示（**不区分**这两种情况，避免探测他人产物是否存在）。
+     * 🔴 <b>2026-10-05 变更：不再限定 {@code biz_type=ARTIFACT}。</b>
+     * 前端「文件与产物」是统一视图，删除按钮对所有行都打这个端点，
+     * 而原先 Service 层硬加了 {@code biz_type=ARTIFACT} 条件 ——
+     * 用户上传的对话附件（{@code CHAT}）因此永远删不掉，一律报
+     * 「产物不存在或无权删除」。归属校验靠 {@code user_id} 就够了，
+     * bizType 不是安全边界，加它只会误伤。
+     * <p>
+     * 语义上更推荐用 {@code DELETE /api/file/{id}}（文件名与行为一致），
+     * 这个端点保留是为了不让已上线的前端调用直接失效 —— 两者现在等价。
      */
-    @Operation(summary = "删除产物（先删记录再尽力删 OSS 对象）")
+    @Operation(summary = "删除一条文件记录（不限产物，先删记录再尽力删 OSS 对象）")
     @DeleteMapping("/{id}")
     public Result delete(@PathVariable Long id) {
         boolean deleted = artifactService.delete(id, currentUserId());

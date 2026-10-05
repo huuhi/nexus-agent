@@ -28,11 +28,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
 * @author windows
@@ -145,7 +145,85 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
             item.setStrId(item.getId());
             item.setId("");
         });
+//        🔴 2026-10-05：标出「哪些已经添加过」。
+//        以前这个接口只回模板，前端无从判断，于是已添加的条目照样显示「添加」，
+//        用户点一次就多插一条（后端虽然有 strId 去重，但 strId 一旦缺失/带空格就整个失效）。
+//        现在由后端直接给出答案，前端只看 added 一个字段。
+        markAdded(body, userId);
         return body;
+    }
+
+    /**
+     * 给预置模板打上「当前用户是否已添加」的标记。
+     * <p>
+     * 匹配用 <b>strId 优先、url 兜底</b>两级：
+     * <ul>
+     *   <li>strId 是供应方的稳定标识（{@code (user_id, str_id)} 上有唯一约束），最可靠；</li>
+     *   <li>但历史脏数据可能 {@code str_id IS NULL}，或前后带空格 —— 这时退到 url 比对，
+     *      同一个服务地址不应该被重复登记。</li>
+     * </ul>
+     */
+    private void markAdded(List<McpServerItemVO> presets, Long userId) {
+        Map<String, Long> byStrId = new HashMap<>();
+        Map<String, Long> byUrl = new HashMap<>();
+        for (McpInformation m : query().eq("user_id", userId).list()) {
+            String strId = blankToNull(m.getStrId());
+            if (strId != null) {
+                // 同一 strId 有多条历史行时保留 id 最小的那条，行为可预期
+                byStrId.merge(strId, m.getId(), (a, b) -> Math.min(a, b));
+            }
+            String url = blankToNull(m.getUrl());
+            if (url != null) {
+                byUrl.merge(normalizeUrl(url), m.getId(), (a, b) -> Math.min(a, b));
+            }
+        }
+        for (McpServerItemVO item : presets) {
+            Long localId = matchExistingId(blankToNull(item.getStrId()), blankToNull(item.getUrl()),
+                    byStrId, byUrl);
+            if (localId != null) {
+                item.setAdded(true);
+                item.setLocalId(String.valueOf(localId));
+            } else {
+                item.setAdded(false);
+                item.setLocalId(null);
+            }
+        }
+    }
+
+    /**
+     * 在「当前用户已有的配置」里找一条与待添加项对应的记录。
+     *
+     * @return 命中的本地主键；没有则 null（表示这是新服务）
+     */
+    private static Long matchExistingId(String strId, String url,
+                                        Map<String, Long> byStrId, Map<String, Long> byUrl) {
+        if (strId != null) {
+            Long hit = byStrId.get(strId);
+            if (hit != null) {
+                return hit;
+            }
+        }
+        if (url != null) {
+            return byUrl.get(normalizeUrl(url));
+        }
+        return null;
+    }
+
+    /**
+     * URL 归一化：只去首尾空白与末尾斜杠。
+     * <p>
+     * ⚠️ <b>刻意不转小写</b>：URL 的 path 部分大小写敏感，统一小写会把两个不同的服务误判成同一个。
+     */
+    private static String normalizeUrl(String url) {
+        String trimmed = url.trim();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     @Override
@@ -170,18 +248,32 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
 //           而 Collectors.toMap 碰到 null key 直接抛 NPE，碰到重复 key 抛 IllegalStateException
 //           —— 两种都在「用户点一下保存」时炸成 500。strId 为空的行本来就无法参与匹配，直接跳过。
 //        ② merge 时保留 id 最小的那条，保证同一 strId 有多个历史行时行为可预期。
-        Map<String, Long> map = existMCPs.stream()
-                .filter(m -> m.getStrId() != null && !m.getStrId().isBlank())
-                .collect(Collectors.toMap(McpInformation::getStrId, McpInformation::getId,
-                        (a, b) -> Math.min(a, b)));
+//        🔴 2026-10-05 升级为 **strId + url 两级匹配**：
+//           原来只认 strId，前端一旦漏传（预置列表里 id 被刻意置空，很容易丢），
+//           就落进 else 分支直接 insert —— 而 str_id 为 NULL 时唯一约束又不生效，
+//           于是同一个服务能被无限插重复行。现在 strId 匹配不上还会用 url 再兜一次。
+        Map<String, Long> byStrId = new HashMap<>();
+        Map<String, Long> byUrl = new HashMap<>();
+        for (McpInformation m : existMCPs) {
+            String strId = blankToNull(m.getStrId());
+            if (strId != null) {
+                byStrId.merge(strId, m.getId(), (a, b) -> Math.min(a, b));
+            }
+            String url = blankToNull(m.getUrl());
+            if (url != null) {
+                byUrl.merge(normalizeUrl(url), m.getId(), (a, b) -> Math.min(a, b));
+            }
+        }
         for (McpServerItemDTO mcp : mcPs) {
 
 //            相同服务
             McpInformation mcpInformation = transformMcpInformation(mcp,userId);
-            if (map.containsKey(mcp.strId())) {
-//                相同
+            Long existingId = matchExistingId(blankToNull(mcp.strId()), blankToNull(mcp.url()),
+                    byStrId, byUrl);
+            if (existingId != null) {
+//                相同：走更新，绝不新增重复行
                 mcpInformation.setAvailable(true);
-                mcpInformation.setId(map.get(mcp.strId()));
+                mcpInformation.setId(existingId);
                 updateList.add(mcpInformation);
             }else{
                 list.add(mcpInformation);
@@ -211,7 +303,14 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         }
         List<McpInformation> list = query().eq("user_id", userId)
                 .list();
-        return BeanUtil.copyToList(list, McpServerItemVO.class);
+        List<McpServerItemVO> vos = BeanUtil.copyToList(list, McpServerItemVO.class);
+        // 这个列表本身就是「已添加」的：与 GET /api/mcp/service 的 added 字段保持同一套语义，
+        // 前端不用再区分两个接口各返回什么
+        vos.forEach(vo -> {
+            vo.setAdded(true);
+            vo.setLocalId(vo.getId());
+        });
+        return vos;
     }
 
     @Override

@@ -49,13 +49,21 @@ public interface ArtifactService {
     List<SysFile> listBySession(String sessionId, Long userId);
 
     /**
-     * 删除一个产物：**先删记录、再尽力删 OSS 对象**。
+     * 删除一条文件记录：**先删记录、再尽力删 OSS 对象**。
      * <p>
      * 顺序是刻意的：用户点"删除"的语义以记录为准，对象残留只是存储成本；
      * 反过来（先删对象再删记录）一旦记录删除失败，用户会看到一个点开就 404 的产物。
+     * <p>
+     * 🔴 <b>2026-10-05 变更：不再限定 {@code biz_type=ARTIFACT}。</b>
+     * 前端「文件与产物」是统一视图（一份列表同时含用户上传的 {@code CHAT} 附件与
+     * AI 产物 {@code ARTIFACT}），删除按钮只有一个。加了 bizType 条件后，
+     * 附件一律删不掉，用户只看到「产物不存在或无权删除」，完全不知道原因。
+     * 归属校验靠 {@code user_id} 就够了 —— bizType 从来不是安全边界。
+     * <p>
+     * 语义更准确的入口是 {@link FileService#delete}，两者行为一致。
      *
      * @return true = 确实删掉了一条；false = 不存在 / 不属于该用户。
-     *         **两种情况不区分**，避免通过返回值探测他人产物是否存在
+     *         **两种情况不区分**，避免通过返回值探测他人文件是否存在
      */
     boolean delete(Long id, Long userId);
 }

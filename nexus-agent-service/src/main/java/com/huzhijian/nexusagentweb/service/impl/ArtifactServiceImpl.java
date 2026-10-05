@@ -50,37 +50,46 @@ public class ArtifactServiceImpl implements ArtifactService {
         if (id == null || userId == null) {
             return false;
         }
-        // 先按 id + user_id 查：既校验归属，又拿到 URL 用于删 OSS 对象
+        // 先按 id + user_id 查：既校验归属，又拿到 URL 用于删 OSS 对象。
+        //
+        // 🔴 2026-10-05：这里原来还带了 `.eq(SysFile::getBizType, BizType.ARTIFACT)`，
+        // 而前端「文件与产物」是一个**统一视图**（42 个文件 = 13 个对话附件 + 29 个产物），
+        // 删除按钮对所有行都调这个端点 —— 于是 biz_type=CHAT（用户上传的附件）
+        // 永远命中不了，用户看到的就是「产物不存在或无权删除」。
+        // 归属校验本来就靠 user_id，bizType 不是安全边界，加它只会误伤，已移除。
         SysFile file = fileMapper.selectOne(Wrappers.<SysFile>lambdaQuery()
                 .eq(SysFile::getId, id)
-                .eq(SysFile::getUserId, userId)
-                .eq(SysFile::getBizType, BizType.ARTIFACT));
+                .eq(SysFile::getUserId, userId));
         if (file == null) {
             // 不存在 / 不属于该用户：统一返回 false，不通过返回值泄露他人产物的存在性
+            logDeleteMiss(id, userId);
             return false;
         }
         fileMapper.deleteById(id);
-        deleteOssObject(file.getFileUrl());
+        aliOssUtil.deleteByUrl(file.getFileUrl());
         return true;
     }
 
     /**
-     * 尽力删除 OSS 对象。
+     * 删除落空时的诊断日志。
      * <p>
-     * 失败只记 WARN：记录已经删了，对象残留只是存储成本；报错反而会让用户以为没删掉。
+     * 🔴 <b>"不存在"和"不属于你"在返回值上必须一视同仁</b>（否则就成了探测他人文件的探针），
+     * 但线上排查时这两者天差地别，所以只在日志里区分清楚：
+     * <ul>
+     *   <li>{@code sys_file} 里根本没有这个 id → 前端传的 id 不对（注意：可能是 JS 精度问题，
+     *       {@code sys_file.id} 是雪花算法生成的 Long，若哪天长度超过 2^53，
+     *       JSON 数字在浏览器里会被四舍五入）；</li>
+     *   <li>id 存在但属于别的用户 → 越权访问尝试，是需要关注的安全信号。</li>
+     * </ul>
      */
-    private void deleteOssObject(String fileUrl) {
-        String objectName = AliOssUtil.objectNameOf(fileUrl);
-        if (objectName == null) {
-            log.warn("无法从 URL 解析出 OSS 对象名，跳过对象删除：url={}", fileUrl);
+    private void logDeleteMiss(Long id, Long userId) {
+        SysFile anyOwner = fileMapper.selectById(id);
+        if (anyOwner == null) {
+            log.warn("删除文件落空：id={} 在 sys_file 中不存在（前端传的 id 可能不是 sys_file 主键，或该记录已删除）", id);
             return;
         }
-        try {
-            aliOssUtil.deleteObject(objectName);
-        } catch (Exception e) {
-            log.warn("删除 OSS 对象失败（已忽略，数据库记录已删除）：object={} 原因={}",
-                    objectName, e.getMessage());
-        }
+        log.warn("删除文件落空：id={} 存在但不属于当前用户（记录归属 userId={}，本次请求 userId={}）",
+                id, anyOwner.getUserId(), userId);
     }
 
     @Override

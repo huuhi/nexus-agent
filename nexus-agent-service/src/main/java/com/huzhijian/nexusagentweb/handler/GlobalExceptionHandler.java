@@ -66,6 +66,58 @@ public class GlobalExceptionHandler {
         return Result.error(ex.getMessage());
     }
 
+    @ExceptionHandler(ParserFileException.class)
+    public Result handleParserFile(ParserFileException ex) {
+        return Result.error(ex.getMessage());
+    }
+
+    /**
+     * 🔴 <b>2026-10-05 补：非法状态（业务上「当前不该继续」）必须走业务异常出口，不能掉 500。</b>
+     * <p>
+     * 背景：`GET /api/lexiang/teams` 一直返回 500，真实原因被兜底分支吞成了
+     * 「系统内部错误，请稍后重试」—— 而它实际上可能是下面任意一条**用户能自己解决**的问题：
+     * <ul>
+     *   <li>没保存乐享凭证 → 「尚未接入乐享知识库：请先在设置里填写 AppKey 与 AppSecret。」</li>
+     *   <li>没保存过 API 配置（缺加密盐值）→ 「用户配置不完整（缺少加密盐值）…」</li>
+     *   <li>AppKey 无效 / AppSecret 错 / 撞了 20 次/10 分钟限频 → {@code LexiangClient} 的中文提示</li>
+     *   <li>团队列表为空（授权范围不含该成员）→ 「未获取到任何乐享团队…」</li>
+     * </ul>
+     * 这些全是 {@code IllegalStateException}，而这里原来没有对应处理器，
+     * 于是「用户配错了」和「服务真的挂了」在前端长得一模一样，只能靠翻服务端日志才能区分。
+     * <p>
+     * 为什么用 {@code log.warn} 而不是 {@code log.error}：本项目的
+     * {@code IllegalStateException} 一律带中文的人话消息（是给最终用户看的），
+     * 属于「可预期、可自愈」的场景，不该在监控里和真 NPE 混在一起报警。
+     *
+     * @see #handleIllegalArgument
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    public Result handleIllegalState(IllegalStateException ex) {
+        String msg = ex.getMessage();
+        // ⚠️ 无参构造（new IllegalStateException()）消息是 null，直接透传会把 "null" 显示给用户
+        if (msg == null || msg.isBlank()) {
+            msg = "当前状态无法完成该操作，请刷新后重试";
+        }
+        log.warn("非法状态（业务不可继续）：{}", msg);
+        return Result.error(msg);
+    }
+
+    /**
+     * 参数不合法（如乐享知识库列表缺 {@code teamId}）。
+     * <p>
+     * 与 {@link #handleIllegalState} 同源问题：原来同样掉兜底 500。
+     * 归到 4xx 语义但保持本项目的「HTTP 200 + {@code code=1}」约定，前端按 code 展示即可。
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public Result handleIllegalArgument(IllegalArgumentException ex) {
+        String msg = ex.getMessage();
+        if (msg == null || msg.isBlank()) {
+            msg = "请求参数不正确";
+        }
+        log.warn("参数不合法：{}", msg);
+        return Result.error(msg);
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public Result handleMethodArgumentNotValid(MethodArgumentNotValidException ex) {
         String message = ex.getBindingResult().getFieldError() == null

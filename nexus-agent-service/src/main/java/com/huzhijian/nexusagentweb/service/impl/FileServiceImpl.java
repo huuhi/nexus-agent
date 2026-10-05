@@ -145,6 +145,46 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
     }
 
     /**
+     * 删除当前用户自己的一条文件记录（不限 {@code biz_type}），并尽力删除 OSS 对象。
+     * <p>
+     * 见接口 {@link FileService#delete} 的说明：前端「文件与产物」统一视图需要一个
+     * 对 CHAT / ARTIFACT / KNOWLEDGE 都生效的删除入口。
+     */
+    @Override
+    @Transactional
+    public boolean delete(Long id, Long userId) {
+        if (id == null || userId == null) {
+            return false;
+        }
+        // ⚠️ user_id 条件是越权防护的核心：id 来自客户端，不限定归属就能删别人的文件
+        SysFile file = query().eq("id", id).eq("user_id", userId).one();
+        if (file == null) {
+            logDeleteMiss(id, userId);
+            return false;
+        }
+        boolean removed = removeById(id);
+        // 记录已删，对象残留只是存储成本 —— 失败只记 WARN，不能反过来让删除失败
+        ossUtil.deleteByUrl(file.getFileUrl());
+        log.info("已删除文件：id={} name={} bizType={}（记录删除={}）",
+                id, file.getFileName(), file.getBizType(), removed);
+        return removed;
+    }
+
+    /**
+     * 删除落空时的诊断日志：与 {@code ArtifactServiceImpl#logDeleteMiss} 同一套口径
+     * —— 对外不区分（防探测），但对内必须说清是「id 不存在」还是「越权」。
+     */
+    private void logDeleteMiss(Long id, Long userId) {
+        SysFile anyOwner = getBaseMapper().selectById(id);
+        if (anyOwner == null) {
+            log.warn("删除文件落空：id={} 在 sys_file 中不存在（前端传的 id 可能不是 sys_file 主键，或该记录已删除）", id);
+            return;
+        }
+        log.warn("删除文件落空：id={} 存在但不属于当前用户（记录归属 userId={}，本次请求 userId={}）",
+                id, anyOwner.getUserId(), userId);
+    }
+
+    /**
      * 失败原因入库前的安全截断。
      * <p>
      * ⚠️ 原写法 {@code e.getMessage().substring(0,450)} 有两个坑：

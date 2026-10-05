@@ -235,6 +235,33 @@ public class AliOssUtil {
     }
 
     /**
+     * 按「文件访问 URL」尽力删除 OSS 对象（2026-10-05 抽出，供产物与用户文件共用）。
+     * <p>
+     * 与 {@link #deleteObject} 的区别：这里吃的是 {@code sys_file.file_url}，
+     * 内部先反推 objectName；并且<b>吞掉所有异常只记 WARN</b> —— 调用方都是
+     * 「先删数据库记录，再尽力清理对象」的顺序，此时数据库记录已经没了，
+     * 对象残留只是存储成本，不该反过来让删除操作失败（用户只会以为没删掉）。
+     *
+     * @param fileUrl {@code sys_file.file_url}；为 null / 空 / 解析不出对象名时直接跳过
+     * @return 是否真的删掉了对象（false = 跳过或失败）
+     */
+    public boolean deleteByUrl(String fileUrl) {
+        String objectName = objectNameOf(fileUrl);
+        if (objectName == null) {
+            log.warn("无法从 URL 解析出 OSS 对象名，跳过对象删除：url={}", fileUrl);
+            return false;
+        }
+        try {
+            deleteObject(objectName);
+            return true;
+        } catch (Exception e) {
+            log.warn("删除 OSS 对象失败（已忽略，数据库记录已删除）：object={} 原因={}",
+                    objectName, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 从 OSS 访问 URL 反推 objectName（删除产物时需要）。
      * <p>
      * URL 形如 {@code https://{bucket}.{host}/{objectName}}。
