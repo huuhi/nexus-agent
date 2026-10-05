@@ -90,23 +90,52 @@ class EnvPlaceholderDriftTest {
                         + missing);
     }
 
+    /**
+     * 专项回归：<b>只要 prod yml 里还有任何一个 {@code ${ALI_AI_KEY}}，
+     * .env.example 就必须有未被注释的 {@code ALI_AI_KEY=} 行。</b>
+     *
+     * <p><b>2026-10-05 改造</b>：原来是硬断言「必须有未注释的 ALI_AI_KEY= 行」，
+     * 那条断言在百炼从 {@code system-models} 移除后就与现实矛盾了
+     * （{@code .env.example} 里那一行按新事实被注释掉，测试直接红）。
+     * 真正要守的不变式是<b>「引用了占位符就必须能填」</b>，而不是「这个占位符必须存在」——
+     * 否则将来再下线任何一个服务商，都得改一遍这个测试。
+     *
+     * <p>反向的坑也一并守住：若 prod yml 里其实<b>还在用</b> ${ALI_AI_KEY}，
+     * 而 .env.example 把它注释掉了，那正是 2026-10-04 那次事故的形态
+     * （用户照模板不填 → 启动直接失败）。现在这条会在 yml 含占位符时立刻报出来。
+     */
     @Test
-    @DisplayName("专项回归：ALI_AI_KEY 仍被百炼（qwen）使用，不许再被文档写成『不需要』")
-    void aliAiKeyMustStayDeclared() throws IOException {
+    @DisplayName("专项回归：prod yml 只要还用 ${ALI_AI_KEY}，.env.example 就必须能填")
+    void aliAiKeyStaysFillableWhenReferenced() throws IOException {
         Path root = repoRoot();
-        String yml = Files.readString(root.resolve("nexus-agent-web/src/main/resources/application-prod.yml"));
-        assertTrue(yml.contains("${ALI_AI_KEY}"),
-                "prod yml 里已经不用 ALI_AI_KEY 了？那这个专项断言可以删掉");
-
+        // 🔴 只看**非注释行**：yml 里常有「说明性注释」写着 ${ALI_AI_KEY}（告诉读者这个占位符是什么），
+        //    用 contains() 全文匹配会把它当成真的引用 → 假阳性（本轮实测踩到）。
+        //    同一个坑上面 everyRequiredPlaceholderIsDeclared 已经踩过一次并处理过。
+        boolean referenced = Files.readAllLines(root.resolve("nexus-agent-web/src/main/resources/application-prod.yml"))
+                .stream()
+                .map(String::trim)
+                .anyMatch(line -> !line.startsWith("#") && line.contains("${ALI_AI_KEY}"));
         List<String> hits = new ArrayList<>();
         for (String line : Files.readAllLines(root.resolve(".env.example"))) {
             if (line.contains("ALI_AI_KEY")) {
                 hits.add(line.trim());
             }
         }
-        assertFalse(hits.isEmpty(), ".env.example 里完全找不到 ALI_AI_KEY");
+
+        if (!referenced) {
+            // 百炼已从 system-models 移除（2026-10-05，供应商换成小米 MIMO）。
+            // prod 不再引用它 → .env.example 里那一行注释掉是正确的，不要求可填。
+            // 但仍要求「文档里还提得起它」，否则将来想换回来的人查不到。
+            assertFalse(hits.isEmpty(),
+                    "prod yml 已不用 ${ALI_AI_KEY}，但 .env.example 里连相关说明都删干净了 —— "
+                            + "将来想换回百炼的人会查不到该去哪儿拿 Key");
+            return;
+        }
+
+        // prod 还在引用 → 必须是可填的（未被注释）
         assertTrue(hits.stream().anyMatch(l -> l.startsWith("ALI_AI_KEY=")),
-                "ALI_AI_KEY 必须有一条**未被注释**的 `ALI_AI_KEY=` 行（它仍在给百炼 qwen 供货），"
+                "prod yml 里在用 ${ALI_AI_KEY}，但 .env.example 里没有未被注释的 `ALI_AI_KEY=` 行 —— "
+                        + "用户照模板不填就会启动失败（Could not resolve placeholder），"
                         + "当前出现的行是：" + hits);
     }
 

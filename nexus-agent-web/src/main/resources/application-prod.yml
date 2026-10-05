@@ -9,8 +9,10 @@ langchain4j:
     #    以前它是**必填**的：不写应用启动就失败，于是"不想用 DeepSeek 了"根本做不到。
     # ⚠️ 但 chat-model（会话标题生成）**不能删**，删了标题生成不了。
     #    2026-10-04：embedding-model 一并删掉了 —— 本地知识库（pgvector）已下线。
-    #    向量化只在入库/检索时用，而第三方知识库（乐享）的向量化由对方服务自己做，
-    #    我们这边不再需要向量模型，${ALI_AI_KEY} 也不再是必填环境变量。
+    #    向量化只在入库/检索时用，而第三方知识库（乐享）的向量化由对方服务自己做。
+    #    2026-10-05：阿里百炼的 Key（ALI_AI_KEY）也不再是必填环境变量，但**原因换了** ——
+    #    百炼已从下面的 nexus.agent.system-models 里移除（第二个供应商换成小米 MIMO），
+    #    prod 不再引用它。跟 pgvector 无关了。
     streaming-chat-model:
       model-name: deepseek-flash
       base-url: https://api.deepseek.com
@@ -122,30 +124,35 @@ nexus:
         baseUrl: https://api.deepseek.com
         apiKey: ${DEEPSEEK}
         models:
-          - modelName: deepseek-chat
-            name: DeepSeek-V3
-            contextWindow: 131072
-            maxOutputTokens: 8192
-      - id: qwen
-        name: 阿里云百炼
-        baseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
-        apiKey: ${ALI_AI_KEY}
-        models:
-          - modelName: qwen3-max
-            name: 通义千问-Max
-            contextWindow: 262144
-          - modelName: qwen-vl-max
-            name: 通义千问-VL（支持看图）
+          - modelName: deepseek-flash
+            name: flash
             vision: true
-            contextWindow: 131072
-    cors:
+            contextWindow: 1000000
+            maxOutputTokens: 384000
+      - id: MIMO
+        name: 小米
+        # ⚠️ 2026-10-05 修正：这里原先是 https://dashscope.aliyuncs.com/compatible-mode/v1
+        #    —— 那是**阿里百炼**的地址，只是把 id/name 换成了小米、apiKey 换成了 ${MIMO}，
+        #    baseUrl 忘了改。结果拿小米的 Key 去敲阿里的门 →
+        #    Incorrect API key provided（help.aliyun.com/zh/model-studio/error-code#apikey-error）。
+        #    换供应商时 baseUrl / apiKey / id / name 必须**成套**改，
+        #    这是今天第三处「改了一半」（前两处：pg 驱动、CORS）。
+        baseUrl: https://api.xiaomimimo.com/v1
+        apiKey: ${MIMO}
+        models:
+          - modelName: mimo-v2.6-pro
+            name: Pro
+            contextWindow: 1000000
+            vision: true
+          - modelName: mimo-v2.6-flash
+            name: Flash
+            vision: true
+            contextWindow: 1000000
       # ⚠️ 生产**默认关闭**：一旦开启，allowed-origins 里写的每个网站都能带着用户 token
       #    读取本服务的响应，等于把后端的攻击面又往外扩了一圈。
       # 需要前后端分离部署时，把它改成 true 并列出**精确域名**（不要写 '*'）：
       #   allowed-origins: https://app.example.com
       # 同源部署（Nginx 把前端静态资源与 /api 挂在同一个域名下）就完全不用开。
-      enabled: true
-      allowed-origins:
     sse:
       # SSE 连接超时。必须大于最慢一次模型调用的耗时，否则复杂任务会被提前掐断
       timeout: 120s

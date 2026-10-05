@@ -59,15 +59,25 @@ public class ChatController {
     }
 
     /**
-     * 查询某个 API 供应商下可用的模型列表。
+     * 查询某个 API 配置下可用的模型列表。
      * <p>
-     * 注意：使用 POST + 请求体，不要改回 GET query 参数——token 是用户密钥，不能出现在 URL 里。
+     * 🔴 <b>2026-10-05 契约变更：只传 {@code configId}，不再传 baseUrl / token。</b>
+     * 旧契约要前端回传密钥，但前端手上只有后端打码后的展示值（{@code sk****3t5d}），
+     * 拿去调厂商必然 401 —— 这不是前端传错，是契约本身错了。
+     * 对话 / 乐享 RAG / MCP 三处一直都是后端自己查库解密，现在这一处也对齐了。
+     * <p>
+     * 仍然用 POST + 请求体（不改成 GET）：虽然不再传密钥，但 configId 属于用户配置标识，
+     * 放 URL 里会进浏览器历史与 access log。
+     * <p>
+     * 厂商不支持 {@code /v1/models} 或 Key 不对时，后端会**降级**返回该配置里
+     * 用户已保存的模型名，<b>不会 500</b>，所以可能返回空列表。
      */
-    @Operation(summary = "查询 API 供应商下可用的模型列表",
-            description = "用 POST + 请求体而非 GET：token 是用户密钥，不能出现在 URL / 浏览器历史 / 访问日志里。")
+    @Operation(summary = "查询 API 配置下可用的模型列表",
+            description = "只传 configId（用户配置 id）。baseUrl 与 API Key 由后端从 user_config 查库并解密，前端不接触密钥。"
+                    + "厂商不支持 /v1/models 时降级返回该配置里已保存的模型名，可能返回空列表，不会报错。")
     @PostMapping("/model")
     public Result getModelList(@RequestBody @Valid ModelListDTO modelListDTO){
-        List<String> models= chatService.getModelList(modelListDTO.baseUrl(), modelListDTO.token());
+        List<String> models = chatService.getModelList(modelListDTO.configId());
         return Result.ok(models);
     }
 

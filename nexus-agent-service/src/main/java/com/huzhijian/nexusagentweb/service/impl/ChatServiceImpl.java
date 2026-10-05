@@ -9,13 +9,17 @@ import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
+import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.domain.Model;
 import com.huzhijian.nexusagentweb.domain.SysFile;
+import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
+import com.huzhijian.nexusagentweb.factory.EncryptorFactory;
 import com.huzhijian.nexusagentweb.observability.RunMetrics;
 import com.huzhijian.nexusagentweb.observability.RunMetricsReporter;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
@@ -24,7 +28,9 @@ import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
+import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
+import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.model.catalog.ModelDescription;
@@ -63,6 +69,9 @@ public class ChatServiceImpl implements ChatService {
     private final QuotaService quotaService;
     private final ArtifactService artifactService;
     private final RunUserRegistry runUserRegistry;
+    // 2026-10-05：getModelList 改为按 configId 查库解密，需要下面两个依赖
+    private final UserConfigService userConfigService;
+    private final UrlGuard urlGuard;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -276,13 +285,99 @@ public class ChatServiceImpl implements ChatService {
     }
 
     @Override
-    public List<String> getModelList(String baseUrl, String token) {        List<ModelDescription> listModels = OpenAiModelCatalog
-                .builder()
-                .apiKey(token)
-                .baseUrl(baseUrl)
-                .httpClientBuilder(new SpringRestClientBuilderFactory().create())
-                .build().listModels();
-        return listModels.stream().map(ModelDescription::name).toList();
+    public List<String> getModelList(String configId) {
+        Long userId = UserContextHolder.getUserId();
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
+        if (configId == null || configId.isBlank()) {
+            throw new ValidationException("configId 不能为空");
+        }
+
+        // 1) 按 id 从库里取这条配置的**密文** baseUrl + 密文 Key + 用户盐值。
+        //    不信任前端传的任何地址与密钥 —— 前端手上只有打码后的展示值。
+        UserConfig userConfig = userConfigService.getUserConfig(userId);
+        if (userConfig == null || userConfig.getLlmApiToken() == null
+                || userConfig.getLlmApiToken().isBlank()) {
+            throw new ValidationException("尚未配置 API Key，无法查询模型列表");
+        }
+        String salt = userConfig.getSalt();
+        if (salt == null || salt.isBlank()) {
+            // 与 EncryptorFactory.text(salt) 的报错口径一致：用户配置记录不完整
+            throw new ValidationException("用户加密盐值缺失，请重新保存一次 API 配置");
+        }
+
+        List<APIConfig> configs;
+        try {
+            configs = JSONUtil.toList(userConfig.getLlmApiToken(), APIConfig.class);
+        } catch (Exception e) {
+            // ⚠️ 任何 catch 都必须留日志（AGENTS.md 铁律）：否则 jsonb 脏数据变成 500 且无头可查
+            log.error("解析 user_config.llm_api_token 失败，userId={}", userId, e);
+            throw new ValidationException("API 配置数据异常，请重新保存一次配置");
+        }
+        APIConfig target = configs.stream()
+                .filter(c -> configId.equals(c.getId()))
+                .findFirst()
+                .orElseThrow(() -> new ValidationException("API 配置不存在或不属于当前用户"));
+
+        // 2) 厂商的 /v1/models 失败不该让页面崩：降级返回用户已保存的模型名。
+        //    DeepSeek、小米等都不实现该接口，Key 不对也会 401 —— 都不是「配置坏了」。
+        List<String> fallback = fallbackModelNames(target);
+        String baseUrl = target.getBaseUrl();
+        if (baseUrl == null || baseUrl.isBlank()) {
+            log.warn("API 配置 {} 的 baseUrl 为空，直接降级返回已存模型", configId);
+            return fallback;
+        }
+        // 出网前复核：库里的数据可能是加 UrlGuard 之前写入的，仍可能指向内网
+        try {
+            urlGuard.validate(baseUrl, "API 配置的 baseUrl");
+        } catch (IllegalArgumentException e) {
+            log.warn("API 配置 {} 的 baseUrl 未通过出网校验：{}", configId, e.getMessage());
+            throw new ValidationException("API 配置的 baseUrl 不合法：" + e.getMessage());
+        }
+
+        try {
+            String apiKey = EncryptorFactory.text(salt).decrypt(target.getAPIKey());
+            if (apiKey == null || apiKey.isBlank()) {
+                // 换过盐值或密文被改过 —— 与 UserConfigServiceImpl.decryptKey 同因
+                log.warn("API 配置 {} 解密出空 Key，疑似盐值变更", configId);
+                throw new ValidationException("API Key 解密失败，请重新保存一次配置");
+            }
+            List<ModelDescription> listModels = OpenAiModelCatalog
+                    .builder()
+                    .apiKey(apiKey)
+                    .baseUrl(baseUrl)
+                    .httpClientBuilder(new SpringRestClientBuilderFactory().create())
+                    .build().listModels();
+            List<String> names = listModels.stream().map(ModelDescription::name).toList();
+            return names.isEmpty() ? fallback : names;
+        } catch (ValidationException e) {
+            throw e; // 上面自己抛的业务异常，原样透传，不要被下面的 catch 吞成降级
+        } catch (Exception e) {
+            // 厂商不支持 /v1/models、Key 不对、网络不通 —— 统统降级，不给前端 500
+            log.warn("查询模型列表失败，降级返回已保存的模型名。configId={}，原因：{}", configId, e.getMessage());
+            log.debug("查询模型列表失败详情", e);
+            return fallback;
+        }
+    }
+
+    /**
+     * 降级用的模型名：取该配置下用户已保存的模型。
+     * <p>
+     * 拿 {@code Model.getName()}（用户在配置里给模型起的显示名，如「Pro」「Flash」）。
+     * ⚠️ 这**不是**厂商侧的 model id（那个在 {@code ModelType} 里），
+     * 两者不一定同名。前端拿它做下拉框展示足够用；
+     * 真要发请求仍应传配置里存的那个值。
+     */
+    private static List<String> fallbackModelNames(APIConfig target) {
+        if (target.getModel() == null) {
+            return List.of();
+        }
+        return target.getModel().stream()
+                .map(Model::getName)
+                .filter(n -> n != null && !n.isBlank())
+                .distinct()
+                .toList();
     }
 
 }
