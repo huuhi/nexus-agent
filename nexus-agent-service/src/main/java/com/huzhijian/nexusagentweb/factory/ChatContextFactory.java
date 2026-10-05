@@ -106,6 +106,7 @@ public class ChatContextFactory {
 //        工具由注册表统一解析：常驻工具（沙盒/系统日志/长期记忆）恒启用；
 //        按需工具（知识库检索）由各自的 enabled() 依据请求参数决定开关。
 //        新增工具只需实现 AgentToolSet 并加 @Component，不必改本类。
+        int memoryWindow = capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens());
         Object[] tools = toolRegistry.resolve(ToolSelection.from(chatDTO)).toArray();
         log.debug("本次注册的工具集：{}", toolRegistry.keys());
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
@@ -116,7 +117,7 @@ public class ChatContextFactory {
 //                        记忆窗口：以前是全局写死的 nexus.agent.memory.max-tokens（100000），
 //                        与真实模型无关 —— 256k 窗口的模型白白浪费，8k 窗口的模型则被上游拒。
 //                        2026-10-03：按「该模型的上下文窗口 − 最大输出」算，再受全局上限兜住。
-                        .maxTokens(capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens()),
+                        .maxTokens(memoryWindow,
                                 new MultimodalTokenCountEstimator(
                                         agentProperties.getMemory().getTokenEstimatorModel(),
                                         agentProperties.getMemory().getImageTokens()))
@@ -144,8 +145,13 @@ public class ChatContextFactory {
         }
         ChatAssistant chatAssistant = builder.build();
         long t3 = System.nanoTime();
-        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms skills+aiServices={}ms total={}ms",
-                runContext.runId(), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t0, t3));
+//        🔴 window（记忆窗口）是首字延迟的**决定性参数**：它就是本次最多会带多少 token 的历史
+//        给模型，模型的 prefill 量与它成正比。看到首字慢，先拿这一行和 CHAT_MEMORY 的 msgs 对照。
+//        tools 数量也在这里 —— 15 个工具的 JSON Schema 每轮都要跟着请求发出去。
+        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms skills+aiServices={}ms total={}ms"
+                        + " window={} ctx={} out={} tools={}",
+                runContext.runId(), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t0, t3),
+                memoryWindow, capabilities.contextWindow(), capabilities.maxOutputTokens(), tools.length);
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
                 .isNewSession(runContext.newSession())

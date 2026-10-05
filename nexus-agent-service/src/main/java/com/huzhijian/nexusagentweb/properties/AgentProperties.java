@@ -82,8 +82,37 @@ public class AgentProperties {
         /**
          * 对话记忆窗口的 token 上限。超出后旧消息会被淘汰（只影响送给模型的上下文，
          * 不影响数据库里已存的消息）。
+         * <p>
+         * 🔴 <b>2026-10-06：从 100000 下调到 24000。</b>
+         * <p>
+         * 这个值不是"内存/磁盘"参数，而是<b>每轮发给模型的历史有多少 token</b>，
+         * 直接等于模型在吐第一个字之前必须做的 prefill 量。10 万 token 的历史下
+         * 光 prefill 就要几秒，而且<b>越聊越慢</b>（实测长会话首字 21 秒）。
+         * 24000 token ≈ 50~80 轮对话，对 agent 场景足够。
+         * <p>
+         * ⚠️ 调大的代价是<b>首字变慢</b>，调小的代价是"模型忘事"。
+         * 实际生效值 = {@code min(本值, contextWindow - maxOutputTokens)}，
+         * 所以模型元数据里 contextWindow 填得再大，窗口也不会超过这里。
+         * 想知道每轮到底发了多少，看日志 {@code CHAT_MEMORY}（条数 / 估算 token / 窗口）。
          */
-        private int maxTokens = 100000;
+        private int maxTokens = 24000;
+
+        /**
+         * 单次对话最多从库里取回多少条历史消息（2026-10-06 新增）。
+         * <p>
+         * 以前是把整个会话的历史<b>全量</b>拉回来再交给 {@code TokenWindowChatMemory} 裁剪 ——
+         * 窗口裁剪发生在 Java 侧，而"拉回来"这一步的传输与反序列化成本<u>已经付掉了</u>。
+         * 结果是<b>越聊越慢</b>：聊到第 500 轮时，一次对话要先传 500 条 JSON 才能开始工作。
+         * <p>
+         * 现在 SQL 层就只取<b>最近</b> N 条（按时间倒序取 N 条再正序返回），
+         * 与窗口裁剪的取向一致（窗口本来也是保新丢旧）。
+         * 默认值 200 条远大于典型窗口能装下的条数，正常会话不会感觉到差异；
+         * 只有超长会话会被截断 —— 而那部分本来也会被窗口裁掉。
+         * <p>
+         * ⚠️ 这只影响"送给模型的上下文"，<b>不影响已入库的消息</b>，
+         * 也不影响前端的历史列表接口（那个走自己的分页查询）。
+         */
+        private int maxHistoryMessages = 200;
 
         /**
          * 用于估算 token 数的模型名。
@@ -422,9 +451,9 @@ public class AgentProperties {
         private String modelName;
         /** 是否支持图片输入，默认 false */
         private Boolean vision;
-        /** 上下文窗口，默认 256000 */
+        /** 上下文窗口，默认 65536（2026-10-06 从 256000 下调，理由见 ModelCapabilities） */
         private Integer contextWindow;
-        /** 单次最大输出 token，默认 32000 */
+        /** 单次最大输出 token，默认 16384（2026-10-06 从 32000 下调） */
         private Integer maxOutputTokens;
 
         /**
@@ -448,9 +477,9 @@ public class AgentProperties {
             private String modelName;
             /** 是否支持图片输入；不填时继承供应商级，再没有则 false */
             private Boolean vision;
-            /** 上下文窗口；不填时继承供应商级，再没有则 256000 */
+            /** 上下文窗口；不填时继承供应商级，再没有则 65536（2026-10-06 下调） */
             private Integer contextWindow;
-            /** 单次最大输出 token；不填时继承供应商级，再没有则 32000 */
+            /** 单次最大输出 token；不填时继承供应商级，再没有则 16384（2026-10-06 下调） */
             private Integer maxOutputTokens;
         }
     }

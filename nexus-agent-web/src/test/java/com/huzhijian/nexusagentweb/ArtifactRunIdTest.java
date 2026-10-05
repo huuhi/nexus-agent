@@ -8,6 +8,7 @@ import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.mapper.ChatMemoryMapper;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import com.huzhijian.nexusagentweb.service.impl.ArtifactServiceImpl;
 import com.huzhijian.nexusagentweb.service.impl.ChatMemoryServiceImpl;
@@ -202,7 +203,7 @@ class ArtifactRunIdTest {
     @DisplayName("一次运行写入的每条历史消息都带上同一个 runId")
     void memoryStoreWritesRunIdOnEveryRow() {
         ChatMemoryService memoryService = mock(ChatMemoryService.class);
-        PgChatMemoryStore store = new PgChatMemoryStore(memoryService);
+        PgChatMemoryStore store = new PgChatMemoryStore(memoryService, new AgentProperties());
         when(memoryService.getLastMessageJson(any(), anyLong())).thenReturn(null);
 
         RunContext runContext = new RunContext(1L, "s-1", true, Map.of(), "run-A");

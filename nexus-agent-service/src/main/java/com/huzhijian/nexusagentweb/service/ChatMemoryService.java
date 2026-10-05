@@ -24,6 +24,17 @@ public interface ChatMemoryService extends IService<ChatHistory> {
     List<ChatHistory> getByMemoryIdAndUserId(Object memory, Long userId);
 
     /**
+     * 对话链路读历史专用：只取<b>最近</b> {@code limit} 条（2026-10-06 新增）。
+     * <p>
+     * 用途是喂给记忆窗口 —— 窗口本来就会淘汰旧消息，所以没必要先把整个会话
+     * 传回来再丢掉。详见 {@code AgentProperties.Memory#maxHistoryMessages}。
+     *
+     * @param limit 最多取多少条；<b>{@code <= 0} 表示不限制</b>（等同
+     *              {@link #getByMemoryIdAndUserId}，SQL 层不接受 0 或负数）
+     */
+    List<ChatHistory> getRecentForChat(Object sessionId, Long userId, int limit);
+
+    /**
      * 取会话最后一条消息的原始 JSON（锚点），用于增量写入时定位新增部分。
      *
      * @return JSON 文本；会话为空时返回 null

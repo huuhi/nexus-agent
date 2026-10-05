@@ -102,7 +102,7 @@ mybatis-plus:
 #                99% 的情况**不用写** —— 只有"两家供应商有同名模型"（如百炼和某代理都叫
 #                deepseek-chat）时，才给其中一个单独指定，否则两行会撞 id、后者覆盖前者
 #    vision / contextWindow / maxOutputTokens
-#                可选，不填时**继承供应商级**同名配置，再没有才用默认值（false / 256000 / 32000）
+#                可选，不填时**继承供应商级**同名配置，再没有才用默认值（false / 65536 / 16384，2026-10-06 下调）
 #
 #  所以最简写法就是每行只写一个 modelName：
 #       models:
@@ -127,8 +127,15 @@ nexus:
           - modelName: deepseek-flash
             name: flash
             vision: true
-            contextWindow: 1000000
-            maxOutputTokens: 384000
+            # ⚠️ 2026-10-06 修正：这里原先填的是 contextWindow: 1000000 / maxOutputTokens: 384000。
+            #    这两个数不是随便填的装饰 —— 它们直接决定**每轮送给模型的上下文有多大**：
+            #      memoryWindow = min(nexus.agent.memory.max-tokens, contextWindow - maxOutputTokens)
+            #    填成 100 万时，窗口被撑到 10 万 token，模型每轮都要先把十万 token 的历史
+            #    做一遍 prefill 才吐得出第一个字 —— 这就是「首字 4 秒、长会话 21 秒」的主因。
+            #    同时 384000 会作为 max_tokens 原样发给 DeepSeek，远超它的真实上限。
+            #    现在按 DeepSeek 官方口径填真实值（64K 上下文 / 8K 输出）。
+            contextWindow: 65536
+            maxOutputTokens: 8192
       - id: MIMO
         name: 小米
         # ⚠️ 2026-10-05 修正：这里原先是 https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -167,7 +174,18 @@ nexus:
       flush-interval: 60ms
     memory:
       # 对话记忆窗口的 token 上限（只影响送给模型的上下文，不影响已入库的消息）
-      max-tokens: 100000
+      #
+      # 🔴 2026-10-06：从 100000 下调到 24000 —— 这是首字延迟治理里**收益最大的一刀**。
+      #    这个值就是「每轮发给模型的历史有多少 token」，直接等于模型的 prefill 量：
+      #    历史越长，模型吐第一个字之前要算的越多。10 万 token 的历史下，
+      #    光 prefill 就要几秒，而且**越聊越慢**（用户实测长会话首字 21 秒）。
+      #    24000 token ≈ 50~80 轮对话，对 agent 场景足够，prefill 压力小一个数量级。
+      #
+      # ⚠️ 调大的代价是**首字变慢**（不是内存或数据库变慢），调小的代价是「模型忘事」。
+      #    实际生效值 = min(本值, 该模型的 contextWindow - maxOutputTokens)，
+      #    所以把模型的 contextWindow 填得再大，也**不会**让窗口超过这里。
+      #    想确认每轮到底发了多少，看日志里的 CHAT_MEMORY（条数 / 估算 token / 窗口）。
+      max-tokens: 24000
       # token 估算器使用的模型名。注意它只用于本地估算，不产生 API 调用；
       # 与真实使用的模型不一致会导致窗口裁剪不准，换主力模型时建议同步改
       token-estimator-model: gpt-4o
@@ -290,3 +308,24 @@ springdoc:
     enabled: false
   swagger-ui:
     enabled: false
+
+# ---------------------------------------------------------------------------
+#  日志级别（2026-10-06：首字延迟治理）
+# ---------------------------------------------------------------------------
+# 🔴 必须显式覆盖：application.yml 里把 com.huzhijian.nexusagentweb 设成了 debug，
+#    而 prod 以前没有这一段 —— 于是**生产一直在跑 DEBUG**。后果不只是"日志多"：
+#      1. MyBatis 的 mapper 也在 com.huzhijian.nexusagentweb.mapper 包下，
+#         DEBUG 会打印**每一条 SQL 及其参数**，一轮对话 5~8 条，全部同步写 stdout；
+#         容器里 stdout 是同步文件 IO，这一项就实打实地压在首字延迟上；
+#      2. 若干 debug 会格式化大对象（请求体、技能清单、工具清单），字符串拼接成本不小。
+#
+#    这里改回 info。可观测性不受影响 —— 排查延迟要的那几行本来就是 INFO：
+#      CHAT_PREFLIGHT / CHAT_CONTEXT / CHAT_MEMORY / CHAT_TTFB / RUN
+#
+#    临时想看 debug（排查线上问题时）在本文件把 info 改成 debug 重启即可，
+#    **不要**去改 application.yml（那会波及所有环境）。
+logging:
+  level:
+    com:
+      huzhijian:
+        nexusagentweb: info

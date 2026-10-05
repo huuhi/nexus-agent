@@ -84,6 +84,16 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     }
 
     @Override
+    public List<ChatHistory> getRecentForChat(Object sessionId, Long userId, int limit) {
+//        ⚠️ limit <= 0 必须在这里分流：SQL 的 LIMIT 0 会返回 0 行、LIMIT 负数直接报错，
+//        而调用方的语义是「不限制」。别把它透传进 SQL。
+        if (limit <= 0) {
+            return mapper.getAllByMemoryIdAndUserId(sessionId, userId);
+        }
+        return mapper.getRecentForChat(sessionId, userId, limit);
+    }
+
+    @Override
     public String getLastMessageJson(Object sessionId, Long userId) {
         return mapper.getLastContentByMemoryId(sessionId, userId);
     }

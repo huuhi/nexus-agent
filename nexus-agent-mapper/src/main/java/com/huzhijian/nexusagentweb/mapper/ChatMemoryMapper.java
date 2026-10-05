@@ -28,6 +28,24 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
                                                 @Param("userId") Long userId);
 
     /**
+     * 对话链路读历史专用：只取<b>最近</b> {@code limit} 条（2026-10-06 新增）。
+     * <p>
+     * 与 {@link #getAllByMemoryIdAndUserId} 的区别只有"条数上限"，其余（越权过滤、
+     * 时间正序）完全一致。用途差异：
+     * <ul>
+     *   <li>本方法：喂给 {@code TokenWindowChatMemory}，它本来就会按窗口淘汰旧消息，
+     *       所以没必要把几百轮以前的历史先传回来再丢掉 —— 那部分传输与反序列化成本
+     *       是白付的（表现为越聊越慢）。</li>
+     *   <li>{@code getAllByMemoryIdAndUserId}：需要完整历史的场景（导出/统计）继续全量。</li>
+     * </ul>
+     *
+     * @param limit 最多取多少条；{@code <= 0} 表示不限制（等同全量）
+     */
+    List<ChatHistory> getRecentForChat(@Param("sessionId") Object sessionId,
+                                       @Param("userId") Long userId,
+                                       @Param("limit") int limit);
+
+    /**
      * 取会话最后一条消息的原始 JSON，供「锚点式增量写入」定位新增部分。
      * <p>
      * 之所以需要锚点：记忆窗口（TokenWindowChatMemory）会在超限时**淘汰旧消息**，

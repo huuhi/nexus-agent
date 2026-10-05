@@ -14,8 +14,24 @@ import com.huzhijian.nexusagentweb.domain.Model;
  */
 public record ModelCapabilities(boolean vision, int contextWindow, int maxOutputTokens) {
 
-    public static final int DEFAULT_CONTEXT_WINDOW = 256_000;
-    public static final int DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
+    /**
+     * 上下文窗口默认值（模型元数据没填时用）。
+     * <p>
+     * 🔴 <b>2026-10-06：从 256000 下调到 65536。</b>
+     * 这两个默认值（窗口 / 输出）的取向是<b>宁小勿大</b>，因为两种错法的代价严重不对等：
+     * <ul>
+     *   <li>填<b>大</b>了：记忆窗口 = {@code min(max-tokens, 窗口-输出)} 被撑大，
+     *       每轮要发巨量历史给模型做 prefill（首字几秒、越聊越慢），
+     *       而且 {@code maxOutputTokens} 会作为 {@code max_tokens} 原样发给服务商 ——
+     *       超过真实上限时直接 400。</li>
+     *   <li>填<b>小</b>了：只是少带一点上下文，模型照样能答，用户几乎无感。</li>
+     * </ul>
+     * 所以"不知道真实能力"时给保守值；确实支持大窗口的模型请在配置里显式填。
+     */
+    public static final int DEFAULT_CONTEXT_WINDOW = 65_536;
+
+    /** 单次最大输出 token 默认值（同上，宁小勿大）。 */
+    public static final int DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
     /** 系统默认模型 / 用户没配时用的能力：默认只支持文本 */
     public static final ModelCapabilities DEFAULT =

@@ -54,6 +54,27 @@
     </select>
 
     <!--
+      对话链路读历史（2026-10-06）：只取最近 #{limit} 条。
+      写法是先倒序取 N 条、再正序还原 —— 直接 order by create_at limit N 会拿到
+      **最早**的 N 条，正好相反。排序里的 id 兜底与 getLastContentByMemoryId 同理：
+      同一批 insertBatch 的多行共享同一个 create_at。
+      ⚠️ limit <= 0 表示不限制，此时退化为全量查询（SQL 里用 #{limit} 直接拼，
+         但它是 int 类型参数，不存在注入风险）。
+    -->
+    <select id="getRecentForChat" resultMap="BaseResultMap">
+        select id,user_id,content,type,create_at,session_id,run_id
+        from (
+            select id,user_id,content,type,create_at,session_id,run_id
+            from chat_memory
+            where session_id=#{sessionId}::uuid
+              and user_id=#{userId}
+            order by create_at desc, id desc
+            limit #{limit}
+        ) t
+        order by t.create_at, t.id
+    </select>
+
+    <!--
       取某个会话**最后一条**消息的原始 JSON，用作增量写入的「锚点」。
       排序说明：同一批 insertBatch 的多行共享同一个 create_at（默认值 now() 在一条语句里相同），
       所以必须再用 id 兜底。chat_memory 的行全部由 insertBatch 写入（identity 自增），

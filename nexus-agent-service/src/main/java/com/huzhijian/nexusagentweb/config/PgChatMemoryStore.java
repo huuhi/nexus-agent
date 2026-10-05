@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageDeserializer;
@@ -59,6 +60,7 @@ public class PgChatMemoryStore {
     private static final int RECENT_DEDUP_LIMIT = 50;
 
     private final ChatMemoryService chatMemoryService;
+    private final AgentProperties agentProperties;
 
     /**
      * 为一次对话生成记忆存储实例，把跨线程需要的数据（用户 ID、附件元数据）绑定进去。
@@ -108,14 +110,25 @@ public class PgChatMemoryStore {
         if (memoryId == null) {
             return List.of();
         }
-        List<ChatHistory> chatMemories =
-                chatMemoryService.getByMemoryIdAndUserId(memoryId, runContext.userId());
+        long t0 = System.nanoTime();
+//        只取最近 N 条：窗口裁剪在 Java 侧做，但"传回来"这一步的成本已经付掉了。
+//        ⚠️ 这里必须用「时间倒序取 N 条再正序还原」的查询，否则拿到的是最早的 N 条。
+        List<ChatHistory> chatMemories = chatMemoryService.getRecentForChat(
+                memoryId, runContext.userId(), agentProperties.getMemory().getMaxHistoryMessages());
         if (chatMemories == null || chatMemories.isEmpty()) {
             return List.of();
         }
-        return chatMemories.stream()
+        List<ChatMessage> messages = chatMemories.stream()
                 .map(entity -> ChatMessageDeserializer.messageFromJson(entity.getContent().toString()))
                 .toList();
+//        🔴 首字延迟排查的关键一行：首字慢最常见的原因就是**送给模型的历史太大**
+//        （模型要先做完 prefill 才吐得出第一个字，历史越长越慢，而且是"越聊越慢"）。
+//        有这一行就能直接读出「本次带了多少条历史 / 花了多久」，不必再猜。
+//        条数撞上 maxHistoryMessages 上限时说明会话已经很长，可以考虑调小窗口。
+        log.info("CHAT_MEMORY runId={} msgs={} load={}ms limit={}",
+                runContext.runId(), messages.size(), (System.nanoTime() - t0) / 1_000_000L,
+                agentProperties.getMemory().getMaxHistoryMessages());
+        return messages;
     }
 
     /**
