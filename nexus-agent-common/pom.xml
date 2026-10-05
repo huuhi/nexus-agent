@@ -26,6 +26,23 @@
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
+
+        <!-- PostgreSQL JDBC 驱动。🔴 必须**显式**声明，不能指望传递依赖。
+             2026-10-05 事故：10-04 下线本地知识库时删掉了 langchain4j-pgvector，
+             而 postgresql 驱动此前一直是**它**带进来的传递依赖，从未被任何 pom 声明过。
+             删掉 pgvector 的那一刻驱动就消失了，但编译期不报错、单元测试全绿
+             （测试用 mock datasource，从不真正加载驱动类），
+             直到打成 fat jar 丢进 Docker 才炸：
+                 Failed to load driver class org.postgresql.Driver
+             与数据源、MyBatis、代码全都无关，纯依赖树问题。
+             位置：本模块已经承载 mybatis-plus starter（数据访问层），驱动放这里，
+             沿 common → domain → mapper → service → web 传递到可执行 jar。
+             版本：由 spring-boot-starter-parent 的 dependencyManagement 管理
+             （Boot 3.5.13 → 42.7.10），不写死。 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
     </dependencies>
 
 </project>
