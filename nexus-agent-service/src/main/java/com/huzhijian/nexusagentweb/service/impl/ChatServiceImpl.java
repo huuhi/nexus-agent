@@ -49,6 +49,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author 胡志坚
@@ -76,12 +77,18 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
 
+//        ⚠️ 2026-10-05：首字延迟（TTFB）排查埋点。
+//        「首字慢」是端到端问题，可能落在配额校验 / 附件转换 / 上下文装配 / 模型首包 / 记忆加载
+//        任意一段上，而没有分段耗时就只能靠猜。这里把每一段的耗时打进一条日志，
+//        再用 CHAT_TTFB 记「从收到请求到模型吐出第一个内容 token」。
+        long tStart = System.nanoTime();
         Long userId = UserContextHolder.getUserId();
         if (userId==null){
             throw new UnauthorizedException("用户未登录!");
         }
 //        配额校验放在最前面（P2-8）：超支时直接拒绝，省掉一次完整的模型调用（也不必白建沙盒）
         quotaService.assertWithinQuota(userId);
+        long tQuota = System.nanoTime();
 //        超时由 nexus.agent.sse.timeout 配置（AgentProperties 默认 1800s），必须大于最慢一次模型调用的耗时
         SseEmitter sseEmitter = new SseEmitter(agentProperties.getSse().getTimeout().toMillis());
 
@@ -102,6 +109,7 @@ public class ChatServiceImpl implements ChatService {
         } catch (IOException e) {
             throw new ParserFileException("解析文件失败!");
         }
+        long tConvert = System.nanoTime();
 
 //        2) 组装本次运行上下文。后续流式回调运行在线程池里，
 //        用户ID 与附件元数据只能通过这个对象带过去（ThreadLocal 在那里取不到值）
@@ -127,14 +135,20 @@ public class ChatServiceImpl implements ChatService {
 //        3) 构建对话上下文（内部会把 runContext 绑定到记忆存储上）
         ChatContext chatContext = chatContextFactory.create(chatDTO, runContext);
         ChatAssistant chatAssistant = chatContext.getChatAssistant();
+        long tContext = System.nanoTime();
 
 //        运行时能力说明必须在调用前注入系统提示词：@SystemMessage 是静态文本，
 //        而「有哪些技能 / 哪些 MCP 连不上」都是运行期才知道的，只能通过 Mustache 变量传入
+//        ⚠️ 技能清单直接用 ChatContext 里那份（工厂里已解析过），不再重新解析一次
         String runtimeCapabilities = composeCapabilities(
-                skillLoader.formatForPrompt(chatDTO.skills(), userId),
+                chatContext.getSkillsText(),
                 chatContext.getMcpUnavailable());
         log.debug("注入提示词的运行时能力说明：{}", runtimeCapabilities);
         TokenStream tokenStream = chatAssistant.chat(converted.contents(), sessionId, runtimeCapabilities);
+        long tReady = System.nanoTime();
+        log.info("CHAT_PREFLIGHT runId={} quota={}ms convert={}ms context={}ms build={}ms total={}ms",
+                runId, ms(tStart, tQuota), ms(tQuota, tConvert), ms(tConvert, tContext),
+                ms(tContext, tReady), ms(tStart, tReady));
 
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)
@@ -149,6 +163,8 @@ public class ChatServiceImpl implements ChatService {
 
 //        P2-5：首帧立刻把 runId / sessionId 交给前端（内部幂等，漏调也会被后续事件兜底补发）
         writer.start();
+//        「是否已经收到过第一个内容 token」：只用于打一次 CHAT_TTFB（流式回调线程，用原子量）
+        AtomicBoolean firstContent = new AtomicBoolean(false);
 
         sseEmitter.onCompletion(writer::finish);
 //        超时/断开只标记"连接没了"，**不终止任务**（2026-10-03）：
@@ -158,7 +174,15 @@ public class ChatServiceImpl implements ChatService {
         sseEmitter.onError(writer::onError);
 
         tokenStream.onPartialThinking(writer::writeThinking)
-                .onPartialResponse(writer::writeContent)
+                .onPartialResponse(partial -> {
+//                    首字延迟（TTFB）：从收到请求到模型吐出第一个内容 token。
+//                    ⚠️ 只有这一条日志能区分「慢在我们这边的前置步骤」还是「慢在供应商」——
+//                    CHAT_PREFLIGHT 的 total 就是这条的下限，差值即模型侧耗时。
+                    if (firstContent.compareAndSet(false, true)) {
+                        log.info("CHAT_TTFB runId={} ttfb={}ms", runId, ms(tStart, System.nanoTime()));
+                    }
+                    writer.writeContent(partial);
+                })
                 .onPartialToolCallWithContext(writer::writeToolRequestWithStream)
                 .onToolExecuted(consumer->{
                     ToolExecutionRequest request = consumer.request();
@@ -185,6 +209,13 @@ public class ChatServiceImpl implements ChatService {
                 })
                 .start();
         return sseEmitter;
+    }
+
+    /**
+     * 两个 nanoTime 之间的毫秒数（分段耗时埋点用）。
+     */
+    private static long ms(long from, long to) {
+        return (to - from) / 1_000_000L;
     }
 
     /**

@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.context;
 
 
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
+import dev.langchain4j.skills.Skills;
 import lombok.Builder;
 import lombok.Getter;
 
@@ -28,4 +29,20 @@ public class ChatContext {
      */
     @Builder.Default
     private List<String> mcpUnavailable = List.of();
+
+    /**
+     * 本次对话启用的技能集合（可能为 null，表示「没有可用技能」）。
+     * <p>
+     * 2026-10-05：随上下文带出来，供 {@code ChatServiceImpl} 组装提示词时复用 ——
+     * 以前那里会再解析一次技能清单，等于每次对话多查一遍用户技能表。
+     */
+    private Skills skills;
+
+    /**
+     * {@link #skills} 对应的「给模型看的清单文本」。
+     * <p>
+     * 由 {@code SkillLoader.formatResolved} 生成，null 时是一句明确的
+     * 「当前没有可用的技能」，避免提示词里出现空占位。
+     */
+    private String skillsText;
 }

@@ -80,15 +80,24 @@ public class ChatContextFactory {
 
 
     public ChatContext create(ChatDTO chatDTO, RunContext runContext){
+        long t0 = System.nanoTime();
         Long userId = runContext.userId();
         String sessionId = runContext.sessionId();
 //        本次模型的能力（视觉 / 上下文窗口 / 最大输出）：记忆窗口与输出上限都按它算
-        ModelCapabilities capabilities = resolveCapabilities(chatDTO.model(), userId);
-        StreamingChatModel  model=createModel(chatDTO.model(),userId);
+//        ⚠️ 2026-10-05：模型匹配**只做一次**。以前 resolveCapabilities 与 createModel
+//        各自调一次 matchModel（每次要查 user_config），同一次请求里白白多一轮查询；
+//        现在算一次，两处共用。
+        MatchedModel matched = matchModel(chatDTO.model(), userId);
+        ModelCapabilities capabilities = matched != null
+                ? ModelCapabilities.of(matched.model())
+                : systemModelRegistry.resolveCapabilities(chatDTO.model());
+        StreamingChatModel model = createModel(chatDTO.model(), matched);
+        long t1 = System.nanoTime();
 //        MCP：返回「可用的 provider」+「选了但连不上的服务名」（P2-9）。
 //        后者会随 ChatContext 传给提示词组装，让模型知道"有这些能力但现在用不了"，
 //        而不是只能回一句"我没有这个能力"。
         McpInformationService.McpResolution mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
+        long t2 = System.nanoTime();
 //        记忆存储绑定本次运行的上下文，必须这样做：
 //        LangChain4j 在**流式回调线程**上调用 ChatMemoryStore.updateMessages，
 //        那时请求线程的 ThreadLocal 已经取不到值——历史上附件元数据就是这样丢的，
@@ -120,6 +129,9 @@ public class ChatContextFactory {
 //        连续调用 toolProvider(...) 会相互覆盖，导致只剩最后一个生效。
         List<ToolProvider> toolProviders = new ArrayList<>();
 //        Skill：官方（部署目录）+ 该用户的（上传/AI 生成的），请求未指定名称时启用全部
+//        ⚠️ 2026-10-05：技能清单**只解析一次**。以前这里 resolve 一次，
+//        ChatServiceImpl 组装提示词时又调一次 skillLoader.formatForPrompt（内部再 resolve 一次），
+//        等于每次对话多查一遍用户技能表。现在解析一次，把结果随 ChatContext 带出去复用。
         Skills skills = skillLoader.resolve(chatDTO.skills(), userId);
         if (skills != null) {
             toolProviders.add(skills.toolProvider());
@@ -131,11 +143,21 @@ public class ChatContextFactory {
             builder.toolProviders(toolProviders);
         }
         ChatAssistant chatAssistant = builder.build();
+        long t3 = System.nanoTime();
+        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms skills+aiServices={}ms total={}ms",
+                runContext.runId(), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t0, t3));
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
                 .isNewSession(runContext.newSession())
                 .mcpUnavailable(mcp.unavailableNames())
+                .skills(skills)
+                .skillsText(skillLoader.formatResolved(skills))
                 .build();
+    }
+
+    /** 两个 nanoTime 之间的毫秒数（分段耗时埋点用） */
+    private static long ms(long from, long to) {
+        return (to - from) / 1_000_000L;
     }
 
     /**
@@ -219,9 +241,13 @@ public class ChatContextFactory {
         return new MatchedModel(apiConfig, matched, userConfig.getSalt());
     }
 
-    private StreamingChatModel createModel(ModelDTO modelDTO, Long userId) {
+    /**
+     * 用「已经匹配过」的结果建模型，避免同一次请求重复查库匹配。
+     *
+     * @param matched 本次请求的模型匹配结果；<b>null 表示走系统内置 / 兜底模型</b>
+     */
+    private StreamingChatModel createModel(ModelDTO modelDTO, MatchedModel matched) {
         log.debug("模型配置：{}", modelDTO);
-        MatchedModel matched = matchModel(modelDTO, userId);
         if (matched == null) {
 //            用户没配自带 Key（或没匹配上）→ 系统内置模型；再没有才用 langchain4j 的单一默认
             StreamingChatModel systemModel = systemModelRegistry.resolveModel(modelDTO);

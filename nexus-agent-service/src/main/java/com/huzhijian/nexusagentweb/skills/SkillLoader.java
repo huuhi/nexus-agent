@@ -124,7 +124,20 @@ public class SkillLoader {
      * 没有可用 skill 时返回一句明确说明，避免提示词里出现空占位。
      */
     public String formatForPrompt(List<String> requested, Long userId) {
-        Skills skills = resolve(requested, userId);
+        return formatResolved(resolve(requested, userId));
+    }
+
+    /**
+     * 给**已经解析好的**技能集生成提示词文本。
+     * <p>
+     * 2026-10-05 抽出：一次对话里技能只需要解析一次（解析要查用户技能表），
+     * 但「建工具提供者」和「拼提示词」两处都要用它 ——
+     * 让调用方先 {@link #resolve} 再各自 {@code formatResolved}，
+     * 避免为了拿一段文本又把整份技能清单重新解析一遍。
+     *
+     * @param skills 已解析的技能；null 表示「没有可用技能」
+     */
+    public String formatResolved(Skills skills) {
         if (skills == null) {
             return "当前没有可用的技能（skills）。";
         }

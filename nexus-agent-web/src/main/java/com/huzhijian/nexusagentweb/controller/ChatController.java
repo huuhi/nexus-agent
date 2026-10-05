@@ -55,7 +55,14 @@ public class ChatController {
     @PostMapping(value="/stream",produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<SseEmitter> chatStream(@RequestBody @Valid ChatDTO chatDTO){
         SseEmitter sse=chatService.chat(chatDTO);
-        return ResponseEntity.ok(sse);
+//        ⚠️ 2026-10-05：告诉中间的反代（Nginx / 各种网关）**不要缓冲本响应**。
+//        Nginx 默认 proxy_buffering on，会把 SSE 攒到缓冲区满（默认 4~8KB）才发给浏览器 ——
+//        表现在前端就是「点发送之后十几秒才蹦出第一个字」，而后端其实早就开始推了。
+//        这是非标准但被 Nginx 与各主流 CDN 广泛支持的开关；不经过反代时它无害。
+        return ResponseEntity.ok()
+                .header("X-Accel-Buffering", "no")
+                .header("Cache-Control", "no-cache, no-transform")
+                .body(sse);
     }
 
     /**
