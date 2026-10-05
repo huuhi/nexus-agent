@@ -336,7 +336,7 @@ POST /api/chat/stream   body=ChatDTO{messages[], sessionId, skills[], MCPs[], mo
   └─ ChatController.chatStream
       └─ ChatServiceImpl.chat
           ├─ UserContextHolder.getUserId()          ← 来自 LoginCheckInterceptor
-          ├─ new SseEmitter(120000L)                ← 超时写死 120s
+          ├─ new SseEmitter(sse.timeout)            ← AgentProperties 默认 1800s
           ├─ ChatContextFactory.create(chatDTO,userId)
           │    ├─ createModel()        → 用户配置模型 or defaultModel
           │    ├─ AiServices.builder(ChatAssistant.class)
@@ -705,7 +705,7 @@ AI 生成的结果走**与上传完全相同的校验路径**（提示词要求�
 | 层 | 位置 | 说明 |
 |---|---|---|
 | 重复调用拦截 | `tools/ToolCallGuard`（工具方法第一行调用） | 以 `(会话ID, 工具名, 参数指纹)` 为键，在 `tools.duplicate-window`（默认 60s）内计数，超过 `tools.duplicate-threshold`（默认 2，即第 3 次起）就拦截，返回 `{success:false, errorCode:"DUPLICATE_CALL", message, hint}` + 自纠提示 |
-| 调用超时 | `WebClientConfig` 的 `responseTimeout`（= `tools.http-timeout`，默认 100s） | 原先**没有响应超时**，沙盒挂起/网络黑洞时工具无限等待、整条 SSE 卡死（用户只看到「一直不出字」）。刻意设得比 `sse.timeout`(120s) 小，以便先返回结构化 `TIMEOUT` 而不是掐断整条流 |
+| 调用超时 | `WebClientConfig` 的 `responseTimeout`（= `tools.http-timeout`，默认 100s） | 原先**没有响应超时**，沙盒挂起/网络黑洞时工具无限等待、整条 SSE 卡死（用户只看到「一直不出字」）。刻意设得比 `sse.timeout`(1800s) 小，以便先返回结构化 `TIMEOUT` 而不是掐断整条流 |
 
 **设计要点**：
 
@@ -1313,6 +1313,7 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-05 | **🔴 修「任务跑满 2 分钟被掐断」（第二次事故）**：prod 残留的 `sse.timeout: 120s` 盖掉了 10-03 改的默认 1800s | `application-prod.yml`（删 `timeout: 120s`）、`application-dev.yml.example`（同款残留一并删）、`AgentProperties`/`ChatServiceImpl`/`RunUserRegistry`（引用旧值的注释更新）、`AGENTS.md` §6.1/§6.11/配置表、`README.md` 配置表；新增 `SseTimeoutDriftTest`(2) | **根因是 10-03 修复只改了一半**：把 `AgentProperties.Sse.timeout` 的<b>默认值</b>调到 1800s，但 `application-prod.yml` 里显式写的 `timeout: 120s` 没删 —— 而 **profile 属性源优先级高于代码默认值**，用户以 prod profile 运行 → `new SseEmitter(120_000)` 满两分钟必断（前端截图 stream 的 Time 恰好 2 min）。这是「两份配置不同步」坑的又一次发生（上次是 CORS，见 §5.x）。<br>**修复方式**：① 删掉 prod / dev 模板里的 `timeout` 键，超时的**唯一事实源**收归 `AgentProperties.Sse`（1800s）；② 新增 `SseTimeoutDriftTest`——把 4 份 yml 当输入，断言任何一份都不得声明 `nexus.agent.sse.timeout`、且默认值不得低于 1800s，**已反向验证**（把 120s 塞回去测试立刻红）。<br>⚠️ 用户本地若有自己不提交的 `application-dev.yml` 且写了这个键，同样会盖掉默认，需自查。前端无感知（心跳 `:ping` 一直在，SSE 契约未变），**改完需重启后端生效**。测试 **464**（+2），0 失败 |
 | 2026-10-05 | **🔴 修三个「界面上不对」的问题**：① MCP 预置服务能重复添加；② 文件/产物一行都删不掉；③ `GET /api/lexiang/teams` 恒 500 | 改 `McpInformationServiceImpl`（两级去重 + `added`/`localId`）、`McpServerItemVO`（+2 字段）、`ArtifactServiceImpl`（去 `biz_type` 条件）、`FileService(+Impl)`（新增 `delete`）、`FileController`（新增 `DELETE /api/file/{id}`）、`AliOssUtil`（抽出 `deleteByUrl`）、`GlobalExceptionHandler`（+3 个 handler）；新增 `FileServiceDeleteTest`(7)、`AliOssUtilDeleteByUrlTest`(5)、`GlobalExceptionHandlerMappingTest`(5)，`McpInformationServiceImplTest` +3；`docs/前端增量变更.md` 新增 3 节 | **① MCP 能重复添加是两层**：前端只能自己比 `strId`（可能 null/空串/带空格）必然有漏；后端去重<b>只认 strId</b>，漏传就直接 insert，而 PG 唯一约束里 `str_id IS NULL` 的行<b>互不冲突</b> → 能无限插重复行。→ 后端直接在预置列表里返回 `added` / `localId`（`localId` 用字符串避免 JS 精度），去重升级为 **strId → url 两级**（url 归一化只去首尾空格与末尾斜杠，**刻意不转小写**，URL path 大小写敏感）。<br>**② 删不掉**：`ArtifactServiceImpl#delete` 硬加了 `biz_type=ARTIFACT`，而前端「文件与产物」是统一视图（42 = 13 对话附件 + 29 产物），删除按钮对所有行打这个端点 → 13 个 CHAT 附件永远命中不了。⚠️ `biz_type` **不是安全边界**，安全边界是 `user_id`。新增不限类型的 `DELETE /api/file/{id}`，`ArtifactController#delete` 保留（兼容已上线前端）但去掉类型条件。删除顺序：**先删记录、再尽力删 OSS**，`deleteByUrl` 吞所有异常只记 WARN（对象残留只是成本，报错会让用户以为没删掉）。<br>**③ 乐享 500**：不是乐享挂了 —— 它整条链路抛 `IllegalStateException`，而 `GlobalExceptionHandler` **没有该类型的处理器**，全掉兜底 500 变成「系统内部错误」，真实原因（未配凭证 / AppKey 无效 / 限频 / 授权范围不含该成员）被吞掉。补 `IllegalStateException` / `IllegalArgumentException` / `ParserFileException` 三个 handler，用 `log.warn`（本项目这类异常都带中文人话消息，属可预期，不该和真 NPE 一起报警）。<br>⚠️ **测试教训**：`@ExceptionHandler` 映射这类配置层错误，纯 mock 单测**永远抓不到**（只会看到 500），必须专门写「异常 → `Result`」映射测试。另：单测里 `ServiceImpl#removeById` 会 NPE（`TableInfoHelper` 未初始化），需在测试里手工 `initTableInfo`；且 mock 的 `deleteById` 默认返回 0，断言返回值前要 stub。测试 **462**（+20），0 失败 |
 | 2026-10-05 | **前端文档拆成两份**：`前端开发指南.md` 冻结（"从零搭前端"教程），新增 `前端增量变更.md` 只写增量 | 回滚 `docs/前端开发指南.md`（撤掉上一版塞进去的 7 处教程式 runId 段落）；**新增** `docs/前端增量变更.md`；`AGENTS.md` 铁律第 9 条与 §8.1 改写 | **起因**：上一版把 runId 写进完整指南（含 JS 伪代码、要点列表、边界表共 7 处），用户反馈"太全面了，我只需要需要更新的部分，因为我前端已经搭好了"。<br>→ 定为规则：**主指南冻结不动，所有前端可见的增量一律写进 `docs/前端增量变更.md`**，按日期倒序，结构固定为「改了什么（表）/ 你要动哪几处（编号）/ 不用动的（短列表）」。<br>→ 判断标准写进 §8.1：**写出来的内容在本次改动之前就已成立 → 那是教程，删掉。**<br>增量文档里另外补了两条最容易被漏的：① `runId` 必须先执行 `docs/sql/011_add_run_id.sql`，否则两列全是 `null`，用户会以为后端没做；② Nginx 侧要同步 `client_max_body_size 30m`，否则网关默认 1m 就把上传拦了，后端日志里什么都看不到 |
 | 2026-10-05 | **产物归属（方案 B）：持久化 `runId`，产物能落回产出它的那一轮** | 新增 `docs/sql/011_add_run_id.sql`、`ArtifactRunIdTest`（9）；改 `SysFile`、`ChatHistory`、`RunContext`、`ChatServiceImpl`、`ArtifactService(+Impl)`、`PgChatMemoryStore`、`ChatMemoryServiceImpl`、`MessageVO`、`ChatMemoryMapper.xml`、`FileMapper.xml`、`docs/sql/README.md`、`docs/前端增量变更.md`（**新建**）；`AGENTS.md` 新增 §6.20、§8.1 与铁律第 9 条 | **前端需要同步（已写进 `docs/前端增量变更.md`，前端只看这一份）**：`GET /api/history/{sessionId}` 每行新增 `runId`、`GET /api/artifact?sessionId=` 每项新增 `runId`（可空）。匹配规则就是**字符串相等**：`artifact.runId === message.runId`。<br>**问题**：产物列表只说"这个会话产出了哪些文件"，不说"哪个是哪一轮产出的"，历史里又通常没有 `ARTIFACT` 行 → 刷新页面后前端在**数据上**无法归属，只能全堆进面板。<br>**为什么选 B 不选 A**：`chat_memory` **同时是 LangChain4j 的 ChatMemoryStore**，`PgChatMemoryStore.getMessages()` 对查出的**每一行**执行 `ChatMessageDeserializer`，插 `ARTIFACT` 行会污染模型上下文，还会打乱增量写入的「锚点去重」。方案 B 只加列、不新增行，不碰记忆语义。<br>⚠️ **两处必须记住**：① `runId` 必须在 `RunContext` **之前**生成（RunContext 是把它带进流式回调线程的唯一通道，那里没有任何 ThreadLocal）；② `getHistoryBySessionId` **必须逐行处理** —— 原来是「先映射成 `ChatMessage` 列表再统一转 VO」，行上的 `runId` 在这一步就丢了，补字段也补不出来，已重构为逐行转换（`toChatMessage` / `toMessageVO`）。<br>**行为兼容**：两列都可空，老数据 `runId=null` → 前端按"归属不明"处理（只进面板、不进对话）；**刻意不加索引**（runId 匹配在前端做，服务端没有 `WHERE run_id=?`，按仓库「无真实查询就不加索引」的约定）。测试 **426**（新增 9），0 失败 |
@@ -1585,7 +1586,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `nexus.agent.sse.timeout` | `120s` | SSE 连接超时。**必须大于最慢一次模型调用**，否则复杂任务被掐断 |
+| `nexus.agent.sse.timeout` | `1800s` | SSE 连接超时。**必须大于最慢一次模型调用**，否则复杂任务被掐断。⚠️ **不要在任何 profile yml 里写这个键**——写了会盖掉这里的默认（2026-10-05 的「2 分钟中断」就是 prod 残留 120s 干的） |
 | `nexus.agent.sse.flush-max-chars` | `200` | 流式增量合并：攒够这么多字符就推一帧（P2-12，见 §6.14）。调大→帧更少更省但到达略慢 |
 | `nexus.agent.sse.flush-interval` | `60ms` | 流式增量合并的兜底时间阈值（≈16 帧/秒，与屏幕刷新率相当） |
 | `nexus.agent.memory.max-tokens` | `100000` | 对话记忆窗口。只影响送给模型的上下文，**不影响已入库的消息** |

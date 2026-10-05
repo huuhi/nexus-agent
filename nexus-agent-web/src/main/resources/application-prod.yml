@@ -154,8 +154,12 @@ nexus:
       #   allowed-origins: https://app.example.com
       # 同源部署（Nginx 把前端静态资源与 /api 挂在同一个域名下）就完全不用开。
     sse:
-      # SSE 连接超时。必须大于最慢一次模型调用的耗时，否则复杂任务会被提前掐断
-      timeout: 120s
+      # ❗ 这里【不要】写 nexus.agent.sse.timeout —— prod 的属性源优先级高于代码默认值，
+      #    写了就会盖掉 AgentProperties 里的默认（1800s）。
+      #    2026-10-05 的「任务 2 分钟被掐断」就是原本残留在这里的 timeout: 120s 干的：
+      #    2026-10-03 修复时只改了 Java 默认值，漏了 prod 这份，而用户以 prod profile 运行。
+      #    真要调整超时，去改 AgentProperties.Sse.timeout 的默认值（全项目唯一事实源）。
+      #    已有 SseTimeoutDriftTest 盯着：这里再出现该键会直接测试失败。
       # 流式增量合并（P2-12）：攒够这么多字符就推一帧。
       # 调大 → SSE 帧更少、前后端更省，但首字/整段到达略慢；调小 → 更"实时"但帧多、前端渲染压力大
       flush-max-chars: 200
@@ -217,7 +221,7 @@ nexus:
       fail-fast: true
     tools:
       # 工具发起的 HTTP 调用（沙盒服务）响应超时。
-      # ⚠️ 刻意小于 sse.timeout(120s)：这样超时先由工具层抛出，
+      # ⚠️ 刻意小于 sse.timeout（AgentProperties 默认 1800s）：这样超时先由工具层抛出，
       #    变成结构化的 TIMEOUT 结果回给模型，而不是把整条 SSE 流掐断。
       #    长任务（沙盒里装依赖、跑大数据量脚本）可调大，但别超过 sse.timeout。
       http-timeout: 100s

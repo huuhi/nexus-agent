@@ -539,7 +539,7 @@ curl -N -X POST http://localhost:8080/api/chat/stream \
 
 | 参数 | 默认 | 什么时候需要改它 |
 |---|---|---|
-| `nexus.agent.sse.timeout` | `120s` | 复杂任务被提前掐断时调大（要大于最慢一次模型调用） |
+| `nexus.agent.sse.timeout` | `1800s` | 复杂任务被提前掐断时调大（要大于最慢一次模型调用）。⚠️ 改默认值去 `AgentProperties.Sse`，**别在 profile yml 里写这个键**（会盖掉默认） |
 | `nexus.agent.memory.max-tokens` | `100000` | 上下文太长想省 token 时调小。⚠️ **别小于 600**，否则模型会「失忆」只回寒暄 |
 | `nexus.agent.sandbox.idle-timeout` | `8m` | 沙盒空闲回收时间。**必须小于沙盒服务的 600s**，否则还没轮到我们回收就被 E2B 收走 |
 | `nexus.agent.tools.http-timeout` | `100s` | 沙盒里跑长任务（装依赖、跑大脚本）超时时调大；**别超过 `sse.timeout`** |

@@ -253,7 +253,7 @@ public class AgentProperties {
         /**
          * 工具发起的 HTTP 调用（沙盒服务等）的响应超时。
          * <p>
-         * 默认 {@code 100s}：**刻意小于 {@code nexus.agent.sse.timeout}（120s）** ——
+         * 默认 {@code 100s}：**刻意小于 {@code nexus.agent.sse.timeout}（1800s）** ——
          * 这样超时先由工具层抛出、变成结构化的 {@code TIMEOUT} 结果回给模型，
          * 而不是把整条 SSE 流掐断（后者用户只看到断流，什么线索都没有）。
          * <p>

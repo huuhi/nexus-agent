@@ -82,7 +82,7 @@ public class ChatServiceImpl implements ChatService {
         }
 //        配额校验放在最前面（P2-8）：超支时直接拒绝，省掉一次完整的模型调用（也不必白建沙盒）
         quotaService.assertWithinQuota(userId);
-//        超时由 nexus.agent.sse.timeout 配置（默认 120 秒），必须大于最慢一次模型调用的耗时
+//        超时由 nexus.agent.sse.timeout 配置（AgentProperties 默认 1800s），必须大于最慢一次模型调用的耗时
         SseEmitter sseEmitter = new SseEmitter(agentProperties.getSse().getTimeout().toMillis());
 
         List<ChatUserMessage> messages = chatDTO.messages();

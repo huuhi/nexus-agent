@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * <b>局限</b>：只存在于内存，应用重启后丢失（重启后旧会话的工具调用会拿不到 userId
  * 而被拒绝）。若要跨重启，需要落库或延长注册表生命周期，属后续优化。
- * 当前 SSE 超时上限是 {@code nexus.agent.sse.timeout}（默认 120 秒），
+ * 当前 SSE 超时上限是 {@code nexus.agent.sse.timeout}（AgentProperties 默认 1800 秒），
  * 而清理发生在请求线程结束时，正常对话期间注册表一定还在。
  */
 @Slf4j
