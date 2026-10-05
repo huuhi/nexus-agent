@@ -5,7 +5,7 @@
 from pathlib import Path
 
 from app.schema.file import FileUpload, FileDownload, CreateFile
-from app.utils.oss_utils import str_upload_file
+from app.utils.oss_utils import upload_bytes
 from app.utils.url_guard import UrlNotAllowed, download_bytes
 from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
@@ -39,15 +39,29 @@ def list_file(box_id:str,dir_path:str):
 # 创建文件并且写入内容。
 @router.post("/create")
 def create_file(file:CreateFile):
+    """往沙盒写一个**文本**文件。
+
+    ⚠️ 本接口的契约就是「文本」：``CreateFile.content`` 是 ``str``，
+    HTTP JSON 本身也只能承载文本，所以这里 ``content.encode()`` 是**正确**的
+    （与 :func:`download_file` 的损坏不是一回事，那里的错误是把 bytes 误当 str 用）。
+
+    要往沙盒写二进制（PNG/docx/zip 等），走 ``POST /file``
+    （传 ``file_url``，由 :func:`app.utils.url_guard.download_bytes` 取回原始字节）。
+
+    ⚠️ 中文用 UTF-8 显式编码：``.encode()`` 不带参数时默认 UTF-8，
+    但显式写出来是为了让「哪个编码」这件事在代码里一眼可见，不依赖默认值。
+    """
     try:
         box= Sandbox.connect(file.box_id)
-        content=file.content
-        print(type(content))
-        print(content)
-        byte_array=content.encode()
+        if file.content is None:
+            return {
+                'error':'content 为空：不能写入空文件，请让调用方补上内容'
+            }
+        byte_array=file.content.encode('utf-8')
         box.files.write(file.path,byte_array)
         return {
-            'path':file.path
+            'path':file.path,
+            'size':len(byte_array)
         }
     except Exception as e:
         return {
@@ -87,17 +101,37 @@ def download_file(box_id:str,file_path:str,user_id:str=None):
 
     user_id 为可选参数（P2-10）：用于把产物放到 ``user/{userId}/artifact/{date}/`` 下；
     不传则落到 ``user/unknown/...``（不会失败，但目录能看出是异常数据）。
+
+    🔴 **必须按二进制读（2026-10-05 修复 P0）**
+
+    原来这里是 ``sbx.files.read(file_path)``，E2B SDK 的 ``format`` 默认值是 ``"text"``，
+    实现是 ``return r.text`` —— httpx 会拿 charset 解码，非法字节一律替换成 U+FFFD。
+    于是二进制文件在**上传 OSS 之前就已经被文本化损坏**了：
+
+        PNG 头 89 50 4E 47 0D 0A 1A 0A  →  EF BF BD 50 4E 47 0D 0A
+                                           （EF BF BD 就是 U+FFFD 的 UTF-8 编码）
+
+    后果：① 首字节不再是魔数，图片/文档打不开；
+    ② 每个非法字节 1 字节变 3 字节，体积凭空膨胀（实测 94367 → 171196）。
+    docx/xlsx/zip 同理 —— 它们都是 zip 容器，任何字节被替换都会导致解包失败。
+
+    所以这里显式传 ``format="bytes"``：SDK 走 ``bytearray(r.content)``，不经过任何解码。
+    注意返回的是 ``bytearray`` 而非 ``bytes``，且 SDK 版本升级可能改签名，
+    故统一用 ``bytes(...)`` 收口，避免把 ``bytearray`` 直接塞给 oss2。
     """
     try:
-        file_path= file_path
         sbx=Sandbox.connect(box_id)
-        content= sbx.files.read(file_path)
-        byte_array=content.encode()
+        # 一次性全量读进内存：E2B SDK 的 bytes 模式没有流式返回，
+        # 上传大文件时受沙盒服务 worker 内存限制，超大文件请走 /file（upload_file）反向链路。
+        content= sbx.files.read(file_path, format="bytes")
+        byte_array= bytes(content)
         # 创建一个临时文件
-        result=str_upload_file(get_file_name(file_path),byte_array,user_id)
+        result=upload_bytes(get_file_name(file_path),byte_array,user_id)
         return {
             'url':result,
-            # 产物大小（P2-10）：前端下载卡片要展示，Java 侧也据此落库
+            # 产物大小（P2-10）：前端下载卡片要展示，Java 侧也据此落库。
+            # 必须是「上传给 OSS 的那串字节」的长度，不是解码后的字符数 ——
+            # 旧实现报的是 len(已损坏内容)，与用户下载到的文件大小也对不上。
             'size':len(byte_array)
         }
     except Exception as e:

@@ -204,11 +204,19 @@ mock 单测看不见的层**：Servlet 容器行为、Spring 配置绑定、文�
 | L0 纯单测 | 业务分支、边界值 | JUnit5 + Mockito | 绝大多数既有测试 |
 | L1 **失败路径契约** | 异常分支返回 null / 空串 / 拼出 "null" | 打桩让依赖抛异常，断言返回值 | `ToolFailureContractTest`、`FileServiceUploadFailureTest` |
 | L2 **容器 / Servlet** | Content-Type 与 `HttpMessageConverter` 打架、error dispatch | `MockHttpServletRequest` / `MockHttpServletResponse`（保留真实 Content-Type 语义） | `SseErrorFrameTest` |
+| L2' **序列化 / 跨语言精度** | 数值在JSON → JS → 再回传的链路上被改写（**不报错，只变错**） | 真的走一遍目标语言的数值语义，并加**元测试**证明模拟本身有效 | `SnowflakeIdPrecisionTest` |
 | L3 **配置真实绑定** | yml 改了但没被 Spring 读到、类型/单位写错 | `ApplicationContextRunner` + `ConfigDataApplicationContextInitializer`（**真读 yml 的迷你容器**，秒级） | `RuntimeConfigBindingTest` |
 | L4 **静态资产一致性** | 文档漂移：yml 要 `${XXX}` 但 `.env.example` 里没有 | 把配置文件**当输入解析并断言** | `EnvPlaceholderDriftTest` |
 | L5 人工集成 | 真实外部服务 | `@Disabled` + `@Tag("manual")` | `BoxToolTest` 等 |
 
 **配套铁律（自检时新增，全仓适用）：**
+0. 🔴 **模拟外部语言语义的测试，必须配一条「元测试」证明模拟本身有效。**
+   2026-10-05 血泪：测「雪花 ID 在 JS 里丢精度」时，我用 `BigDecimal.longValueExact()`
+   去模拟 `JSON.parse` —— 那是**精确算术**，裸数字走它也「无损」，
+   **测试全绿但什么都没测到**。后来实测算 4000 个 id 99.6% 会丢，才发现问题。
+   → 元测试写法：拿一个**已知会出错**的输入，断言模拟结果**确实出错**。
+   另：断言前先核对"我构造的输入真的是我以为的那个形态"（我曾断言
+   `{"id":123}` 不含引号 —— `key` 本身就带引号，断言自己写错了）。
 1. **任何 `catch` 都必须留日志**（`log.warn`/`log.error`），只有"这条异常本来就
    在正常分支里"才允许降到 `debug`，且要在注释里写明理由。静默吞异常 = 线上无头案子。
 2. **工具（`@Tool`）的返回值绝不能是 null / 空串 / 含 "null" 字样** —— 它会原样
@@ -1313,6 +1321,8 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-05 | **🔴🔴 修「AI 交付的文件全部损坏」：沙盒把二进制当 UTF-8 文本处理**（PNG/docx/xlsx/zip 一律打不开，用户报「刚生成的 docx 打不开」） | 改 `nexus_agent_box/app/routers/file.py`、`app/utils/oss_utils.py`、`app/routers/box.py`、`.env.example`、`README.md`；新增 `nexus_agent_box/e2b/Dockerfile.template`、`tools/test_binary_roundtrip.py`(25)；`docs/前端增量变更.md` 新增 1 节；`AGENTS.md` §16.2 之 ④ 补模板构建方式 | **前端需要同步（已写进 `docs/前端增量变更.md`）：接口/字段/下载方式全无变化，唯一语义变化是 `artifact.size` / `file.fileSize` 现在等于「文件真实字节数」**（修复前报的是损坏后的大小，故偏大）。<br>**根因**：`download_file` 写的是 `sbx.files.read(file_path)`，而 **E2B SDK 的 `format` 参数默认值就是 `"text"`**，实现是 `return r.text` —— httpx 按 charset 解码，**非法字节一律替换成 U+FFFD**。PNG 头 `89 50 4E 47` → `EF BF BD 50 4E 47`（`EF BF BD` 即 U+FFFD 的 UTF-8 编码）。两个后果缺一不可：① 首字节不再是魔数 → 按格式识别的工具拒绝打开；② **每个坏字节 1 字节涨成 3 字节 → 体积凭空膨胀**（实测 94367 → 171196，正是当年「上报 171196、实际 94367」的由来）。docx/xlsx/pptx/zip 同理：都是 zip 容器，任一字节被替换就解包失败 → Office 报「已损坏」。<br>**先排除的嫌疑**：Java 侧 `AliOssUtil`（`putObject` 用 `ByteArrayInputStream`、`getObject` 用 `readAllBytes`）**本来就是正确的字节流处理**，不是源头 —— 别一看到文件损坏就先改Java。<br>**修复**：`files.read(path, format="bytes")` 走 SDK 的 `bytearray(r.content)`，不经过任何编解码；再用 `bytes(...)` 收口，因为**SDK 返回的是 `bytearray` 而非 `bytes`**（且升级可能改签名）。<br>**配套两道防线**：① `str_upload_file` 更名为 **`upload_bytes`** —— 名字里的 `str_` 把调用方误导成"这里传字符串"，是一路误导到根因的帮凶；且它现在**拒收 `str`，传错类型第一行就抛 `TypeError`**，让同类 bug 在最早就炸掉；② 上传时显式带 `Content-Type`（`guess_content_type`），`docx` 不再被浏览器当裸二进制流。<br>⚠️ **排查这类问题要把两件事分开**：**字节损坏**看 hex 文件头（上例），**Content-Type 不对**只是浏览器不预览 —— 表现都是"打不开"但根因不同，别混为一谈。<br>**已核实无需修的**：报告 3「乐享检索报无法确定当前用户」在上一批已修（`ChatServiceImpl` 请求线程 `runUserRegistry.register(sessionId, userId)` + 工具侧 `@ToolMemoryId` 反查），并复核 `@ToolMemoryId` 注入的确实是 `sessionId`（`ChatContextFactory` 里 `.id(sessionId)`），链路完整；报告 4（CSV/TSV）本就是成功记录。<br>**报告 5 已升级为可执行项**：新增 `nexus_agent_box/e2b/Dockerfile.template` 预装 python-docx/openpyxl/python-pptx/matplotlib + **.NET 8 SDK** + fonts-noto-cjk；`box.py` 支持 `E2B_TEMPLATE_ID`（**留空则行为完全不变**，启动不会失败），模板 id 走环境变量而非硬编码。⚠️ **构建与建模板需用户在本机执行**（涉及 E2B 控制台/本机凭据，AI 代劳不了）。<br>⚠️ **测试教训（与 AGENTS.md 铁律第 0 条同源）**：新测试**自带元测试** —— 第 0 组先断言「桩用旧写法确实会损坏 PNG 魔数、确实会体积膨胀」，第 2 组再断言「旧写法确实坏、bytes 模式确实好」。只有元测试成立，后面那些通过才有意义；否则一个写错的模拟会全绿放行。已**反向验证**：把 `format="bytes"` 改回旧写法，测试立即变红（退出码 1）且被 `upload_bytes` 的类型闸门直接抓到。<br>**Python 侧测试范式**：`nexus_agent_box/tools/` 下用「桩对象 + 本地 server + `sys.exit(1 if failed)`」，仿 `test_url_guard.py`；不依赖外网 / OSS / 真实沙盒。桩的形状要**对齐真实调用形态** —— `Sandbox.connect(box_id)` 是**类方法**，直接把模块里的 `Sandbox` 换成函数会报 `'function' object has no attribute 'connect'`。Java 侧 **484** tests, 0 failures, 12 人工跳过；Python 侧 **25** 项全绿 |
+| 2026-10-05 | **🔴🔴 修正上一条「文件删不掉」的结论：真凶是 19 位雪花 ID 在 JS 里丢精度**，并在序列化层根治；顺带新增批量删除接口 | 新增 `config/JacksonConfig`、`dto/BatchDeleteFileDTO`、`vo/BatchDeleteResultVO`、`FileService(+Impl)#batchDelete`、`FileController#batchDelete`；新增 `SnowflakeIdPrecisionTest`(8)、`FileServiceBatchDeleteTest`(12)；`docs/前端增量变更.md` 新增 1 节并给旧节加「已被推翻」横幅；`AGENTS.md` §3.1 新增 L2' 分层与铁律第 0 条 | **前端需要同步（已写进 `docs/前端增量变更.md`）：① 所有 `Long` 字段变成带引号的字符串（`code` 等 `Integer` 不变）；② 新增 `POST /api/file/batch-delete`（部分成功语义）。**<br>**上一条结论是错的**：10-05 上午定位为「`ArtifactServiceImpl#delete` 硬加 `biz_type=ARTIFACT`」，那确实是个真问题（已修），但**不是「每一行都删不掉」的主因** —— 去掉限制后用户反馈「还是每次都这样」。<br>**真凶**：`SysFile.id` 是 `@TableId(ASSIGN_ID)` 雪花 ID，**19 位十进制数**；而 JSON 里输出的是裸数字，`JSON.parse` 产出 IEEE754 double，`Number.MAX_SAFE_INTEGER` 只有 **16 位**（9007199254740991）→ 实测抽样 4000 个雪花 ID **99.6% 被改写**。删除是「按 id 回传」的操作（`返回 id → 浏览器 double → 拼 URL → WHERE id = ?`），id 在浏览器里已经变了，后端必然落空。⚠️ 该缺陷**不限于删除**：凡「拿 id 去改/删」的接口都中招（技能 / 用户记忆 / MCP / 聊天记录）。<br>**修复选择**：在**序列化层**全局把 `Long/long` 序列化为 `String`（`Jackson2ObjectMapperBuilderCustomizer#serializerByType`），而不是逐个字段加 `@JsonSerialize` —— 后者治标，新增实体忘了加就换个接口复现。**刻意不碰 `Integer`**：`res.code !== 0` 这类判断不能失效。用 customizer 而非 `@Bean ObjectMapper`，后者会替换掉 Boot 自动配置的那个 mapper，清空时间格式等一堆默认设置；也刻意不用 `modulesToInstall(SimpleModule)`（按模块顺序生效，行为依赖装配顺序）。反序列化方向不受影响（Jackson 字符串→Long 是标准行为），所以前端<b>不需要</b> `parseInt`。<br>**批量删除的两个设计决定**：① 语义是「**部分成功**」而非全有全无 —— 一批里有的能删有的不能删时，能删的照样删，结果分 `deletedIds`/`failedIds` 返回（对外不区分「不存在」与「不是你的」，防 IDOR 探测）；② **刻意不加 `@Transactional`** —— 逐条独立提交才符合部分成功语义，一条失败就整批回滚反而让前端只拿到「全失败」；且记录删除与 OSS 删除本就不原子，套事务也原子不了。**必须先按 `id + user_id` 查出来再 `removeByIds`**，直接按 id 删就是「知道 id 就能删任何人的文件」。<br>⚠️ **测试教训**：① 写「id 精度」测试时**必须真的走一次 `double`** —— 我第一版用 `BigDecimal.longValueExact()`，那是精确算术，裸数字走它也「无损」，等于没测；② `ApplicationContextRunner#run` 的 Consumer 返回 void，不能在 lambda 里 return 值，要用数组 holder 带出；③ `IService#removeByIds` 在 Mapper 层落到的是 **`deleteBatchIds`**，stub/verify 写 `deleteByIds` 编译不过；④ **`nexus-agent-domain` 模块没有 swagger 依赖**（只有 web 模块有），在 domain 的 DTO/VO 上写 `@Schema` 会编译失败，该模块一律用普通 javadoc。<br>另：本次写测试时**又把文件写进了错误包目录**（`com/huzhujhian/`），且发现历史遗留的 `SseTimeoutDriftTest` 一直躺在错误目录 `com/huhuhuzhijian/` 里**从未被编译执行**（幽灵测试）—— 已全部归位并修正 package（详见 §易踩的坑），归位后它那 2 个用例**第一次真的跑了起来**。<br>**测试 484**（新增 20 + 归位 2），0 失败，12 人工跳过 |
 | 2026-10-05 | **🔴 修「任务跑满 2 分钟被掐断」（第二次事故）**：prod 残留的 `sse.timeout: 120s` 盖掉了 10-03 改的默认 1800s | `application-prod.yml`（删 `timeout: 120s`）、`application-dev.yml.example`（同款残留一并删）、`AgentProperties`/`ChatServiceImpl`/`RunUserRegistry`（引用旧值的注释更新）、`AGENTS.md` §6.1/§6.11/配置表、`README.md` 配置表；新增 `SseTimeoutDriftTest`(2) | **根因是 10-03 修复只改了一半**：把 `AgentProperties.Sse.timeout` 的<b>默认值</b>调到 1800s，但 `application-prod.yml` 里显式写的 `timeout: 120s` 没删 —— 而 **profile 属性源优先级高于代码默认值**，用户以 prod profile 运行 → `new SseEmitter(120_000)` 满两分钟必断（前端截图 stream 的 Time 恰好 2 min）。这是「两份配置不同步」坑的又一次发生（上次是 CORS，见 §5.x）。<br>**修复方式**：① 删掉 prod / dev 模板里的 `timeout` 键，超时的**唯一事实源**收归 `AgentProperties.Sse`（1800s）；② 新增 `SseTimeoutDriftTest`——把 4 份 yml 当输入，断言任何一份都不得声明 `nexus.agent.sse.timeout`、且默认值不得低于 1800s，**已反向验证**（把 120s 塞回去测试立刻红）。<br>⚠️ 用户本地若有自己不提交的 `application-dev.yml` 且写了这个键，同样会盖掉默认，需自查。前端无感知（心跳 `:ping` 一直在，SSE 契约未变），**改完需重启后端生效**。测试 **464**（+2），0 失败 |
 | 2026-10-05 | **🔴 修三个「界面上不对」的问题**：① MCP 预置服务能重复添加；② 文件/产物一行都删不掉；③ `GET /api/lexiang/teams` 恒 500 | 改 `McpInformationServiceImpl`（两级去重 + `added`/`localId`）、`McpServerItemVO`（+2 字段）、`ArtifactServiceImpl`（去 `biz_type` 条件）、`FileService(+Impl)`（新增 `delete`）、`FileController`（新增 `DELETE /api/file/{id}`）、`AliOssUtil`（抽出 `deleteByUrl`）、`GlobalExceptionHandler`（+3 个 handler）；新增 `FileServiceDeleteTest`(7)、`AliOssUtilDeleteByUrlTest`(5)、`GlobalExceptionHandlerMappingTest`(5)，`McpInformationServiceImplTest` +3；`docs/前端增量变更.md` 新增 3 节 | **① MCP 能重复添加是两层**：前端只能自己比 `strId`（可能 null/空串/带空格）必然有漏；后端去重<b>只认 strId</b>，漏传就直接 insert，而 PG 唯一约束里 `str_id IS NULL` 的行<b>互不冲突</b> → 能无限插重复行。→ 后端直接在预置列表里返回 `added` / `localId`（`localId` 用字符串避免 JS 精度），去重升级为 **strId → url 两级**（url 归一化只去首尾空格与末尾斜杠，**刻意不转小写**，URL path 大小写敏感）。<br>**② 删不掉**：`ArtifactServiceImpl#delete` 硬加了 `biz_type=ARTIFACT`，而前端「文件与产物」是统一视图（42 = 13 对话附件 + 29 产物），删除按钮对所有行打这个端点 → 13 个 CHAT 附件永远命中不了。⚠️ `biz_type` **不是安全边界**，安全边界是 `user_id`。新增不限类型的 `DELETE /api/file/{id}`，`ArtifactController#delete` 保留（兼容已上线前端）但去掉类型条件。删除顺序：**先删记录、再尽力删 OSS**，`deleteByUrl` 吞所有异常只记 WARN（对象残留只是成本，报错会让用户以为没删掉）。<br>**③ 乐享 500**：不是乐享挂了 —— 它整条链路抛 `IllegalStateException`，而 `GlobalExceptionHandler` **没有该类型的处理器**，全掉兜底 500 变成「系统内部错误」，真实原因（未配凭证 / AppKey 无效 / 限频 / 授权范围不含该成员）被吞掉。补 `IllegalStateException` / `IllegalArgumentException` / `ParserFileException` 三个 handler，用 `log.warn`（本项目这类异常都带中文人话消息，属可预期，不该和真 NPE 一起报警）。<br>⚠️ **测试教训**：`@ExceptionHandler` 映射这类配置层错误，纯 mock 单测**永远抓不到**（只会看到 500），必须专门写「异常 → `Result`」映射测试。另：单测里 `ServiceImpl#removeById` 会 NPE（`TableInfoHelper` 未初始化），需在测试里手工 `initTableInfo`；且 mock 的 `deleteById` 默认返回 0，断言返回值前要 stub。测试 **462**（+20），0 失败 |
 | 2026-10-05 | **前端文档拆成两份**：`前端开发指南.md` 冻结（"从零搭前端"教程），新增 `前端增量变更.md` 只写增量 | 回滚 `docs/前端开发指南.md`（撤掉上一版塞进去的 7 处教程式 runId 段落）；**新增** `docs/前端增量变更.md`；`AGENTS.md` 铁律第 9 条与 §8.1 改写 | **起因**：上一版把 runId 写进完整指南（含 JS 伪代码、要点列表、边界表共 7 处），用户反馈"太全面了，我只需要需要更新的部分，因为我前端已经搭好了"。<br>→ 定为规则：**主指南冻结不动，所有前端可见的增量一律写进 `docs/前端增量变更.md`**，按日期倒序，结构固定为「改了什么（表）/ 你要动哪几处（编号）/ 不用动的（短列表）」。<br>→ 判断标准写进 §8.1：**写出来的内容在本次改动之前就已成立 → 那是教程，删掉。**<br>增量文档里另外补了两条最容易被漏的：① `runId` 必须先执行 `docs/sql/011_add_run_id.sql`，否则两列全是 `null`，用户会以为后端没做；② Nginx 侧要同步 `client_max_body_size 30m`，否则网关默认 1m 就把上传拦了，后端日志里什么都看不到 |
@@ -1687,11 +1697,48 @@ AI 在 E2B 沙盒里写文件
 而落库要 userId、推事件要 SSE writer —— 只有 `ChatServiceImpl.onToolExecuted` 同时握有这三样。
 所以职责切成「工具负责产出、主流程负责交付」，避免为此把 RunContext 硬塞进工具层。
 
-**④ 怎么做（需要你操作，AI 代劳不了）**：E2B 基础镜像**不含** `python-docx`/`openpyxl`/`python-pptx`。
+**④ 怎么做（需要你操作，AI 代劳不了）**：E2B 基础镜像**不含** `python-docx`/`openpyxl`/`python-pptx`，
+也不含 `dotnet`。少了这些，AI 只能每次在沙盒里现场 `pip install`（慢、依赖网络、可能失败），
+或者像 2026-10-05 那次一样**改用 python-docx 手工拼 OpenXML 并自写校验脚本绕过去** ——
+能出文档，但技能自带的 `scripts/dotnet` CLI 全程用不上。
 
-- 临时方案：让 AI 每次在沙盒里 `pip install python-docx -q` —— 慢、依赖网络、可能失败
-- **推荐**：在 E2B 控制台基于基础模板构建**自定义模板**（Dockerfile 里预装这三个库），
-  并在创建沙盒时指定该 template。这样每次建沙盒就自带，AI 不必现场安装
+**推荐**：在 E2B 控制台基于基础模板构建**自定义模板**，预装下面这些，
+然后创建沙盒时指定该 template。`e2b/Dockerfile.template` 已备好，可直接改：
+
+```dockerfile
+# e2b/Dockerfile.template —— E2B 自定义模板（构建前需先在 E2B 控制台建 code-interpreter-v1）
+FROM e2b/code-interpreter:1.0.0
+
+# ① Office 文档三件套：AI 生成 docx/xlsx/pptx 的主力工具链
+RUN pip install --no-cache-dir python-docx openpyxl python-pptx matplotlib
+
+# ② dotnet SDK：技能里的 scripts/*.csx 靠它跑（minimax-docx 等技能的 CLI 全部依赖）
+#    .NET 8 LTS，装到 /usr/local/dotnet 并进 PATH
+ENV DOTNET_ROOT=/usr/local/dotnet \
+    PATH=/usr/local/dotnet:$PATH \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh \
+      | bash -s -- --channel 8.0 --install-dir /usr/local/dotnet \
+ && ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet \
+ && dotnet --version
+
+# ③ 中文字体：不装的话 matplotlib 出图的中文全是豆腐块
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+```
+
+构建与启用（两条命令，请你在本机执行）：
+
+```bash
+cd nexus_agent_box/e2b
+e2b template build <your-template-id> --dockerfile Dockerfile.template
+```
+
+建好后，把 `app/routers/box.py::create_box` 的 `Sandbox.create()` 改成
+`Sandbox(template=<your-template-id>)` —— 这是**唯一**需要改代码的地方，
+`box.py` 里其余逻辑不用动。⚠️ 模板 id 要写进 `.env`（新增变量 `E2B_TEMPLATE_ID`），
+**不要硬编码在 Java/Python 里**，否则换模板要改代码重新发版。
 
 ### 16.3 能力 B：本地文件空间（四条路，必须先选形态）
 

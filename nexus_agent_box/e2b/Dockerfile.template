@@ -1,0 +1,41 @@
+# E2B 自定义沙盒模板
+# ----------------------------------------------------------------------------
+#  解决什么：E2B 基础镜像不含 python-docx / openpyxl / python-pptx / dotnet / 中文字体，
+#          导致 AI 每次生成 Office 文档都得现场 pip install（慢、依赖网络、可能失败），
+#          且技能自带的 scripts/*.csx（minimax-docx 等）全程用不了。
+#
+#  怎么用（两条命令，需要你在本机执行 —— AI 代劳不了，涉及 E2B 控制台/本机凭据）：
+#      1) 先在 E2B 控制台确保已有名为 code-interpreter-v1 的工具（官方要求）
+#      2) e2b template build <your-template-id> --dockerfile nexus_agent_box/e2b/Dockerfile.template
+#
+#  怎么启用：把模板 id 写进 nexus_agent_box/.env 的 E2B_TEMPLATE_ID，然后重启沙盒服务。
+#         app/routers/box.py::create_box 会自动读取该变量；留空则用基础模板（行为不变）。
+#
+#  ⚠️ 为什么模板 id 走环境变量而不是硬编码：换模板要改代码重新发版，不值得。
+#  ⚠️ 注意中文字体：不装 fonts-noto-cjk 的话 matplotlib 出图的中文全是豆腐块 □□□。
+
+FROM e2b/code-interpreter:1.0.0
+
+# ① Office 文档三件套：AI 生成 docx / xlsx / pptx 的主力工具链
+RUN pip install --no-cache-dir \
+      python-docx \
+      openpyxl \
+      python-pptx \
+      matplotlib
+
+# ② dotnet SDK：技能里的 scripts/*.csx 靠它跑。
+#    .NET 8 LTS，装到 /usr/local/dotnet 并进 PATH。
+ENV DOTNET_ROOT=/usr/local/dotnet \
+    PATH=/usr/local/dotnet:$PATH \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1
+
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh \
+      | bash -s -- --channel 8.0 --install-dir /usr/local/dotnet \
+ && ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet \
+ && dotnet --version
+
+# ③ 中文字体（matplotlib / PDF 渲染需要）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
