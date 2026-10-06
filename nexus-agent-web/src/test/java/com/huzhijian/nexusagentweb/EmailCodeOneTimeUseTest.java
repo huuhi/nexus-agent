@@ -8,6 +8,7 @@ import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.impl.UserServiceImpl;
+import com.huzhijian.nexusagentweb.utils.OssUrlGuard;
 import com.huzhijian.nexusagentweb.utils.RedisUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,7 +57,8 @@ class EmailCodeOneTimeUseTest {
     void setUp() throws Exception {
         mapper = mock(UserMapper.class);
         redisUtils = mock(RedisUtils.class);
-        service = new UserServiceImpl(redisUtils, new AgentProperties());
+        // 2026-10-06：构造多了 OssUrlGuard（换头像时校验 OSS 域名），本用例不碰头像
+        service = new UserServiceImpl(redisUtils, new AgentProperties(), mock(OssUrlGuard.class));
         injectBaseMapper(service, mapper);
     }
 

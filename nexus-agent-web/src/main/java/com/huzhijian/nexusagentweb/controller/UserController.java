@@ -2,6 +2,7 @@ package com.huzhijian.nexusagentweb.controller;
 
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.dto.UpdateProfileDTO;
 import com.huzhijian.nexusagentweb.dto.UserLoginDTO;
 import com.huzhijian.nexusagentweb.dto.UserPasswordDTO;
 import com.huzhijian.nexusagentweb.dto.UserRegisterDTO;
@@ -10,6 +11,7 @@ import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.service.UserMemoryService;
 import com.huzhijian.nexusagentweb.service.UserService;
 import com.huzhijian.nexusagentweb.vo.QuotaVO;
+import com.huzhijian.nexusagentweb.vo.UserProfileVO;
 import com.huzhijian.nexusagentweb.vo.Result;
 import com.huzhijian.nexusagentweb.vo.UserMemoryVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,6 +42,35 @@ public class UserController {
 
     // 下面三个是免鉴权接口：@SecurityRequirements 留空 = 覆盖掉全局的 token 要求，
     // 否则 Swagger UI 会给它们也加一把锁，试接口的人会以为必须登录。
+
+    // ==================================================================
+    //  用户资料（2026-10-06 新增）：头像上传 + 设置页表单化
+    //
+    //  🔴 为什么不能继续用 JWT 里那份 user_name / image_url：
+    //  ① JWT 里**没有 email**，设置页要显示邮箱做不到；
+    //  ② 那份是**登录那一刻的快照**，而 token 有效期 7 天 —— 用户改了昵称，
+    //     页面上 7 天内还是旧的；
+    //  ③ JWT 是签名过的**凭据**，拿它当数据源，前端解析逻辑一错就显示错用户。
+    //  所以这里返回数据库当前值，作为唯一权威来源。
+    // ==================================================================
+
+    @Operation(summary = "取当前用户资料",
+            description = "返回 id / email / username / avatarImg / role / registerTime。"
+                    + "id 是雪花 ID，序列化成**字符串**。avatarImg 可能为 null（老数据），前端要能兜住「无头像」。")
+    @GetMapping("/profile")
+    public Result getProfile() {
+        return Result.ok(userService.getProfile(UserContextHolder.getUserId()));
+    }
+
+    @Operation(summary = "修改当前用户资料",
+            description = "只允许改 username 与 avatarImg；都不传则什么都不做且不报错。"
+                    + "avatarImg 必须是本项目 OSS 的 URL（服务端校验域名）—— 换头像请先 POST /api/file/image 上传，"
+                    + "再把返回的 URL 传到这里。email 与 role 只读。昵称最长 64 字符。")
+    @PutMapping("/profile")
+    public Result updateProfile(@RequestBody @Valid UpdateProfileDTO dto) {
+        userService.updateProfile(UserContextHolder.getUserId(), dto.username(), dto.avatarImg());
+        return Result.ok("资料已更新", userService.getProfile(UserContextHolder.getUserId()));
+    }
 
     @Operation(summary = "登录", description = "返回 JWT，后续请求放进请求头 `token`。")
     @SecurityRequirements

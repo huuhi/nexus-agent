@@ -10,10 +10,13 @@ import com.huzhijian.nexusagentweb.em.LoginType;
 import com.huzhijian.nexusagentweb.em.QuotaPeriod;
 import com.huzhijian.nexusagentweb.em.UserRole;
 import com.huzhijian.nexusagentweb.exception.NotFoundException;
+import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.UserMapper;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.UserService;
+import com.huzhijian.nexusagentweb.utils.OssUrlGuard;
+import com.huzhijian.nexusagentweb.vo.UserProfileVO;
 import com.huzhijian.nexusagentweb.utils.JwtUtil;
 import com.huzhijian.nexusagentweb.utils.RedisUtils;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -37,10 +40,76 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
     private final RedisUtils redisUtils;
     private final AgentProperties agentProperties;
     private final List<String> imageList=List.of("");
+    /** 换头像时校验 URL 必须是本项目 OSS —— 否则用户能把任意外链（含追踪像素）存进库 */
+    private final OssUrlGuard ossUrlGuard;
 
-    public UserServiceImpl(RedisUtils redisUtils, AgentProperties agentProperties) {
+    public UserServiceImpl(RedisUtils redisUtils, AgentProperties agentProperties,
+                           OssUrlGuard ossUrlGuard) {
         this.redisUtils = redisUtils;
         this.agentProperties = agentProperties;
+        this.ossUrlGuard = ossUrlGuard;
+    }
+
+    // ==================================================================
+    //  用户资料（2026-10-06 新增：头像上传 + 设置页表单化）
+    // ==================================================================
+
+    @Override
+    public UserProfileVO getProfile(Long userId) {
+        requireLogin(userId);
+        User user = getById(userId);
+        if (user == null) {
+            // 鉴权过了但库里没有这一行：属于数据不一致，明确报错比返回半截对象好排查
+            throw new NotFoundException("用户不存在");
+        }
+        return UserProfileVO.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .username(user.getUsername())
+                .avatarImg(user.getAvatarImg())
+                .role(user.getRole())
+                .registerTime(user.getRegisterTime())
+                .build();
+    }
+
+    @Override
+    public void updateProfile(Long userId, String username, String avatarImg) {
+        requireLogin(userId);
+        // 只 set 要改的字段：MyBatis-Plus 的 updateById 默认忽略 null 字段，
+        // 所以「只改昵称」不会把头像/邮箱/配额写成 null。
+        // ⚠️ 刻意**不用**手写的 updateByPrimaryKeySelective：那套 XML 是历史遗留，
+        //    而 users 表没有 jsonb 列，不存在「MP 更新会类型不匹配」的限制 —— 用 MP 更稳。
+        User patch = User.builder().id(userId).build();
+        boolean hasChange = false;
+
+        if (username != null) {
+            String trimmed = username.trim();
+            if (!trimmed.isEmpty()) {
+                if (trimmed.length() > 64) {
+                    throw new ValidationException("昵称最长 64 个字符");
+                }
+                patch.setUsername(trimmed);
+                hasChange = true;
+            }
+        }
+        if (avatarImg != null && !avatarImg.isBlank()) {
+            // 🔴 必须是本项目 OSS 域名：否则用户能把任意外链存进来，
+            //    页面每次渲染都等于给第三方递一次访问（追踪像素），头像位还能被用来钓鱼。
+            ossUrlGuard.validateHost(avatarImg, "头像");
+            patch.setAvatarImg(avatarImg);
+            hasChange = true;
+        }
+        if (!hasChange) {
+            // 前端「保存」在没改动时也可能被点到 —— 不该报错，也不该白跑一次 UPDATE
+            return;
+        }
+        updateById(patch);
+    }
+
+    private void requireLogin(Long userId) {
+        if (userId == null) {
+            throw new UnauthorizedException("未登录！");
+        }
     }
 
     @Override
