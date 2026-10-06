@@ -167,6 +167,17 @@ public class ChatContextFactory {
         long tBind = System.nanoTime();
         ChatAssistant chatAssistant = builder.build();
         long t3 = System.nanoTime();
+
+//        🔴 CHAT_DECISION（2026-10-06，用户要求「显式化默认行为」的第二条）：
+//        把**本次请求的每一个决策**集中打一行，回答那些只能靠猜的问题：
+//          · 「为什么模型用了这个模型」 → 模型来源（用户自带 / 系统默认）与回退原因
+//          · 「为什么加载了这些技能」     → 请求没传 vs 明确指定 vs 明确禁用
+//          · 「为什么这个工具没加载」     → enabled() 的判定结果与理由
+//        以前这些判断散落在 create() 的各个 if 分支里，出问题只能顺着代码读；
+//        现在一行日志就能对账。⚠️ 它回答的是「决策」，不是「耗时」——耗时看 CHAT_CONTEXT。
+        logRequestDecisions(runContext, chatDTO, matched, capabilities, tools, skillTp != null, mcpTp != null,
+                memoryWindow);
+
 //        🔴 window（记忆窗口）是首字延迟的**决定性参数**：它就是本次最多会带多少 token 的历史
 //        给模型，模型的 prefill 量与它成正比。看到首字慢，先拿这一行和 CHAT_MEMORY 的 msgs 对照。
 //        tools 数量也在这里 —— 15 个工具的 JSON Schema 每轮都要跟着请求发出去。
@@ -188,6 +199,38 @@ public class ChatContextFactory {
     }
 
     /** 两个 nanoTime 之间的毫秒数（分段耗时埋点用） */
+    /**
+     * 打印本次请求的决策快照（一行，字段用 {@code |} 分隔便于 grep）。
+     * <p>
+     * 刻意<b>不</b>打「请求里传了什么原始值」—— 那属于回显、且可能含用户输入；
+     * 这里只打<b>后端据此做出的决定</b>，因为排查时需要的是后者。
+     */
+    private void logRequestDecisions(RunContext runContext, ChatDTO chatDTO,
+                                     MatchedModel matched, ModelCapabilities capabilities,
+                                     Object[] tools, boolean skillsOn, boolean mcpOn, int memoryWindow) {
+        // 技能：三种语义各不相同，日志里必须能分辨（null=启用全部 / []=全禁 / 有值=只启用这些）
+        String skillDecision;
+        List<String> requested = chatDTO.skills();
+        if (requested == null) {
+            skillDecision = "全部";
+        } else if (requested.isEmpty()) {
+            skillDecision = "已全部禁用";
+        } else {
+            skillDecision = "仅指定(" + requested.size() + "个)";
+        }
+        // 模型：用户自带 vs 系统默认，以及为什么回退
+        String modelDecision = matched != null
+                ? "用户自带:" + matched.model().getName()
+                : "系统默认(用户未配置该模型)" ;
+        // ⚠️ 这里曾想打「能力元数据 degraded」—— ModelCapabilities 没有这个概念
+        // （degraded 是 QuotaVO 的字段，用于配额查询失败时的降级标记）。别再混淆。
+        log.info("CHAT_DECISION runId={} 模型={} 技能={} 知识库={} MCP={} 工具={}个 记忆窗口={}token 输出上限={}",
+                runContext.runId(), modelDecision, skillDecision,
+                chatDTO.enableLexiangRag() ? "乐享" : "关",
+                mcpOn ? "开" : "关",
+                tools.length, memoryWindow, capabilities.maxOutputTokens());
+    }
+
     /**
      * 本次可用的技能数量（打进日志）。
      * <p>

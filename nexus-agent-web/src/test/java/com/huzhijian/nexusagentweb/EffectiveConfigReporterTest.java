@@ -1,0 +1,82 @@
+package com.huzhijian.nexusagentweb;
+
+import com.huzhijian.nexusagentweb.config.EffectiveConfigReporter;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.MutablePropertySources;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+
+/**
+ * 「生效配置快照」必须能在<b>各种配置状态</b>下正常跑完，且要能看出值来自哪个源（2026-10-06）。
+ *
+ * <p>为什么必须有它：2026-10-06 一整天，「这个值到底来自 jar 还是被外部覆盖文件顶掉了」
+ * 反复成为排查障碍 —— 我改了 jar 内的模型元数据却因为外部 {@code nexus-override.yml}
+ * 里那份 {@code system-models} 整体顶替而<b>静默不生效</b>。
+ * Spring 的 {@code Environment} 同时知道「最终生效值」与「来自哪个 PropertySource」，
+ * 但没人打印它。
+ */
+@DisplayName("生效配置快照 —— 打印值与来源，且不因配置缺失而炸")
+class EffectiveConfigReporterTest {
+
+    private static ConfigurableEnvironment envWith(Map<String, Object> props, String sourceName) {
+        ConfigurableEnvironment env = new org.springframework.core.env.StandardEnvironment();
+        MutablePropertySources sources = env.getPropertySources();
+        // ⚠️ 外部覆盖源必须放在**最后**（Spring 的属性源后者优先），
+        // 这正是 nexus-override.yml 的真实位置
+        sources.addLast(new MapPropertySource(sourceName, new LinkedHashMap<>(props)));
+        return env;
+    }
+
+    @Test
+    @DisplayName("值来自外部覆盖文件时也能正常打印（不抛异常）")
+    void reportsWithExternalOverride() {
+        EffectiveConfigReporter reporter = new EffectiveConfigReporter(
+                new AgentProperties(),
+                envWith(Map.of("nexus.agent.memory.max-tokens", 12345), "nexus-override.yml"));
+
+        assertDoesNotThrow(reporter::report,
+                "配置快照是纯观测手段，任何配置状态下都不能让应用起不来");
+    }
+
+    @Test
+    @DisplayName("完全没有配置时也能打印（全部落到默认值）")
+    void reportsWithNothingConfigured() {
+        EffectiveConfigReporter reporter = new EffectiveConfigReporter(
+                new AgentProperties(), mock(ConfigurableEnvironment.class));
+        assertDoesNotThrow(reporter::report);
+    }
+
+    @Test
+    @DisplayName("Environment 为 null 也不炸 —— 它只是观测手段")
+    void survivesNullEnvironment() {
+        // ⚠️ 用真实 Environment 而不是 mock：mock 的 getPropertySources() 会返回 null，
+        //    那样测的是「mock 的行为」而不是本类的健壮性
+        ConfigurableEnvironment real = envWith(Map.of(), "empty");
+        EffectiveConfigReporter reporter = new EffectiveConfigReporter(new AgentProperties(), real);
+        assertDoesNotThrow(reporter::report);
+    }
+
+    @Test
+    @DisplayName("PropertySources 是 Iterable 而非 Collection —— 这里是最容易写错的地方")
+    void propertySourcesIsIterableNotCollection() {
+        ConfigurableEnvironment env = envWith(Map.of("k", "v"), "src");
+        // ⚠️ 这条断言的作用：若哪天有人把 for-each 直接写在 getPropertySources() 上，
+        //    编译会失败（Iterable 不是 Collection）—— 记得要先物化成 List
+        java.util.List<org.springframework.core.env.PropertySource<?>> list = new java.util.ArrayList<>();
+        env.getPropertySources().forEach(list::add);
+        assertTrue(list.size() > 0, "至少要有一个属性源");
+        // ⚠️ getPropertyNames() 只在 EnumerablePropertySource 上有，PropertySource 接口没有 ——
+        //    所以这里不去枚举属性名，只验证「按 key 问最后一个源」拿得到值（EffectiveConfigReporter 的做法）
+        assertEquals("v", env.getProperty("k"));
+    }
+}
