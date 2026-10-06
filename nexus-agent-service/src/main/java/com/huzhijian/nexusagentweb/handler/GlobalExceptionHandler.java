@@ -63,7 +63,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(QuotaExceededException.class)
     public Result handleQuotaExceeded(QuotaExceededException ex) {
-        return Result.error(ex.getMessage());
+//        2026-10-06：把配额快照一起带出去（fileQuota / fileUsed / fileRemaining…），
+//        前端才能在被拒之前就禁用上传、显示「还能传 N 个」，而不是等撞墙才知道。
+//        ⚠️ data 为 null 时 Result.error(msg) 与原来完全一致，老前端不受影响。
+        return Result.error(ex.getMessage(), ex.getData());
     }
 
     @ExceptionHandler(ParserFileException.class)

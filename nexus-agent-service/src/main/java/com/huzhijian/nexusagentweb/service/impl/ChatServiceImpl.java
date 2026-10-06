@@ -204,7 +204,12 @@ public class ChatServiceImpl implements ChatService {
 //                    ⚠️ 只有这一条日志能区分「慢在我们这边的前置步骤」还是「慢在供应商」——
 //                    CHAT_PREFLIGHT 的 total 就是这条的下限，差值即模型侧耗时。
                     if (firstContent.compareAndSet(false, true)) {
-                        log.info("CHAT_TTFB runId={} ttfb={}ms", runId, ms(tStart, System.nanoTime()));
+                        long ttfb = ms(tStart, System.nanoTime());
+                        log.info("CHAT_TTFB runId={} ttfb={}ms", runId, ttfb);
+//                        🔴 2026-10-06：同一口径随收尾事件下发给前端（建议①）。
+//                        前端自己测的「首字延迟」含网络往返与反代缓冲，与这个数对不上表，
+//                        出现「前端 300ms / 服务端 1800ms」时两边都以为对方错了。给它同源的值。
+                        writer.markTtfb(ttfb);
                     }
 //                    🔴 停止检查点 2/3：正文增量。绝大多数「等太久」都在这里被叫停
                     throwIfCancelled(runId);

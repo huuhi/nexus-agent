@@ -322,6 +322,47 @@ public class SseResponseConverter {
         send(SseEventType.ARTIFACT, msg);
     }
 
+    /**
+     * 本次运行的**服务端**首字延迟（毫秒），在收尾事件里带给前端（2026-10-06）。
+     * <p>
+     * 为什么要专门下发：前端自己能测「点发送 → 第一个字出现」，但那个数里混了
+     * 网络往返与反代缓冲，和服务端的 {@code CHAT_TTFB} 对不上表 ——
+     * 出现「前端显示 300ms、服务端日志 1800ms」时，两边都以为对方错了。
+     * 有了这个字段，延迟归因直接读服务端口径，不用再对表。
+     * <p>
+     * 语义与 {@code CHAT_TTFB} 一致：<b>从收到请求到模型吐出第一个内容 token</b>。
+     * 纯思考模型（先 thinking 再正文）时它偏小；那种场景前端可以改用
+     * 「首个 message 事件（含 THINKING）到达时间」，本字段只保证与日志同源可比。
+     * <p>
+     * 用 volatile：写入方是流式回调线程，读取方也可能是另一个线程（{@code finish} 收尾），
+     * 虽然时序上有 happens-before 兜底，但显式声明更清晰。
+     */
+    private volatile Long ttfbMs;
+
+    /**
+     * 记录本次运行的服务端首字延迟。由 {@code ChatServiceImpl} 在收到第一个内容 token 时调用。
+     * <p>
+     * 也可以不调 —— 只是 {@code finish} / {@code stopped} / {@code error} 的 data 里
+     * 不会有 {@code ttfbMs} 字段而已，不影响其他行为。
+     */
+    public void markTtfb(long millis) {
+        this.ttfbMs = millis;
+    }
+
+    /**
+     * 把 ttfb 塞进收尾事件的 data（字段缺失时返回原 map，不制造 null 字段）。
+     * <p>
+     * ⚠️ 刻意用「缺字段」而不是「{@code ttfbMs: null}」：契约里写明该字段
+     * 「可能不存在」，比「存在但为 null」对前端更省事（少一个 falsy 判断）。
+     */
+    private Map<String, Object> withTtfb(Map<String, Object> data) {
+        Long ttfb = this.ttfbMs;
+        if (ttfb != null) {
+            data.put("ttfbMs", ttfb);
+        }
+        return data;
+    }
+
     public void onError(Throwable error) {
         log.error("Chat stream error runId={} session={}", runId, sessionId, error);
         sendErrorEvent(error);
@@ -351,9 +392,9 @@ public class SseResponseConverter {
         } catch (Exception e) {
             log.warn("叫停时补发尾部正文失败（已发内容不受影响）：runId={} 原因={}", runId, e.getMessage());
         }
-        send(SseEventType.STOPPED, Map.of(
+        send(SseEventType.STOPPED, withTtfb(new LinkedHashMap<>(Map.of(
                 "reason", "用户停止了本次生成",
-                "partial", partialChars));
+                "partial", partialChars))));
         safeComplete();
     }
 
@@ -379,7 +420,7 @@ public class SseResponseConverter {
         payload.put("type", MessageType.ERROR.getValue());
         payload.put("message", reason);
         payload.put("hint", "请把 runId 提供给开发者，可在服务端日志中检索 \"RUN runId=" + runId + "\" 定位本次运行");
-        send(SseEventType.ERROR, payload);
+        send(SseEventType.ERROR, withTtfb(payload));
     }
 
     /**
@@ -398,7 +439,7 @@ public class SseResponseConverter {
             if (isNewSession) {
                 chatHistoryListService.createTitle(sessionId, message, answer.toString(), userId);
             }
-            send(SseEventType.FINISH, Map.of("status", "DONE"));
+            send(SseEventType.FINISH, withTtfb(new LinkedHashMap<>(Map.of("status", "DONE"))));
             emitter.complete();
             isFinished.set(true);
         } catch (Exception e) {

@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * @author 胡志坚
@@ -259,9 +261,20 @@ public class QuotaServiceImpl implements QuotaService {
         if (used >= quota) {
             log.warn("文件/产物数量超限，本次被拒绝：userId={} 今日已用={} 上限={} 角色={}",
                     userId, used, quota, user.getRole());
+//            2026-10-06：把当时的配额快照带进异常，让前端能在被拒之前就禁用上传、
+//            显示「还能传 N 个」。以前只有一句文案，用户下次直接撞墙才知道自己没额度了。
+//            ⚠️ 字段名与 GET /api/user/quota 的 QuotaVO 保持一致（fileQuota/fileUsed/
+//            fileRemaining/fileUnlimited），前端同一套取值逻辑两处通用。
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("fileQuota", quota);
+            snapshot.put("fileUsed", used);
+            snapshot.put("fileRemaining", Math.max(0L, quota - used));
+            snapshot.put("fileUnlimited", false);
+            snapshot.put("role", user.getRole());
             throw new QuotaExceededException(
                     "今日文件与产物数量已达上限（已用 %d / 上限 %d），明天 00:00 自动重置。"
-                            .formatted(used, quota));
+                            .formatted(used, quota),
+                    snapshot);
         }
     }
 
