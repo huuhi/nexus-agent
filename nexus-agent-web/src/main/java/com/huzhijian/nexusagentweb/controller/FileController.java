@@ -31,9 +31,15 @@ public class FileController {
         this.fileService = fileService;
     }
     //    上传图片，比如头像~
-    @Operation(summary = "上传图片（头像等）")
+    @Operation(summary = "上传图片（头像等）",
+            description = "multipart/form-data 提交，字段名 `file`。成功时 `data` 是**字符串 URL**（不是对象）。"
+                    + "⚠️ 本接口**不落库** —— 换头像还要再调 `PUT /api/user/profile` 把这个 URL 存进用户档案，"
+                    + "否则刷新就没了。支持 jpg/jpeg/png/gif/webp（按扩展名判断，不看 MIME），单文件上限 20MB。")
     @PostMapping("/image")
-    public Result uploadImage(MultipartFile file){
+    // 🔴 2026-10-06 补 @RequestParam：**行为不变**（Spring 对 MultipartFile 参数本就按 RequestParam 处理），
+    // 但没有它时 Swagger 会把这个字段标成 **query** —— 前端按文档生成客户端就会把文件发成 query string，
+    // 结果是「接口明明存在，前端怎么传都收不到文件」。fronted 实测发现并报给了我们。
+    public Result uploadImage(@RequestParam("file") MultipartFile file){
         String url= fileService.uploadImage(file);
         return Result.ok(url);
     }
