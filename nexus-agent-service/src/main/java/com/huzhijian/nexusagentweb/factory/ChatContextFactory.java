@@ -142,27 +142,42 @@ public class ChatContextFactory {
 //        等于每次对话多查一遍用户技能表。现在解析一次，把结果随 ChatContext 带出去复用。
         long tSkills = System.nanoTime();
         Skills skills = skillLoader.resolve(chatDTO.skills(), userId);
+        long tSkillResolved = System.nanoTime();
+//        🔴 2026-10-06 第二次修正埋点：上一版把 skills.toolProvider() 与 mcp.provider()
+//        都算进了「aiServices+bind」，于是线上 1141ms 全落在那一栏里，无法定位。
+//        而 skills.toolProvider() 要**为每个技能生成一份 ToolSpecification** ——
+//        技能多时它是随数量线性增长的，而 resolve() 只是查库/扫目录（本地实测 3ms）。
+//        这就是「数值吻合但结论错误」的又一轮：本地 build() 只有 3ms，线上 1141ms。
+        dev.langchain4j.service.tool.ToolProvider skillTp = null;
         if (skills != null) {
-            toolProviders.add(skills.toolProvider());
+            skillTp = skills.toolProvider();
         }
-        if (mcp.provider() != null) {
-            toolProviders.add(mcp.provider());
+        long tSkillTp = System.nanoTime();
+        dev.langchain4j.service.tool.ToolProvider mcpTp = mcp.provider();
+        long tMcpTp = System.nanoTime();
+        if (skillTp != null) {
+            toolProviders.add(skillTp);
+        }
+        if (mcpTp != null) {
+            toolProviders.add(mcpTp);
         }
         if (!toolProviders.isEmpty()) {
             builder.toolProviders(toolProviders);
         }
+        long tBind = System.nanoTime();
         ChatAssistant chatAssistant = builder.build();
         long t3 = System.nanoTime();
-        boolean skillsEnabled = skills != null;
 //        🔴 window（记忆窗口）是首字延迟的**决定性参数**：它就是本次最多会带多少 token 的历史
 //        给模型，模型的 prefill 量与它成正比。看到首字慢，先拿这一行和 CHAT_MEMORY 的 msgs 对照。
 //        tools 数量也在这里 —— 15 个工具的 JSON Schema 每轮都要跟着请求发出去。
-        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms tools={}ms skills={}ms aiServices+bind={}ms"
-                        + " total={}ms window={} ctx={} out={} tools={} skillSelected={}",
-                runContext.runId(), ms(t0, t1), ms(t1, t2),
-                ms(t2, tTools), ms(tTools, tSkills), ms(tSkills, t3), ms(t0, t3),
+        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms tools={}ms skillResolve={}ms"
+                        + " skillToolProvider={}ms(skillN={}) mcpToolProvider={}ms bind={}ms build={}ms"
+                        + " | total={}ms window={} ctx={} out={} toolN={} mcpOn={}",
+                runContext.runId(), ms(t0, t1), ms(t1, t2), ms(t2, tTools),
+                ms(tSkills, tSkillResolved), ms(tSkillResolved, tSkillTp), skillCount(skillLoader, userId),
+                ms(tSkillTp, tMcpTp), ms(tMcpTp, tBind), ms(tBind, t3), ms(t0, t3),
                 memoryWindow, capabilities.contextWindow(), capabilities.maxOutputTokens(),
-                tools.length, skillsEnabled);
+                tools.length, mcpTp != null);
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
                 .isNewSession(runContext.newSession())
@@ -173,6 +188,29 @@ public class ChatContextFactory {
     }
 
     /** 两个 nanoTime 之间的毫秒数（分段耗时埋点用） */
+    /**
+     * 本次可用的技能数量（打进日志）。
+     * <p>
+     * 用途：判断 {@code skillToolProvider} 的耗时是否<b>随技能数线性增长</b> ——
+     * {@code toolProvider()} 要为每个技能生成一份 ToolSpecification（工具名、描述、参数 schema），
+     * 而 {@code resolve()} 只是查库/扫目录，两者量级完全不同，混在一起就看不出瓶颈在哪。
+     * <p>
+     * ⚠️ 走 {@code availableNames} 而不是从 {@code Skills} 对象上取：
+     * {@code Skills}（langchain4j-skills 1.12.1-beta21）只暴露 {@code toolProvider()}
+     * 与 {@code formatAvailableSkills()}，没有取列表的方法；而 {@code availableNames}
+     * 走 SkillLoader 自己的 TTL 缓存，重复调用几乎零成本。
+     * <p>
+     * 取不到时返回 <b>-1</b> 而不是 0：0 会被读成「一个技能都没有」，
+     * 而实际可能是查询失败 —— 两者排查方向完全不同。
+     */
+    private static int skillCount(SkillLoader skillLoader, Long userId) {
+        try {
+            return skillLoader.availableNames(userId).size();
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
     private static long ms(long from, long to) {
         return (to - from) / 1_000_000L;
     }
