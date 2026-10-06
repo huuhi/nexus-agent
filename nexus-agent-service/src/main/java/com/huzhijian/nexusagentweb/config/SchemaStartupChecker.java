@@ -3,7 +3,6 @@ package com.huzhijian.nexusagentweb.config;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
@@ -33,14 +32,22 @@ import java.util.List;
  * 这种故障<b>从日志上看只是一条 SQL 报错</b>，很容易被误判成「代码写错了」而回滚版本。
  * 放在启动期报出来，指向就非常明确：<b>少跑了一个 SQL</b>。
  *
- * <h3>失败语义</h3>
+ * <h3>失败语义：只 WARN，永不阻止启动（2026-10-06 调整）</h3>
+ * <p>
+ * <b>这里刻意不受 {@code nexus.agent.startup.fail-fast} 控制</b>，与
+ * {@link StartupConfigValidator} 不同。原因：
  * <ul>
- *   <li><b>列缺失</b> → 按 {@code nexus.agent.startup.fail-fast} 决定是否阻止启动
- *       （默认 true，与其他必需配置的语义一致）；</li>
- *   <li><b>连不上数据库</b> → 只 WARN <b>不阻断</b>。
- *       连接本身由连接池在启动期判定（那已经是既有行为），
- *       本类不重复阻断，避免把「DB 还没就绪」也变成一条看不懂的启动失败。</li>
+ *   <li>{@code fail-fast} 管的是「<b>必需</b>配置缺失」—— 缺了服务<b>根本用不了</b>，
+ *       早失败好过白屏；</li>
+ *   <li>{@code superseded_by} 缺失是<b>可降级</b>的：{@code ChatMemoryServiceImpl}
+ *       已经做了运行期降级（改查不带该列的 SQL），聊天与历史完全正常，
+ *       只是「重新生成的版本切换」不生效。</li>
  * </ul>
+ * 为一个可降级的功能让<b>整个后端起不来</b>，代价过大 —— 而且这个版本最初就是
+ * 按 fail-fast 实现的，结果是：<b>用户忘了执行 013 → 服务直接不可用</b>，
+ * 只能退回去看 mock 夹具数据，反而更乱。
+ * <p>
+ * 改判据：<b>能否降级</b>，而不是「有没有列」。
  *
  * @author 胡志坚
  */
@@ -54,7 +61,6 @@ public class SchemaStartupChecker {
      * 不该因为某个容器里没有 DataSource（比如纯单测切片）就让启动失败。
      */
     private final ObjectProvider<DataSource> dataSourceProvider;
-    private final ObjectProvider<Environment> environmentProvider;
 
     /**
      * 必须存在的列。
@@ -109,31 +115,13 @@ public class SchemaStartupChecker {
         sb.append("  执行：psql -h <SERVICE_IP> -U <DB_USERNAME> -d nexus_agent -f docs/sql/013_add_superseded_by.sql\n");
         sb.append("=".repeat(70));
         log.error(sb.toString());
-
-        if (failFast()) {
-            throw new IllegalStateException(
-                    "数据库 schema 自检未通过：缺少 " + missing.size() + " 列（详见上方日志）。"
-                            + "这不是代码问题，是少执行了 docs/sql/013_add_superseded_by.sql。"
-                            + "执行后重启；确认要带病启动可临时设置 nexus.agent.startup.fail-fast=false。");
-        }
-        log.warn("数据库 schema 自检未通过，但因 nexus.agent.startup.fail-fast=false 仍继续启动 —— "
-                + "对话与历史接口会报错，请尽快补执行 docs/sql/013_add_superseded_by.sql");
-    }
-
-    private boolean failFast() {
-        Environment environment = environmentProvider.getIfAvailable();
-        if (environment == null) {
-            return true;
-        }
-        try {
-            // 与 StartupConfigValidator 同一个来源（Environment），保持两处判定一致。
-            // 拿不到时默认 true：与其他必需配置同语义 —— 宁可启动时明确报错，
-            // 也别让用户对着「首页白屏 + 一条 SQL 报错」猜原因。
-            return environment.getProperty("nexus.agent.startup.fail-fast", Boolean.class, Boolean.TRUE);
-        } catch (Exception e) {
-            log.warn("读取 nexus.agent.startup.fail-fast 失败，按默认（阻止启动）处理：{}", e.getMessage());
-            return true;
-        }
+//        🔴 只 WARN，不阻止启动（2026-10-06）。见类注释「失败语义」：
+//        缺列是可降级的（运行期改查不带该列的 SQL），聊天与历史完全正常，
+//        只是版本切换不生效。为了一个可降级功能让整个后端起不来，代价过大。
+//        ⚠️ 这条**不受 nexus.agent.startup.fail-fast 控制** ——
+//        那个开关管的是「必需配置缺失」，两者判据不同（能否降级 vs 有没有值）。
+        log.warn("数据库 schema 自检未通过，服务照常启动（可降级：聊天与历史正常，"
+                + "「重新生成的版本切换」不生效）。请尽快补执行 docs/sql/013_add_superseded_by.sql");
     }
 
     private boolean columnExists(Connection conn, String table, String column) throws Exception {
