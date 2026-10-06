@@ -13,11 +13,13 @@
             <result property="sessionId" column="session_id" jdbcType="OTHER"/>
             <!-- 产物归属（方案 B）：这一行是「哪一次运行」写进来的。老数据为 NULL -->
             <result property="runId" column="run_id" jdbcType="VARCHAR"/>
+            <!-- 2026-10-06：非空 = 这条回答已被更新的回答替代（重新生成）。老数据/未替代为 NULL -->
+            <result property="supersededBy" column="superseded_by" jdbcType="BIGINT"/>
     </resultMap>
 
     <sql id="Base_Column_List">
         id,user_id,content,
-        type,create_at,session_id,run_id
+        type,create_at,session_id,run_id,superseded_by
     </sql>
     <insert id="insertBatch" parameterType="java.util.List">
         insert into chat_memory(content,type,session_id,user_id,run_id) values
@@ -39,14 +41,14 @@
       显式列出并保持与 resultMap 一致，可彻底避免这个问题。
     -->
     <select id="getAllByMemoryId" resultMap="BaseResultMap">
-        select id,user_id,content,type,create_at,session_id,run_id
+        select id,user_id,content,type,create_at,session_id,run_id,superseded_by
         from chat_memory where session_id=#{sessionId}::uuid
         order by create_at
     </select>
 
     <!-- 对外读取历史：同时限定 user_id，防止越权读取他人会话 -->
     <select id="getAllByMemoryIdAndUserId" resultMap="BaseResultMap">
-        select id,user_id,content,type,create_at,session_id,run_id
+        select id,user_id,content,type,create_at,session_id,run_id,superseded_by
         from chat_memory
         where session_id=#{sessionId}::uuid
           and user_id=#{userId}
@@ -62,9 +64,9 @@
          但它是 int 类型参数，不存在注入风险）。
     -->
     <select id="getRecentForChat" resultMap="BaseResultMap">
-        select id,user_id,content,type,create_at,session_id,run_id
+        select id,user_id,content,type,create_at,session_id,run_id,superseded_by
         from (
-            select id,user_id,content,type,create_at,session_id,run_id
+            select id,user_id,content,type,create_at,session_id,run_id,superseded_by
             from chat_memory
             where session_id=#{sessionId}::uuid
               and user_id=#{userId}
@@ -72,6 +74,84 @@
             limit #{limit}
         ) t
         order by t.create_at, t.id
+    </select>
+
+    <!--
+      🔴 记忆加载专用（2026-10-06）：与 getRecentForChat 唯一的差别是**排除被替代的回答**。
+      <p>
+      背景：「重新生成」会让同一个问题产生多版回答。模型上下文只能要当前生效的那一版，
+      否则会同时看到「问过两遍、答过两遍」—— 既白烧 token（直接踩首字延迟这条线），
+      又让模型困惑；而且前端的 n/n 切换会形同虚设：用户切回 1/2 接着聊，
+      模型上下文里 2/2 的内容一个字没少。
+      <p>
+      ⚠️ **历史接口不能用这一条**：前端做 n/n 切换需要看到全部版本，
+      被替代的只是「不参与模型上下文」，不是「不存在」（见 getAllByMemoryIdAndUserId）。
+    -->
+    <select id="getActiveForChat" resultMap="BaseResultMap">
+        select id,user_id,content,type,create_at,session_id,run_id,superseded_by
+        from (
+            select id,user_id,content,type,create_at,session_id,run_id,superseded_by
+            from chat_memory
+            where session_id=#{sessionId}::uuid
+              and user_id=#{userId}
+              and superseded_by is null
+            order by create_at desc, id desc
+            limit #{limit}
+        ) t
+        order by t.create_at, t.id
+    </select>
+
+    <!--
+      重新生成后，把「比 #{sinceId} 更新的、还没被替代的」旧消息标记为已被 #{newId} 替代。
+      <p>
+      🔴 三个条件缺一不可，写的时候逐个对着想一遍：
+      <ol>
+        <li><b>id &gt;= #{sinceId}</b> —— sinceId 是用户点重新生成时所在<b>那条</b>回答。
+            所以条件是「<b>从它自己开始</b>」而不是「比它更新的」：
+            <b>用 {@code >} 会漏掉用户点的这一条</b>（写完第一版就是这么错的，
+            表现是「切回 1/2 继续问，模型仍记得 2/2」—— 切换形同虚设）。
+            而它的<b>问题在它之前</b>（id 更小），所以问题不会被卷进来 ——
+            问题被标记掉的话，模型下一轮就不知道在回答谁了。</li>
+        <li><b>superseded_by is null</b> —— 已经出局的不反复改写。</li>
+        <li><b>run_id is distinct from #{excludeRunId}</b> —— <b>本次运行刚写的消息不能被标记</b>。
+            不加这一条，新回答会把自己标成被自己替代，记忆加载时被排除，
+            用户刚点重新生成就"什么都没发生"。</li>
+        <li><b>type &lt;&gt; 'USER'</b> —— 用户提问永远不该有 superseded_by（第二道保险）。</li>
+      </ol>
+      <p>
+      ⚠️ 这条语句的语义是「<b>回到旧版本继续对话 = 开一条新分支</b>」：
+      用户在 1/2 上重新生成时，1/2 之后聊过的内容也一并让位。
+      这与 ChatGPT 的分支语义一致，不是缺陷。
+    -->
+    <update id="markSupersededSince">
+        update chat_memory
+        set superseded_by = #{newId}
+        where session_id=#{sessionId}::uuid
+          and user_id=#{userId}
+          and id &gt;= #{sinceId}
+          and superseded_by is null
+          and run_id is distinct from #{excludeRunId}
+          and type &lt;&gt; 'USER'::message_type
+    </update>
+
+    <!--
+      按 runId 找本次运行写入的**第一条 AI 回答**的 id。
+      用途：重新生成时它就是「新版本的 id」，要写进被替代行的 superseded_by。
+      为什么不用 insert 的返回值：insertBatch 是 <foreach> 批量插入且带 ON CONFLICT 兜底，
+      让它返回 id 列表要改成 RETURNING，多一层 CTE；
+      而一次运行只会有一条 AI 回答（多轮工具调用也只有一条最终回答），按 runId 查更稳。
+      <p>
+      ⚠️ 排除 TOOL_EXECUTION_RESULT：工具结果的 type 不是 'AI'，天然不会命中。
+    -->
+    <select id="findFirstAiMessageIdOfRun" resultType="java.lang.Long">
+        select id
+        from chat_memory
+        where session_id=#{sessionId}::uuid
+          and user_id=#{userId}
+          and run_id=#{runId}
+          and type='AI'::message_type
+        order by id
+        limit 1
     </select>
 
     <!--

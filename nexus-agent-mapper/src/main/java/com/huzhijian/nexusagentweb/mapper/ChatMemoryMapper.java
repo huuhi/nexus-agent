@@ -46,6 +46,49 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
                                        @Param("limit") int limit);
 
     /**
+     * 记忆加载专用：同 {@link #getRecentForChat}，但**排除被「重新生成」替代掉的回答**（2026-10-06）。
+     * <p>
+     * 为什么要分两个查询：历史接口要返回**全部**版本（前端做 n/n 切换），
+     * 而模型上下文只能要当前生效的那一版。
+     * 被替代的只是「不参与模型上下文」，**不是不存在**。
+     *
+     * @param limit 最多取多少条；<b>{@code <= 0} 表示不限制</b>
+     */
+    List<ChatHistory> getActiveForChat(@Param("sessionId") Object sessionId,
+                                       @Param("userId") Long userId,
+                                       @Param("limit") int limit);
+
+    /**
+     * 重新生成后，把「比 {@code sinceId} 更新的、尚未被替代的」AI 回答标记为被 {@code newId} 替代。
+     * <p>
+     * 语义是「自 sinceId 之后的所有现行版本一并出局」，而不是「只标记某一条」——
+     * 用户可能先在 1/2 上重新生成、过一会儿又在 1/1 上重新生成，后者必须让前者也出局。
+     * <p>
+     * ⚠️ 只影响 {@code type='AI'} 的行：用户提问不能被标记掉，
+     * 否则模型下一轮就不知道「在回答哪个问题」了。
+     *
+     * @return 被标记的行数
+     */
+    int markSupersededSince(@Param("sessionId") Object sessionId,
+                            @Param("userId") Long userId,
+                            @Param("sinceId") Long sinceId,
+                            @Param("newId") Long newId,
+                            @Param("excludeRunId") String excludeRunId);
+
+    /**
+     * 按 runId 找本次运行写入的<b>第一条 AI 回答</b>的 id（2026-10-06 重新生成用）。
+     * <p>
+     * 它就是「新版本的 id」，要写进被替代行的 {@code superseded_by}。
+     * 一次运行只会有一条 AI 回答（多轮工具调用也只有一条最终回答），
+     * 所以 {@code order by id limit 1} 是确定的。
+     *
+     * @return 没找到返回 {@code null}（调用方按「不是重新生成」处理，不报错）
+     */
+    Long findFirstAiMessageIdOfRun(@Param("sessionId") Object sessionId,
+                                   @Param("userId") Long userId,
+                                   @Param("runId") String runId);
+
+    /**
      * 该会话下、属于这次运行的历史行是否已存在（2026-10-06 新增）。
      * <p>
      * 用途是「用户叫停」时补写已生成内容的<b>幂等守卫</b>：补写前先问一句，

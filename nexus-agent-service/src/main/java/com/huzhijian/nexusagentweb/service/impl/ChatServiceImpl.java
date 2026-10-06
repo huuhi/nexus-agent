@@ -132,7 +132,11 @@ public class ChatServiceImpl implements ChatService {
 //        ⚠️ 必须在 RunContext 之前生成：产物归属（方案 B）要把同一个 runId 同时写进
 //        「本次运行落库的每一条历史消息」和「本次运行产出的每个产物」，RunContext 是第一站。
         String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-        RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata(), runId);
+//        🔴 2026-10-06：「重新生成」时把 regenerateFromMessageId 带进 RunContext。
+//        落库阶段要用它做两件事（流式回调线程上拿不到请求体，只能靠这里带过去）：
+//        ①跳过用户提问（问题已经在库里了）；②把旧版本标记为被本次替代。
+        RunContext runContext = new RunContext(userId, sessionId, isNewSession, converted.metadata(), runId,
+                chatDTO.regenerateFromMessageId());
 
 //        工具要拿到 userId，但它运行在**流式回调线程**上 —— 那里 UserContextHolder（ThreadLocal）
 //        必然是 null。所以在这里（请求线程，userId 还在）把 sessionId → userId 登记进注册表，

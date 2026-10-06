@@ -111,9 +111,13 @@ public class PgChatMemoryStore {
             return List.of();
         }
         long t0 = System.nanoTime();
-//        只取最近 N 条：窗口裁剪在 Java 侧做，但"传回来"这一步的成本已经付掉了。
-//        ⚠️ 这里必须用「时间倒序取 N 条再正序还原」的查询，否则拿到的是最早的 N 条。
-        List<ChatHistory> chatMemories = chatMemoryService.getRecentForChat(
+//        🔴 只取「当前生效」的消息：排除被「重新生成」替代掉的旧版本回答。
+//        ⚠️ 这里的查询与历史接口**刻意不同**（那边用 getAllByMemoryIdAndUserId 返回全部，
+//        因为前端要做 n/n 切换）。若这里也返回全部，模型上下文会同时看到「问过两遍、答过两遍」：
+//        既白烧 token（直接踩首字延迟这条线），又让模型困惑；
+//        而且用户切回 1/2 接着聊时，模型记得的仍是 2/2 的内容 —— 切换就形同虚设。
+//        ⚠️ 方向也踩过：直接 `order by create_at limit N` 拿到的是**最早**的 N 条，正好相反。
+        List<ChatHistory> chatMemories = chatMemoryService.getActiveForChat(
                 memoryId, runContext.userId(), agentProperties.getMemory().getMaxHistoryMessages());
         if (chatMemories == null || chatMemories.isEmpty()) {
             return List.of();
@@ -166,8 +170,25 @@ public class PgChatMemoryStore {
             return;
         }
 
+        List<ChatMessage> toInsert = persistable.subList(startIndex, persistable.size());
+        // 🔴 2026-10-06「重新生成」：用户提问**已经在库里了**（问题没变，只是换个答法），
+        // 再存一遍会让模型看到「同一个问题问了两遍」，而且历史里出现两条一模一样的提问，
+        // 前端就没法把它们归成一组做 n/n 切换了。这里显式剔掉本次的 USER 行。
+        // ⚠️ 必须显式剔，不能指望锚点法恰好跳过：锚点命中的是「库中最后一条」，
+        // 而重新生成时那条可能是**被替代的旧回答**（已不在记忆里）→ 会退化成内容去重，
+        // 那条去重逻辑的行为不该承担「跳过提问」这个语义。
+        if (runContext.isRegenerate()) {
+            toInsert = toInsert.stream()
+                    .filter(m -> m.type() != ChatMessageType.USER)
+                    .toList();
+            if (toInsert.isEmpty()) {
+                log.info("重新生成：本次没有新增的非提问消息，跳过写入。runId={}", runContext.runId());
+                return;
+            }
+        }
+
         ArrayList<ChatHistory> insertList = new ArrayList<>();
-        for (ChatMessage chatMessage : persistable.subList(startIndex, persistable.size())) {
+        for (ChatMessage chatMessage : toInsert) {
             // 附件元数据直接来自 RunContext，不再依赖 ThreadLocal
             if (chatMessage instanceof UserMessage userMessage && runContext.hasMessageMetadata()) {
                 userMessage.attributes().putAll(runContext.messageMetadata());
@@ -185,6 +206,66 @@ public class PgChatMemoryStore {
             insertList.add(chatHistory);
         }
         chatMemoryService.insertBatch(insertList, userId);
+
+        // 🔴 重新生成的最后一步：让「旧版本」出局，模型上下文与 n/n 切换才对得上。
+        // 必须在插入**之后**做 —— 新版本的 id 是插入才产生的，它是 superseded_by 的目标值。
+        markSupersededIfRegenerate(runContext, sessionId, userId);
+    }
+
+    /**
+     * 重新生成后把旧版本标记为被替代（2026-10-06）。
+     * <p>
+     * 不做这一步会怎样：被替代的旧回答仍在模型上下文里 →
+     * 用户切回 1/2 接着聊，模型记得的仍是 2/2 的内容，<b>n/n 切换形同虚设</b>。
+     * <p>
+     * 任何一步失败都<b>只记日志不抛</b>：此时用户已经拿到了新回答，
+     * 把它变成一次 500 是最差的结果 —— 顶多下次记忆里多个旧版本，与本功能上线前一样。
+     */
+    private void markSupersededIfRegenerate(RunContext runContext, Object sessionId, Long userId) {
+        if (!runContext.isRegenerate()) {
+            return;
+        }
+        Long sinceId = parseMessageId(runContext.regenerateFromMessageId());
+        if (sinceId == null) {
+            // 前端传了但不是合法 id：按「不是重新生成」处理，不 500 也不猜
+            log.warn("重新生成：regenerateFromMessageId 不是合法的消息 id，本次不标记旧版本。值={}",
+                    runContext.regenerateFromMessageId());
+            return;
+        }
+        try {
+            Long newId = chatMemoryService.findFirstAiMessageIdOfRun(
+                    sessionId, userId, runContext.runId());
+            if (newId == null) {
+                // 还没有 AI 回答落库（模型这次没产出正文）：没有「新版本」可标记，保持原样
+                log.info("重新生成：本次运行没有 AI 回答入库，跳过标记旧版本。runId={}", runContext.runId());
+                return;
+            }
+            int marked = chatMemoryService.markSupersededSince(
+                    sessionId, userId, sinceId, newId, runContext.runId());
+            log.info("重新生成：已标记 {} 条旧消息被替代。runId={} sinceId={} newId={}",
+                    marked, runContext.runId(), sinceId, newId);
+        } catch (Exception e) {
+            log.warn("重新生成：标记旧版本失败（新回答已正常落库，不影响本次返回）。runId={} 原因={}",
+                    runContext.runId(), e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 把前端传来的消息 id 字符串解析成 Long。
+     * <p>
+     * ⚠️ 前端拿到的是<b>字符串</b>形态的雪花 ID（全局把 Long 序列化成 String），
+     * 原样回传。这里必须容错：解析不了就返回 {@code null} 让调用方走「不标记」分支，
+     * 绝不能因为一个字符串格式问题让整次对话失败。
+     */
+    private static Long parseMessageId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**

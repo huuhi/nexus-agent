@@ -29,18 +29,46 @@ import java.util.Map;
  *                        前端按 runId 相等把产物挂到产出它的那一轮。**必须持久化**，所以在这里显式传递
  *                        —— 流式回调线程上拿不到任何 ThreadLocal。
  *                        </p>
+ * @param regenerateFromMessageId
+ *                        「重新生成」时用户所在那条回答的 id（2026-10-06）。
+ *                        <p>
+ *                        <b>null = 普通发问</b>，行为与本字段出现前完全一致。非空时落库阶段要：
+ *                        ①跳过用户提问（问题已问过，重复存会让模型看到「问了两遍」）；
+ *                        ②把更早的现行回答标记为被本次替代（docs/sql/013）。
+ *                        <p>
+ *                        为什么必须在这里显式传递：这两个动作都发生在
+ *                        <b>流式回调线程</b>（{@code ChatMemoryStore.updateMessages}），那里没有请求体。
+ *                        </p>
  */
 public record RunContext(Long userId,
                          String sessionId,
                          boolean newSession,
                          Map<String, Object> messageMetadata,
-                         String runId) {
+                         String runId,
+                         String regenerateFromMessageId) {
 
     public RunContext {
         messageMetadata = messageMetadata == null ? Map.of() : Map.copyOf(messageMetadata);
     }
 
+    /**
+     * 普通发问的便捷构造（等价于「不重新生成」）。
+     * <p>
+     * 加它而不是让每个调用点多传一个 {@code null}：{@code regenerateFromMessageId}
+     * 是个「大多数场景没有」的可选参数，让它出现在每个构造点只会稀释可读性，
+     * 而且迟早有人会传错位置。
+     */
+    public RunContext(Long userId, String sessionId, boolean newSession,
+                      Map<String, Object> messageMetadata, String runId) {
+        this(userId, sessionId, newSession, messageMetadata, runId, null);
+    }
+
     public boolean hasMessageMetadata() {
         return !messageMetadata.isEmpty();
+    }
+
+    /** 本次是否为「重新生成」 */
+    public boolean isRegenerate() {
+        return regenerateFromMessageId != null && !regenerateFromMessageId.isBlank();
     }
 }

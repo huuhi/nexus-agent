@@ -16,6 +16,20 @@ import java.util.Map;
 @Builder
 @Data
 public class MessageVO {
+    /**
+     * 本条消息的 id（{@code chat_memory.id}，雪花 ID）。
+     * <p>
+     * 🔴 <b>2026-10-06 新增</b>：前端做「重新生成」的 n/n 版本切换时<b>必须</b>用这个做 key
+     * —— 不能用数组下标，切换时列表顺序会变，下标会把两个版本搞混。
+     * <p>
+     * 序列化后是<b>字符串</b>（全局把 {@code Long} 序列化成 String）：19 位数字超出
+     * JS 的 {@code Number.MAX_SAFE_INTEGER}（16 位），当初文件删除失效就是踩了这个。
+     * 用它当 key、比较相等都没问题，但<b>不要</b> {@code Number()} / {@code parseInt()}。
+     * <p>
+     * 老数据同样有值（id 是表主键，从一开始就有），不是新增语义。
+     */
+    private Long id;
+
     private MessageType type;
     private String content;
     private String thinking;
@@ -46,6 +60,23 @@ public class MessageVO {
      * 不要靠时间或顺序去猜，猜错会把产物挂到没产出它的那一轮，比不显示更糟。
      */
     private String runId;
+
+    /**
+     * 非空 = 这条 AI 回答已被更新的回答替代，<b>只</b>用于前端的 n/n 版本切换显示。
+     * <p>
+     * 🔴 <b>2026-10-06 新增</b>（{@code docs/sql/013_add_superseded_by.sql}）。
+     * 值是替代者的 {@link #id}。
+     * <p>
+     * 前端要知道的只有两件事：
+     * <ol>
+     *   <li>哪些回答属于同一个问题的不同版本 → 靠「同一条 USER 消息后连续的 AI 消息」分组；</li>
+     *   <li>默认展开哪一个 → <b>展开 {@code supersededBy == null} 的那个</b>（当前生效的版本）。</li>
+     * </ol>
+     * ⚠️ 被替代的行<b>照常返回</b>，只是不参与模型上下文 —— 不返回的话前端就做不了切换。
+     * <p>
+     * 老数据与用户提问行都是 {@code null}，按「当前版本」处理即可。
+     */
+    private Long supersededBy;
     @Data
     @Builder
     public static class UserMessageVO{

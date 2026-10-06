@@ -35,6 +35,33 @@ public interface ChatMemoryService extends IService<ChatHistory> {
     List<ChatHistory> getRecentForChat(Object sessionId, Long userId, int limit);
 
     /**
+     * 记忆加载专用：同 {@link #getRecentForChat}，但排除被「重新生成」替代掉的回答（2026-10-06）。
+     * <p>
+     * 🔴 重复查库为什么必须分两个方法：历史接口要返回全部版本（前端 n/n 切换），
+     * 模型上下文只能要当前生效的版本。
+     */
+    List<ChatHistory> getActiveForChat(Object sessionId, Long userId, int limit);
+
+    /**
+     * 重新生成落库后，把更早的现行 AI 回答标记为被替代（2026-10-06）。
+     * <p>
+     * 这就是让「n/n 版本切换」真正成立的那一步：不标记的话，被替代的旧回答仍在模型上下文里，
+     * 用户切回 1/2 接着聊，模型记得的仍是 2/2 的内容。
+     *
+     * @param sinceId 用户点「重新生成」时所在的那条回答的 id（从历史接口的 {@code id} 拿）
+     * @param newId   本次新写的那条回答的 id
+     * @return 被标记的行数；0 表示「这不是重新生成」或「没有更新的版本需要让位」
+     */
+    int markSupersededSince(Object sessionId, Long userId, Long sinceId, Long newId, String excludeRunId);
+
+    /**
+     * 按 runId 找本次运行写入的第一条 AI 回答的 id（2026-10-06 重新生成用）。
+     *
+     * @return 没找到返回 {@code null}（调用方按「不是重新生成」处理，不当错误）
+     */
+    Long findFirstAiMessageIdOfRun(Object sessionId, Long userId, String runId);
+
+    /**
      * 取会话最后一条消息的原始 JSON（锚点），用于增量写入时定位新增部分。
      *
      * @return JSON 文本；会话为空时返回 null

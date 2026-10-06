@@ -94,6 +94,34 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     }
 
     @Override
+    public List<ChatHistory> getActiveForChat(Object sessionId, Long userId, int limit) {
+        if (limit <= 0) {
+            // 不限制：走一个「不排除任何行」的等价查询。
+            // ⚠️ 不能退化成 getByMemoryIdAndUserId（那是历史接口，会带上被替代的版本）
+            return mapper.getActiveForChat(sessionId, userId, Integer.MAX_VALUE);
+        }
+        return mapper.getActiveForChat(sessionId, userId, limit);
+    }
+
+    @Override
+    public int markSupersededSince(Object sessionId, Long userId, Long sinceId,
+                                   Long newId, String excludeRunId) {
+        if (sessionId == null || userId == null || sinceId == null || newId == null) {
+            // 参数不全是「不是重新生成」而不是错误：普通发问不该走到有值的分支
+            return 0;
+        }
+        return mapper.markSupersededSince(sessionId, userId, sinceId, newId, excludeRunId);
+    }
+
+    @Override
+    public Long findFirstAiMessageIdOfRun(Object sessionId, Long userId, String runId) {
+        if (sessionId == null || userId == null || runId == null) {
+            return null;
+        }
+        return mapper.findFirstAiMessageIdOfRun(sessionId, userId, runId);
+    }
+
+    @Override
     public boolean existsByRunId(Object sessionId, Long userId, String runId) {
         if (sessionId == null || runId == null) {
             return false;
@@ -157,6 +185,12 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
             }
 //            老数据（run_id 列上线前写的行）这里就是 null，前端按「归属不明」跳过
             vo.setRunId(entity.getRunId());
+//            2026-10-06：带上 id 与「是否已被更新版本替代」。
+//            id 是前端做 n/n 版本切换的 key（不能用下标，切换会错位）；
+//            supersededBy 让前端知道默认该展开哪一版。被替代的行**照常返回** ——
+//            不返回就没法做切换了，它只是不参与模型上下文。
+            vo.setId(entity.getId());
+            vo.setSupersededBy(entity.getSupersededBy());
             result.add(vo);
         }
         return result;
