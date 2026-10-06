@@ -109,6 +109,13 @@ public class ChatContextFactory {
         int memoryWindow = capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens());
         Object[] tools = toolRegistry.resolve(ToolSelection.from(chatDTO)).toArray();
         log.debug("本次注册的工具集：{}", toolRegistry.keys());
+//        🔴 2026-10-06：tools 与 skills 拆开计时。
+//        线上实测这两段合计 1293ms，占 preflight（1318ms）的 98% —— 是首字延迟的最大单项。
+//        但合成一个数字时无法判断是「工具注册慢」还是「技能解析慢」，而两者的修法完全不同：
+//          · 慢在 tools  → ToolSpecification 生成（反射 + JSON Schema）
+//          · 慢在 skills → 目录扫描 + 查 user_skill 表
+//        ⚠️ 首次调用还含 JIT 与 BPE 词表加载（冷启动），所以要靠「第二次是否降下来」判断真假。
+        long tTools = System.nanoTime();
         AiServices<ChatAssistant> builder = AiServices.builder(ChatAssistant.class)
                 .streamingChatModel(model)
                 .tools(tools)
@@ -133,6 +140,7 @@ public class ChatContextFactory {
 //        ⚠️ 2026-10-05：技能清单**只解析一次**。以前这里 resolve 一次，
 //        ChatServiceImpl 组装提示词时又调一次 skillLoader.formatForPrompt（内部再 resolve 一次），
 //        等于每次对话多查一遍用户技能表。现在解析一次，把结果随 ChatContext 带出去复用。
+        long tSkills = System.nanoTime();
         Skills skills = skillLoader.resolve(chatDTO.skills(), userId);
         if (skills != null) {
             toolProviders.add(skills.toolProvider());
@@ -145,13 +153,16 @@ public class ChatContextFactory {
         }
         ChatAssistant chatAssistant = builder.build();
         long t3 = System.nanoTime();
+        boolean skillsEnabled = skills != null;
 //        🔴 window（记忆窗口）是首字延迟的**决定性参数**：它就是本次最多会带多少 token 的历史
 //        给模型，模型的 prefill 量与它成正比。看到首字慢，先拿这一行和 CHAT_MEMORY 的 msgs 对照。
 //        tools 数量也在这里 —— 15 个工具的 JSON Schema 每轮都要跟着请求发出去。
-        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms skills+aiServices={}ms total={}ms"
-                        + " window={} ctx={} out={} tools={}",
-                runContext.runId(), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t0, t3),
-                memoryWindow, capabilities.contextWindow(), capabilities.maxOutputTokens(), tools.length);
+        log.info("CHAT_CONTEXT runId={} match+model={}ms mcp={}ms tools={}ms skills={}ms aiServices+bind={}ms"
+                        + " total={}ms window={} ctx={} out={} tools={} skillSelected={}",
+                runContext.runId(), ms(t0, t1), ms(t1, t2),
+                ms(t2, tTools), ms(tTools, tSkills), ms(tSkills, t3), ms(t0, t3),
+                memoryWindow, capabilities.contextWindow(), capabilities.maxOutputTokens(),
+                tools.length, skillsEnabled);
         return ChatContext.builder().chatAssistant(chatAssistant)
                 .sessionId(sessionId)
                 .isNewSession(runContext.newSession())
