@@ -170,22 +170,16 @@ public class PgChatMemoryStore {
             return;
         }
 
+//        🔴 2026-10-06 修正一个真 bug：这里原先有一段「重新生成就过滤掉所有 USER 行」。
+//        那个判断是错的 —— fronted 指出「用户切到旧版本后发的是**新提问**，也会被一起丢掉」。
+//        重复提问与新提问的区别**不该由 regenerateFromMessageId 决定**（它只该管分支基线），
+//        而该由「这条提问库里是否已有」决定 —— 而这件事 resolveInsertStartIndex 已经做完了：
+//          · 重新生成（同一问题）：锚点失配 → 内容去重 → 碰到库里那条问题A 就停 → 只写回答 ✅
+//          · 切旧版本发新提问  ：去重时「问题C」不在库里，继续往前找到问题A 才停 → 写 [问题C, 回答D] ✅
+//        显式过滤反而把第二种场景的新提问吃掉了。所以这里**什么都不做**，交给上面那段。
+//        ⚠️ 代价是依赖 dedup 的比对（只比库里最近 50 条）—— 重复提问必在这 50 条内（它必须在窗口里），
+//        够用；真要更严就得给提问做显式指纹，那是另一件事。
         List<ChatMessage> toInsert = persistable.subList(startIndex, persistable.size());
-        // 🔴 2026-10-06「重新生成」：用户提问**已经在库里了**（问题没变，只是换个答法），
-        // 再存一遍会让模型看到「同一个问题问了两遍」，而且历史里出现两条一模一样的提问，
-        // 前端就没法把它们归成一组做 n/n 切换了。这里显式剔掉本次的 USER 行。
-        // ⚠️ 必须显式剔，不能指望锚点法恰好跳过：锚点命中的是「库中最后一条」，
-        // 而重新生成时那条可能是**被替代的旧回答**（已不在记忆里）→ 会退化成内容去重，
-        // 那条去重逻辑的行为不该承担「跳过提问」这个语义。
-        if (runContext.isRegenerate()) {
-            toInsert = toInsert.stream()
-                    .filter(m -> m.type() != ChatMessageType.USER)
-                    .toList();
-            if (toInsert.isEmpty()) {
-                log.info("重新生成：本次没有新增的非提问消息，跳过写入。runId={}", runContext.runId());
-                return;
-            }
-        }
 
         ArrayList<ChatHistory> insertList = new ArrayList<>();
         for (ChatMessage chatMessage : toInsert) {

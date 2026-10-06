@@ -68,23 +68,58 @@ class RegenerateAnswerTest {
     }
 
     @Test
-    @DisplayName("重新生成：用户提问已经在库里，不再重复存一遍")
-    void doesNotPersistUserMessageAgain() {
+    @DisplayName("重新生成（同一问题）：库里已有的提问不重复写，只写新回答")
+    void doesNotPersistDuplicateUserMessage() {
         service();
-        // 记忆里此刻是：库里加载的「问题A」+ 本次 add 的「问题A」+ 本次 add 的「回答B」
-        List<ChatMessage> memory = List.of(
-                UserMessage.from("问题A"),
-                UserMessage.from("问题A"),
-                AiMessage.from("回答B"));
+        // 库里有「问题A + 回答A」；本次记忆 = 库里的问题A + 本次 add 的问题A + 新回答B
+        when(memoryService.getRecentMessageJson(any(), anyLong(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(
+                        ChatMessageSerializer.messageToJson(UserMessage.from("问题A")),
+                        ChatMessageSerializer.messageToJson(AiMessage.from("回答A"))));
 
-        store.updateMessages(regenerateContext(), SESSION, memory);
+        store.updateMessages(regenerateContext(), SESSION, List.of(
+                UserMessage.from("问题A"),
+                UserMessage.from("问题A"),
+                AiMessage.from("回答B")));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatHistory>> captor = ArgumentCaptor.forClass(List.class);
         verify(memoryService).insertBatch(captor.capture(), eq(USER_ID));
         List<ChatHistory> inserted = captor.getValue();
-        assertEquals(1, inserted.size(), "只该写 AI 回答这一条：" + types(inserted));
-        assertEquals("AI", inserted.get(0).getType());
+        assertEquals(List.of("AI"), types(inserted),
+                "重复的提问不该再存一遍（模型会看到「同一问题问两遍」，前端也没法归成一组做 n/n 切换）");
+    }
+
+    /**
+     * 🔴 回归护栏：fronted 2026-10-06 指出的真 bug。
+     * <p>
+     * 「切到旧版本再发消息」时，用户发的是<b>新提问</b>。
+     * 原实现只要 {@code regenerateFromMessageId} 有值就过滤掉所有 USER 行 ——
+     * 结果<b>新提问被一起丢掉</b>，用户发的话凭空消失。
+     * <p>
+     * 正确做法：重复与否该由「库里是否已有这条提问」判断，而这正是
+     * {@code resolveInsertStartIndex} 的内容去重在做的事，不该另加显式过滤。
+     */
+    @Test
+    @DisplayName("切旧版本后发【新提问】：新提问必须被存下来（不能被 regenerateFromMessageId 吃掉）")
+    void keepsBrandNewUserMessageOnOldBranch() {
+        service();
+        when(memoryService.getRecentMessageJson(any(), anyLong(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(
+                        ChatMessageSerializer.messageToJson(UserMessage.from("问题A")),
+                        ChatMessageSerializer.messageToJson(AiMessage.from("回答A"))));
+
+        // 传旧版本的 id 作基线，但 messages 里是一条**全新**的提问
+        store.updateMessages(regenerateContext(), SESSION, List.of(
+                UserMessage.from("问题A"),
+                UserMessage.from("全新问题C"),
+                AiMessage.from("回答D")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatHistory>> captor = ArgumentCaptor.forClass(List.class);
+        verify(memoryService).insertBatch(captor.capture(), eq(USER_ID));
+        assertEquals(List.of("USER", "AI"), types(captor.getValue()),
+                "新提问必须落库 —— 丢了它等于用户说的话凭空消失，是最严重的数据丢失");
     }
 
     @Test
