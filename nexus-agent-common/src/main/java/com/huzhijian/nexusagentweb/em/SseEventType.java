@@ -42,6 +42,23 @@ public enum SseEventType {
     /** 正常结束 */
     FINISH("finish"),
 
+    /**
+     * 用户主动叫停（2026-10-06 新增，配套 {@code POST /api/chat/stop}）。
+     * <p>
+     * <b>与 {@link #ERROR} 的区别是本事件不代表失败</b>：用户就是不想等了，
+     * 已生成的部分内容<b>照常保留并落库</b>，前端应把「思考中」态收掉、
+     * 不要再显示错误提示。
+     * <p>
+     * 为什么不用 {@code finish} 代替：前端要能区分「模型答完了」与「用户叫停了」——
+     * 前者可以自动触发后续动作（比如自动滚动到底、总结），
+     * 后者不该触发，而且要让用户知道「后面还有内容被丢掉了」。
+     * <p>
+     * {@code data} 载荷：{@code {runId, reason, partial}}，
+     * {@code partial} 是已生成但未完成的正文长度（字符数），
+     * 前端可据此决定要不要提示「回答未完成」。
+     */
+    STOPPED("stopped"),
+
     /** 运行失败。带 `runId`，可直接在服务端日志里 grep `RUN runId=<值>` */
     ERROR("error"),
 

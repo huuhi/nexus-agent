@@ -49,6 +49,16 @@ public interface ChatMemoryService extends IService<ChatHistory> {
     void delByMemoryId(Object memoryId);
     void insertBatch(List<ChatHistory> list,Long userId);
 
+    /**
+     * 该会话下、属于这次运行的历史行是否已存在（2026-10-06 新增）。
+     * <p>
+     * 「用户叫停」时要把已生成的那半截回答补写进库，补写前用它做幂等守卫 ——
+     * 重复插入同一轮的行会让下一轮增量写入的锚点错位，把整段历史重写一遍。
+     *
+     * @param runId 本次运行的 trace_id（老数据该列为 null，不会匹配）
+     */
+    boolean existsByRunId(Object sessionId, Long userId, String runId);
+
 
 //    List<MessageVO> getHistory(String sessionId);
 

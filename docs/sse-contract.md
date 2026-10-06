@@ -24,6 +24,7 @@ event: tool_execution         ← 工具调用请求（arguments 是流式片段
 event: tool_execution_result  ← 工具执行结果
 event: artifact               ← AI 产出的交付物（下载卡片）
 event: finish                 ← 正常结束
+event: stopped                ← 用户主动叫停「停止生成」（不是失败）
 event: error                  ← 运行失败（带 runId，可查服务端日志）
 ```
 
@@ -61,9 +62,10 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 | 4 | `tool_execution_result` | 工具返回，每个调用一次 | `MessageVO{type:"TOOL_EXECUTION_RESULT", toolResultVO:{id,toolName,result,isError}}` |
 | 5 | `artifact` | AI 交付文件（P2-10） | `MessageVO{type:"ARTIFACT", artifact:{id,name,url,size,extension,sourcePath}}` |
 | 6 | `finish` | 正常结束，一次 | `{status:"DONE"}` |
-| 7 | `error` | 运行失败，一次 | `{type:"ERROR", message, hint}` |
+| 7 | `stopped` | **用户主动叫停**，一次（2026-10-06 新增） | `{reason:"用户停止了本次生成", partial:1234}` |
+| 8 | `error` | 运行失败，一次 | `{type:"ERROR", message, hint}` |
 
-**顺序保证**：正文缓冲会在「工具事件 / 产物事件 / finish / error」之前**强制冲刷**，
+**顺序保证**：正文缓冲会在「工具事件 / 产物事件 / finish / stopped / error」之前**强制冲刷**，
 所以前端不会看到"正文插到工具卡片后面"的顺序错乱，回复尾部也不会丢。
 
 ---
@@ -131,7 +133,26 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 
 v1 是裸字符串 `"DONE"`，v2 改成对象以便携带信封字段。
 
-### 3.7 `error`
+### 3.7 `stopped`（2026-10-06 新增）
+
+```json
+{"seq":9,"runId":"a1b2…","event":"stopped",
+ "data":{"reason":"用户停止了本次生成","partial":1234}}
+```
+
+用户在界面上点了「停止生成」，由 `POST /api/chat/stop` 触发。
+
+- **`stopped` 不是 `error`**：这是用户的正常意图，不是失败。
+  前端**不要**弹错误提示，只要把「思考中 / 生成中」态收掉即可。
+- `partial` 是**已生成正文的字符数**。大于 0 说明回答没写完，
+  前端可以酌情提示一句「回答未完成」，也可以只在 UI 上留个标记。
+- 停止时缓冲里没发完的尾部正文会**先补发完**再关流，所以不会凭空少一截。
+- **已生成的内容照常落库**（服务端按 `runId` 幂等补写），
+  用户刷新页面仍能看到这一段，不会凭空消失。
+- 与 `finish` 的区别：`finish` 表示模型答完了（可触发"自动滚动到底"等后续动作），
+  `stopped` 表示用户叫停了（**不该**触发那些自动动作）。
+
+### 3.8 `error`
 
 ```json
 {"seq":7,"runId":"a1b2…","event":"error",

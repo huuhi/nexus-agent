@@ -75,6 +75,20 @@
     </select>
 
     <!--
+      该会话下、属于这次运行的历史行是否已存在（2026-10-06：叫停补写前的幂等守卫）。
+      ⚠️ run_id 为 NULL 的老数据不会匹配上 —— 这是对的：老数据不是"这次运行"写的。
+    -->
+    <select id="existsByRunId" resultType="boolean">
+        select exists (
+            select 1
+            from chat_memory
+            where session_id=#{sessionId}::uuid
+              and user_id=#{userId}
+              and run_id=#{runId}
+        )
+    </select>
+
+    <!--
       取某个会话**最后一条**消息的原始 JSON，用作增量写入的「锚点」。
       排序说明：同一批 insertBatch 的多行共享同一个 create_at（默认值 now() 在一条语句里相同），
       所以必须再用 id 兜底。chat_memory 的行全部由 insertBatch 写入（identity 自增），

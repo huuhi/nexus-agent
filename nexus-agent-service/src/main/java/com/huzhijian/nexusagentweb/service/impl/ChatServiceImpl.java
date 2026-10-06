@@ -5,17 +5,20 @@ import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.model.ModelCapabilities;
 import com.huzhijian.nexusagentweb.context.ChatContext;
 import com.huzhijian.nexusagentweb.context.RunContext;
+import com.huzhijian.nexusagentweb.context.RunCancellationRegistry;
 import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
 import com.huzhijian.nexusagentweb.converter.SseResponseConverter;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
+import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.domain.Model;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.exception.ParserFileException;
+import com.huzhijian.nexusagentweb.exception.RunCancelledException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.factory.ChatContextFactory;
@@ -26,12 +29,16 @@ import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.ArtifactService;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
+import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessageSerializer;
+import dev.langchain4j.data.message.ChatMessageType;
 import dev.langchain4j.http.client.spring.restclient.SpringRestClientBuilderFactory;
 import dev.langchain4j.model.catalog.ModelDescription;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -70,6 +77,10 @@ public class ChatServiceImpl implements ChatService {
     private final QuotaService quotaService;
     private final ArtifactService artifactService;
     private final RunUserRegistry runUserRegistry;
+    // 2026-10-06：支持「停止生成」——用户显式叫停与「断开连接」是两件事
+    private final RunCancellationRegistry runCancellationRegistry;
+    // 2026-10-06：叫停时补写已生成内容（langchain4j 只在正常完成时落库）
+    private final ChatMemoryService chatMemoryService;
     // 2026-10-05：getModelList 改为按 configId 查库解密，需要下面两个依赖
     private final UserConfigService userConfigService;
     private final UrlGuard urlGuard;
@@ -129,6 +140,11 @@ public class ChatServiceImpl implements ChatService {
 //        ⚠️ 别再让工具直接用 UserContextHolder —— 那是架构上必然取不到值的写法。
         runUserRegistry.register(sessionId, userId);
 
+//        2026-10-06：登记本次运行，使「停止生成」能叫停它。
+//        ⚠️ 与 onTimeout/onError 的断开是**两件事**：断开只停传输、任务继续跑完；
+//        这里是用户显式要求任务真的停下。两者在 SSE 契约上也是不同事件（stopped vs error）。
+        runCancellationRegistry.register(runId, sessionId);
+
 //        本次运行的指标累加器（token / 工具调用 / 耗时），结尾汇总成一行 RUN 日志（见 §6.12）
         RunMetrics metrics = new RunMetrics(runId, sessionId, userId);
 
@@ -173,7 +189,12 @@ public class ChatServiceImpl implements ChatService {
         sseEmitter.onTimeout(() -> writer.disconnect("SSE 连接超时"));
         sseEmitter.onError(writer::onError);
 
-        tokenStream.onPartialThinking(writer::writeThinking)
+        tokenStream.onPartialThinking(thinking -> {
+//                    🔴 停止检查点 1/3：思考阶段。思考流可能持续十几秒，
+//                    用户在这期间点「停止」是常态，所以第一站就要能中断
+                    throwIfCancelled(runId);
+                    writer.writeThinking(thinking);
+                })
                 .onPartialResponse(partial -> {
 //                    首字延迟（TTFB）：从收到请求到模型吐出第一个内容 token。
 //                    ⚠️ 只有这一条日志能区分「慢在我们这边的前置步骤」还是「慢在供应商」——
@@ -181,10 +202,18 @@ public class ChatServiceImpl implements ChatService {
                     if (firstContent.compareAndSet(false, true)) {
                         log.info("CHAT_TTFB runId={} ttfb={}ms", runId, ms(tStart, System.nanoTime()));
                     }
+//                    🔴 停止检查点 2/3：正文增量。绝大多数「等太久」都在这里被叫停
+                    throwIfCancelled(runId);
                     writer.writeContent(partial);
                 })
-                .onPartialToolCallWithContext(writer::writeToolRequestWithStream)
-                .onToolExecuted(consumer->{
+                .onPartialToolCallWithContext((toolcall, contexts) -> {
+//                    🔴 停止检查点 3/3：工具调用的参数流。
+//                    模型可能正在流式吐一大段参数（最长能到几万字符），不给检查点就停不下来
+                    throwIfCancelled(runId);
+                    writer.writeToolRequestWithStream(toolcall, contexts);
+                })
+                .onToolExecuted(consumer -> {
+                    throwIfCancelled(runId);
                     ToolExecutionRequest request = consumer.request();
 //                    记录工具调用序列（可观测性）：这是回答「这次对话调了什么工具」的唯一数据源
                     metrics.recordToolExecuted(request.name(), consumer.hasFailed());
@@ -195,6 +224,8 @@ public class ChatServiceImpl implements ChatService {
                     publishArtifactIfAny(consumer, runContext, writer);
                 })
                 .onCompleteResponse(response -> {
+//                    正常收尾：先摘登记（每条结束路径都要摘，否则注册表会一直长）
+                    runCancellationRegistry.unregister(runId, sessionId);
 //                    token 用量与真实模型名只有在这里拿得到（流式响应的最后一次回调）
                     metrics.recordResponse(response);
                     runMetricsReporter.report(metrics);
@@ -203,12 +234,80 @@ public class ChatServiceImpl implements ChatService {
                     writer.finish();
                 })
                 .onError(error -> {
+//                    2026-10-06：用户主动叫停**不是**错误。
+//                    ⚠️ 抛 RunCancelledException 是唯一能真正停掉 TokenStream 的办法
+//                    （langchain4j 没给 cancel），代价是它会走到 onError ——
+//                    所以这里必须与真正的错误分流，且**补写已生成的内容**，
+//                    否则用户屏幕上已经看到的那半截回答，一刷新就没了。
+                    runCancellationRegistry.unregister(runId, sessionId);
                     metrics.recordError(error);
                     runMetricsReporter.report(metrics);
+                    if (error instanceof RunCancelledException) {
+                        log.info("用户停止了本次生成：runId={} session={}", runId, sessionId);
+                        String partial = writer.getFullAnswer();
+                        persistCancelledAnswer(runId, sessionId, userId, partial);
+                        writer.writeStopped(partial == null ? 0 : partial.length());
+                        return;
+                    }
                     writer.onError(error);
                 })
                 .start();
         return sseEmitter;
+    }
+
+    /**
+     * 停止检查点：本次运行已被用户叫停就抛异常中断流。
+     * <p>
+     * 抛异常是<b>唯一</b>能停掉 {@code TokenStream} 的手段 —— langchain4j 没有 cancel/close，
+     * 只有让消费 {@code Spliterator} 的回调链抛异常，才能让上游 HTTP 流被取消。
+     * 代价与补救见 {@link RunCancelledException}。
+     *
+     * @param runId 本次运行 id
+     * @throws RunCancelledException 已叫停时
+     */
+    private void throwIfCancelled(String runId) {
+        if (runCancellationRegistry.isCancelled(runId)) {
+            throw new RunCancelledException(runId);
+        }
+    }
+
+    /**
+     * 叫停时把「已经生成的那部分正文」补写进 {@code chat_memory}。
+     * <p>
+     * <b>为什么必须补</b>：langchain4j 只在 {@code onCompleteResponse} 时把 AI 消息写进记忆，
+     * 被中断的运行走不到那里 —— 不补的话，用户已经在屏幕上看到的内容，
+     * 一刷新就没了（对话凭空少一轮，是最让人困惑的丢数据方式）。
+     * <p>
+     * <b>为什么幂等</b>：按 {@code run_id} 先查一次再写。宁可漏写也不能重复写 ——
+     * 重复的历史行会让下一轮的锚点定位错位，进而把整段历史重复写一遍。
+     * <p>
+     * 一个字都没生成时<b>不写</b>：空回答进历史会污染上下文（模型看到自己上一轮答了空）。
+     *
+     * @param answer 已生成的正文（{@code SseResponseConverter} 累积的完整内容）
+     */
+    private void persistCancelledAnswer(String runId, String sessionId, Long userId, String answer) {
+        if (answer == null || answer.isBlank()) {
+            log.info("叫停时没有已生成内容，跳过补写：runId={}", runId);
+            return;
+        }
+        try {
+            if (chatMemoryService.existsByRunId(sessionId, userId, runId)) {
+                log.info("叫停时发现本次运行已落库，跳过补写：runId={}", runId);
+                return;
+            }
+            chatMemoryService.insertBatch(List.of(ChatHistory.builder()
+                    .sessionId(sessionId)
+                    .type(ChatMessageType.AI.name())
+                    .content(ChatMessageSerializer.messageToJson(AiMessage.from(answer)))
+                    .runId(runId)
+                    .build()), userId);
+            log.info("叫停后已补写已生成内容：runId={} 字符数={}", runId, answer.length());
+        } catch (Exception e) {
+            // 🔴 补写失败**不能**影响叫停流程：用户已经看到内容并主动叫停了，
+            // 这里失败只是「刷新后少一截」，绝不能把一个正常操作变成 500 或给前端刷错误弹窗
+            log.warn("叫停时补写已生成内容失败（用户已看到内容，不影响本次停止）：runId={} 原因={}",
+                    runId, e.getMessage(), e);
+        }
     }
 
     /**

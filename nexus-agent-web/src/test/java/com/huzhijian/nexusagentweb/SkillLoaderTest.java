@@ -253,4 +253,46 @@ class SkillLoaderTest {
 
         assertEquals(List.of("official-skill"), loader.availableNames(null));
     }
+
+    // ==================== 空数组语义（2026-10-06 修正） ====================
+
+    /**
+     * 🔴 防复发：前端「技能多选」取消全部勾选时会发 {@code []}，
+     * 以前它和「不传」一样被当成「启用全部」—— 与用户意图<b>正好相反</b>，
+     * 而且技能越多越吃亏（凭空多塞一堆技能描述进系统提示词，首字更慢、模型还容易乱选工具）。
+     */
+    @Test
+    @DisplayName("resolve(空数组) = 明确不用技能（不是启用全部）")
+    void emptyListDisablesAllSkills() throws IOException {
+        writeSkill("skill-a");
+        writeSkill("skill-b");
+        SkillLoader loader = loaderWith(tempDir.toString(), Duration.ofSeconds(60), true);
+
+        assertNull(loader.resolve(List.of(), 1L),
+                "空数组 = 用户明确表示「这次不要技能」，不能返回全部技能");
+    }
+
+    @Test
+    @DisplayName("resolve(null) 仍是「启用全部」—— 不传字段的老客户端行为不变")
+    void nullStillEnablesAll() throws IOException {
+        writeSkill("skill-a");
+        writeSkill("skill-b");
+        SkillLoader loader = loaderWith(tempDir.toString(), Duration.ofSeconds(60), true);
+
+        assertNotNull(loader.resolve(null, 1L),
+                "字段缺省（null）必须继续表示「启用全部」，否则老客户端会突然一个技能都没有");
+        assertEquals(2, loader.available(1L).size());
+    }
+
+    @Test
+    @DisplayName("空数组时连技能目录都不扫（纯浪费）")
+    void emptyListSkipsScanning() throws IOException {
+        writeSkill("skill-a");
+        UserSkillService userSkills = emptyUserSkills();
+        SkillLoader loader = loaderWith(tempDir.toString(), Duration.ZERO, true, userSkills);
+
+        loader.resolve(List.of(), 1L);
+
+        Mockito.verify(userSkills, Mockito.never()).loadForChat(Mockito.any());
+    }
 }

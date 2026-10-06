@@ -1,13 +1,16 @@
 package com.huzhijian.nexusagentweb.controller;
 
+import com.huzhijian.nexusagentweb.context.RunCancellationRegistry;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelListDTO;
+import com.huzhijian.nexusagentweb.dto.StopChatDTO;
 import com.huzhijian.nexusagentweb.model.SystemModelRegistry;
 import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.vo.Result;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -25,15 +28,19 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/chat")
-@Tag(name = "对话", description = "发起对话（SSE 流式）与模型列表查询")
+@Slf4j
+@Tag(name = "对话", description = "发起对话（SSE 流式）、停止生成与模型列表查询")
 public class ChatController {
 
     private final ChatService chatService;
     private final SystemModelRegistry systemModelRegistry;
+    private final RunCancellationRegistry runCancellationRegistry;
 
-    public ChatController(ChatService chatService, SystemModelRegistry systemModelRegistry) {
+    public ChatController(ChatService chatService, SystemModelRegistry systemModelRegistry,
+                          RunCancellationRegistry runCancellationRegistry) {
         this.chatService = chatService;
         this.systemModelRegistry = systemModelRegistry;
+        this.runCancellationRegistry = runCancellationRegistry;
     }
 
     /**
@@ -63,6 +70,48 @@ public class ChatController {
                 .header("X-Accel-Buffering", "no")
                 .header("Cache-Control", "no-cache, no-transform")
                 .body(sse);
+    }
+
+    /**
+     * 🔴 <b>停止生成</b>（2026-10-06 新增）：用户点「停止」后真正终止本次运行。
+     *
+     * <h3>为什么需要它</h3>
+     * <p>
+     * 断开 SSE 连接<b>不会</b>停掉任务（这是 2026-10-03 刻意的：断线就丢弃产出、
+     * 任务还在烧钱是最坏的组合）。代价是用户<b>没法主动叫停</b> —— 等太久只能干瞪眼。
+     * 这个接口补上这条路。
+     *
+     * <h3>行为约定</h3>
+     * <ul>
+     *   <li>被叫停的那条 SSE 流会收到一个 {@code stopped} 事件（<b>不是</b> {@code error}），
+     *       然后正常关闭；</li>
+     *   <li>已经生成的那部分内容<b>照常落库</b>，刷新页面不会消失；</li>
+     *   <li>本次运行不再继续消耗 token。</li>
+     * </ul>
+     *
+     * <h3>失败语义（都返回 HTTP 200 + code=1，前端按 code!==0 弹 msg）</h3>
+     * <ul>
+     *   <li>两个 id 都没传 → 明确提示；</li>
+     *   <li>该 runId / 会话当前没在跑 → 「没有正在进行的生成」（幂等：重复点停止不该报错）。</li>
+     * </ul>
+     */
+    @Operation(summary = "停止生成",
+            description = "runId 取自 SSE 首帧 run 事件的 data.runId；拿不到时可传 sessionId（停该会话当前正在跑的那次）。"
+                    + "被叫停的流会收到 stopped 事件（不是 error），已生成内容照常落库。重复调用是幂等的。")
+    @PostMapping("/stop")
+    public Result stopChat(@RequestBody StopChatDTO dto) {
+        String missing = dto == null ? "请求体不能为空" : dto.describeMissing();
+        if (missing != null) {
+            return Result.error(missing);
+        }
+        String runId = runCancellationRegistry.cancel(dto.runId()) ? dto.runId()
+                : runCancellationRegistry.cancelBySession(dto.sessionId());
+        if (runId == null) {
+            // 幂等：用户连点两次、或流已经自己结束了，都不该弹错误
+            return Result.error("没有正在进行的生成（可能已经结束，或 runId 已过期）");
+        }
+        log.info("用户请求停止生成：runId={} sessionId={}", runId, dto.sessionId());
+        return Result.ok("已停止本次生成", runId);
     }
 
     /**

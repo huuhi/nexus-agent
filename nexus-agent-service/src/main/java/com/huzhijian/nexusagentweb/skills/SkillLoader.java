@@ -83,18 +83,37 @@ public class SkillLoader {
 
     /**
      * 解析本次对话要启用的 skill。
+     * <p>
+     * 🔴 <b>2026-10-06 修正「空数组」的语义</b>：以前 {@code null} 与 {@code []}
+     * 都落到「启用全部」，于是前端「技能多选」里<b>取消全部勾选</b>（发 {@code []}）
+     * 会得到「用上所有技能」—— 与用户意图<b>正好相反</b>，而且越是技能多的用户越吃亏
+     * （凭空多塞一堆技能描述进系统提示词，首字更慢、模型还容易乱选工具）。
+     * <p>
+     * 现在的约定：
+     * <ul>
+     *   <li><b>不传</b>（字段缺省 → 反序列化成 {@code null}）→ 启用全部
+     *       （保持老客户端行为不变，客户端不必先知道有哪些技能）；</li>
+     *   <li><b>传空数组</b> {@code []} → <b>一个都不用</b>（用户明确表达「这次不要技能」）；</li>
+     *   <li>传了名字 → 只启用这些（认不出的名字只 WARN 忽略，不让整次对话失败）。</li>
+     * </ul>
      *
-     * @param requested 请求里指定的 skill 名称；**为空表示启用全部**（客户端不必先知道有哪些）
+     * @param requested 请求里指定的 skill 名称；<b>null 表示启用全部</b>，空列表表示全部禁用
      * @param userId    当前用户，决定能看到哪些用户技能
      * @return 无可启用项时返回 null（调用方据此不注册 skill 工具）
      */
     public Skills resolve(List<String> requested, Long userId) {
+        // 「明确表示这次不用技能」—— 必须在查库之前就返回，
+        // 否则连官方技能目录都要扫一遍，纯属浪费
+        if (requested != null && requested.isEmpty()) {
+            log.debug("请求显式指定了空技能列表：本次不启用任何技能");
+            return null;
+        }
         List<Skill> available = available(userId);
         if (available.isEmpty()) {
             return null;
         }
         List<Skill> selected;
-        if (requested == null || requested.isEmpty()) {
+        if (requested == null) {
             selected = available;
         } else {
             Map<String, Skill> byName = new LinkedHashMap<>();

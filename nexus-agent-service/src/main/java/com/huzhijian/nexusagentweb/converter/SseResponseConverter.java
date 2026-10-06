@@ -329,6 +329,35 @@ public class SseResponseConverter {
     }
 
     /**
+     * 用户主动叫停（2026-10-06 新增，配套 {@code POST /api/chat/stop}）。
+     * <p>
+     * <b>刻意不发 {@code error} 事件</b>：叫停是用户的正常意图，不是失败。
+     * 发错误弹窗会让用户以为「出错了」，而实际上他想要的就是停下来。
+     * <p>
+     * 收尾照常做：把缓冲里剩下的正文发出去（否则最后几个字会丢）、停心跳、关流。
+     * <b>已生成内容的落库不在这里做</b> —— langchain4j 只在正常完成时写记忆，
+     * 被中断时那条 AI 消息缺失，由 {@code ChatServiceImpl} 按 runId 补写
+     * （见 {@code RunCancelledException} 的类注释）。
+     *
+     * @param partialChars 已生成正文的字符数，告诉前端「回答没写完」
+     */
+    public void writeStopped(int partialChars) {
+        if (isFinished.get()) {
+            return;
+        }
+        try {
+            // 缓冲里没发出去的尾部必须先补发，否则用户看到的回答会凭空少一截
+            flushPending();
+        } catch (Exception e) {
+            log.warn("叫停时补发尾部正文失败（已发内容不受影响）：runId={} 原因={}", runId, e.getMessage());
+        }
+        send(SseEventType.STOPPED, Map.of(
+                "reason", "用户停止了本次生成",
+                "partial", partialChars));
+        safeComplete();
+    }
+
+    /**
      * 出错时把 trace_id 推给前端。
      * <p>
      * 只推「对用户有意义」的信息：错误类型 + 简短原因 + runId（在信封里）；

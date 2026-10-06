@@ -46,6 +46,19 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
                                        @Param("limit") int limit);
 
     /**
+     * 该会话下、属于这次运行的历史行是否已存在（2026-10-06 新增）。
+     * <p>
+     * 用途是「用户叫停」时补写已生成内容的<b>幂等守卫</b>：补写前先问一句，
+     * 避免重复插入同一轮的行 —— 重复行会让下一轮增量写入的锚点定位错位，
+     * 进而把整段历史重写一遍（那比少写一条严重得多）。
+     * <p>
+     * ⚠️ 必须带 {@code user_id}，理由同其他对外查询：{@code sessionId} 是客户端可见的。
+     */
+    boolean existsByRunId(@Param("sessionId") Object sessionId,
+                          @Param("userId") Long userId,
+                          @Param("runId") String runId);
+
+    /**
      * 取会话最后一条消息的原始 JSON，供「锚点式增量写入」定位新增部分。
      * <p>
      * 之所以需要锚点：记忆窗口（TokenWindowChatMemory）会在超限时**淘汰旧消息**，

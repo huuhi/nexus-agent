@@ -12,7 +12,9 @@ import com.huzhijian.nexusagentweb.service.ArtifactService;
 import com.huzhijian.nexusagentweb.service.ChatAssistant;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
+import com.huzhijian.nexusagentweb.service.ChatMemoryService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
+import com.huzhijian.nexusagentweb.context.RunCancellationRegistry;
 import com.huzhijian.nexusagentweb.context.RunUserRegistry;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.converter.ChatMessageConverter;
@@ -91,6 +93,9 @@ class GetModelListContractTest {
                 mock(QuotaService.class),
                 mock(ArtifactService.class),
                 mock(RunUserRegistry.class),
+                // 2026-10-06：停止生成用的两个依赖，本用例不碰
+                mock(RunCancellationRegistry.class),
+                mock(ChatMemoryService.class),
                 userConfigService,
                 new UrlGuard(false));
     }
