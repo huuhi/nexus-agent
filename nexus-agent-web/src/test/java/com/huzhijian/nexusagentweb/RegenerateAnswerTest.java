@@ -191,11 +191,15 @@ class RegenerateAnswerTest {
     }
 
     @Test
-    @DisplayName("模型能力默认值仍然保守（2026-10-06 延迟治理的护栏，勿被本次改动带偏）")
-    void memoryWindowStaysConservative() {
+    @DisplayName("记忆窗口上限只是兜底 —— 别让它小到让模型静默失忆")
+    void memoryWindowUpperBoundIsOnlyASafetyNet() {
         var caps = com.huzhijian.nexusagentweb.model.ModelCapabilities.of(new Model());
-        assertTrue(caps.memoryWindow(new AgentProperties().getMemory().getMaxTokens()) <= 32_768,
-                "记忆窗口仍须 <= 32k");
+        int effective = caps.memoryWindow(new AgentProperties().getMemory().getMaxTokens());
+        // ⚠️ 2026-10-06：原来是断言 <= 32768，依据「窗口大就慢」，该因果已被线上数据推翻
+        //（真瓶颈是 skillResolve 与 CHAT_MEMORY 重复查库）。现在只保留下限——
+        // 窗口过小会让模型静默丢历史，用户却以为是自己聊得太多。
+        assertTrue(effective >= 80_000,
+                "实际生效的记忆窗口只有 " + effective + " token，太小了 —— 会静默丢历史");
         assertFalse(caps.vision(), "默认仍是不支持视觉");
     }
 

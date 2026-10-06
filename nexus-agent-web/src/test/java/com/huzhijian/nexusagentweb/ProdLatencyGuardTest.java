@@ -44,7 +44,26 @@ class ProdLatencyGuardTest {
      * 记忆窗口的硬上限。它等于模型每轮的 prefill 量，直接与首字延迟成正比。
      * 2026-10-06 从 100000 下调到 24000；想调大必须先想清楚凭什么牺牲首字。
      */
-    private static final int MAX_MEMORY_WINDOW = 32_768;
+    /**
+     * 🔴 2026-10-06 修正这条不变式。
+     * <p>
+     * 原值 32768的依据是「窗口大 → prefill 重 → 首字慢」，但后续三次线上日志
+     * 证明<b>那个因果是错的</b>：真正的瓶颈是 {@code skillResolve}（每次查库）
+     * 与 {@code CHAT_MEMORY}（同请求内查 3 次）合计约 3.5 秒，
+     * 而当时 97 条消息（约 3 万 token）<b>根本没撑满 32768</b> ——
+     * 用户被迫开新对话、模型却在失忆，而首字一点没变快。
+     * <p>
+     * 现在的不变式只保留两条真正成立的约束：
+     * <ol>
+     *   <li><b>要有上限</b>：防止误填 10M 之类把 prefill 拉到几十秒；</li>
+     *   <li><b>不能小到装不下一个正常会话</b>：低于这个值会静默丢历史，
+     *       前端「聊了很多轮」的提示就成了误报。</li>
+     * </ol>
+     */
+    private static final int MAX_MEMORY_WINDOW = 400_000;
+
+    /** 至少要装得下这么多 token，否则等于静默丢历史 */
+    private static final int MIN_USEFUL_WINDOW = 80_000;
 
     /** surefire 的工作目录是模块目录，向上找到仓库根（有 .env.example 的那一层） */
     private static Path repoRoot() throws IOException {
@@ -64,9 +83,14 @@ class ProdLatencyGuardTest {
         int window = new AgentProperties().getMemory().getMaxTokens();
         assertTrue(window > 0 && window <= MAX_MEMORY_WINDOW,
                 "nexus.agent.memory.max-tokens 的默认值被调大到 " + window + "。"
-                        + "它不是内存参数，而是「每轮发给模型的历史有多少 token」——"
-                        + " 模型的 prefill 量与它成正比，10 万时首字要几秒且越聊越慢"
-                        + "（2026-10-06 线上实测长会话首字 21 秒）。上限 " + MAX_MEMORY_WINDOW + "。");
+                        + "它是「每轮发给模型的历史有多少 token」，需要有上限兜底，"
+                        + "否则误填一个巨大值会把 prefill 拉到几十秒。上限 " + MAX_MEMORY_WINDOW + "。");
+        assertTrue(window >= MIN_USEFUL_WINDOW,
+                "记忆窗口只有 " + window + " token，太小了。"
+                        + "上下文实际生效值是 min(本值, contextWindow - maxOutputTokens)，"
+                        + " 本值过小会让模型**静默丢掉更早的历史** —— 表现为「聊了几十轮就开始忘事」，"
+                        + " 而前端只会提示「建议新建对话」，用户白白以为是自己聊得太多。"
+                        + " 至少要 " + MIN_USEFUL_WINDOW + "。");
     }
 
     @Test
@@ -98,8 +122,8 @@ class ProdLatencyGuardTest {
      * 所以这里算一遍实际值再断言，既钉死首字预算，又不误伤真实的大窗口模型。
      */
     @Test
-    @DisplayName("prod 里每个系统模型「实际生效的记忆窗口」都不得高于 32k")
-    void prodSystemModelsEffectiveWindowStaysSmall() throws IOException {
+    @DisplayName("prod 里每个系统模型的实际生效窗口：要有上限，也不能小到装不下一个会话")
+    void prodSystemModelsEffectiveWindowStaysReasonable() throws IOException {
         Path prod = repoRoot().resolve("nexus-agent-web/src/main/resources/application-prod.yml");
         assertTrue(Files.exists(prod), "找不到 application-prod.yml");
 
@@ -141,9 +165,14 @@ class ProdLatencyGuardTest {
         int effective = ModelCapabilities.of(meta).memoryWindow(globalMax);
         assertTrue(effective <= MAX_MEMORY_WINDOW,
                 "系统模型 " + modelName + "（供应商 " + providerId + "）实际生效的记忆窗口是 " + effective
-                        + " token —— 这就是它每轮要发给模型做 prefill 的历史量，直接决定首字延迟。"
-                        + " 调小 nexus.agent.memory.max-tokens，或给该模型填真实的 contextWindow /"
-                        + " maxOutputTokens。上限 " + MAX_MEMORY_WINDOW + "。");
+                        + " token，超出上限 " + MAX_MEMORY_WINDOW
+                        + " —— 请给该模型填真实的 contextWindow / maxOutputTokens。");
+        assertTrue(effective >= MIN_USEFUL_WINDOW,
+                "系统模型 " + modelName + "（供应商 " + providerId + "）实际生效的记忆窗口只有 " + effective
+                        + " token，**小于 max-tokens 上限 " + MIN_USEFUL_WINDOW + "** —— 说明卡在"
+                        + " contextWindow - maxOutputTokens 那一侧：该模型的元数据填得太小，"
+                        + " 会让它**静默丢掉更早的历史**，表现为「聊了几十轮就开始忘事」。"
+                        + " 请给该模型填真实的 contextWindow / maxOutputTokens。");
     }
 
     /** 逐层下钻取嵌套键，任何一层缺失返回 null */

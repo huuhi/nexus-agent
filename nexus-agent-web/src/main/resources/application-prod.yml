@@ -127,15 +127,30 @@ nexus:
           - modelName: deepseek-flash
             name: flash
             vision: true
-            # ⚠️ 2026-10-06 修正：这里原先填的是 contextWindow: 1000000 / maxOutputTokens: 384000。
-            #    这两个数不是随便填的装饰 —— 它们直接决定**每轮送给模型的上下文有多大**：
-            #      memoryWindow = min(nexus.agent.memory.max-tokens, contextWindow - maxOutputTokens)
-            #    填成 100 万时，窗口被撑到 10 万 token，模型每轮都要先把十万 token 的历史
-            #    做一遍 prefill 才吐得出第一个字 —— 这就是「首字 4 秒、长会话 21 秒」的主因。
-            #    同时 384000 会作为 max_tokens 原样发给 DeepSeek，远超它的真实上限。
-            #    现在按 DeepSeek 官方口径填真实值（64K 上下文 / 8K 输出）。
-            contextWindow: 65536
-            maxOutputTokens: 8192
+            # ⚠️ 2026-10-06 两次修正，第二次推翻了第一次的结论。
+            #
+            # 第一次（上午）：把 1000000 / 384000 改成 65536 / 8192，
+            #   依据是「窗口大 → prefill 重 → 首字慢（当时实测首字 4 秒、长会话 21 秒）」。
+            #   ——**这个因果是错的**，后来三次线上日志证明真正的瓶颈另有其人：
+            #     · skillResolve=1122ms（用户技能每轮查库，无缓存，而 skillN=1）
+            #     · CHAT_MEMORY 同一请求内查了 3 次（msgs=97，721+776+895ms）
+            #   两者合计约 3.5 秒；而当时 97 条消息（约 3 万 token）根本没撑满 65536，
+            #   压窗口治不了首字，只会让模型静默失忆。
+            #
+            # 第二次（现在）：放宽到 131072 / 32768。
+            #   · 384000 作为 max_tokens 会发给 DeepSeek，远超其真实上限，必须改；
+            #   · 但窗口本身不该压到 65536 —— 用户模型是 1M 上下文，
+            #     压窗口等于替他决定「你只能记住 160 条消息」。
+            #   · 131072 - 32768 = 98304 ≈ 96k token 记忆窗口，
+            #     配合 nexus.agent.memory.max-tokens=300000 的新上限，
+            #     实际生效值 = min(300000, 98304) = 98304。
+            #
+            # ⚠️ 改这两个数之前先看日志 CHAT_MEMORY 的实际估算 token：
+            #   若离窗口上限还远，说明瓶颈在别处（多半是本地前置），调窗口没用。
+            # ⚠️ 若服务器上有 conf/nexus-override.yml 覆盖了 nexus.agent.system-models，
+            #   **这里改了也不会生效**（外部文件会整体顶掉本段），必须同步改那份。
+            contextWindow: 131072
+            maxOutputTokens: 32768
       - id: MIMO
         name: 小米
         # ⚠️ 2026-10-05 修正：这里原先是 https://dashscope.aliyuncs.com/compatible-mode/v1

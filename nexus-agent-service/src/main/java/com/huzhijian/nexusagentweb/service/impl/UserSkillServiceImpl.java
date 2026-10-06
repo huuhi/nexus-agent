@@ -38,10 +38,13 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -204,6 +207,8 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
             }
             updateFields(exist, description, dto.getContent(), dto.getVisibility(), dto.getResources());
             updateById(exist);
+            // 🔴 写表即失效缓存 —— 否则「改了技能但对话里还是旧内容」
+            invalidateSkillCache(userId);
             return toDetail(exist, authorNameOf(userId), true);
         }
 
@@ -222,6 +227,7 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
                 .updatedAt(Timestamp.valueOf(LocalDateTime.now()))
                 .build();
         save(entity);
+        invalidateSkillCache(userId);
         return toDetail(entity, authorNameOf(userId), true);
     }
 
@@ -245,6 +251,7 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
         }
         updateFields(exist, dto.getDescription(), dto.getContent(), dto.getVisibility(), dto.getResources());
         updateById(exist);
+        invalidateSkillCache(userId);
         return toDetail(exist, authorNameOf(userId), true);
     }
 
@@ -259,6 +266,7 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
             throw new PermissionDeniedException("只能删除自己创建的技能！");
         }
         removeById(exist.getId());
+        invalidateSkillCache(userId);
     }
 
     @Override
@@ -274,6 +282,42 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
         exist.setEnabled(enabled);
         exist.setUpdatedAt(Timestamp.valueOf(LocalDateTime.now()));
         updateById(exist);
+        invalidateSkillCache(userId);
+    }
+
+    /**
+     * 🔴 用户技能缓存（2026-10-06）：按 {@code userId} 缓存 {@link #loadForChat} 的结果。
+     * <p>
+     * 线上实测 {@code CHAT_CONTEXT skillResolve=1122ms}，而 {@code skillN=1}
+     * —— <b>只有 1 个技能却要 1.1 秒</b>，显然不是「构建技能对象」的开销，
+     * 而是<b>每次对话都查一次 {@code user_skill} 表</b>（{@code OfficialSkillSource.all()}
+     * 有 60s 缓存，用户技能这条路径原先<b>完全没有</b>）。
+     * <p>
+     * 为什么可以缓存：技能列表变化极慢（用户上传 / 启用停用是低频操作），
+     * 而它<b>每轮对话都要读一次</b>，是典型的「读多写少」。
+     * <p>
+     * ⚠️ <b>失效时机必须正确</b>，否则会出现「我上传了技能但对话里没有」：
+     * 所有会改 {@code user_skill} 表的入口都必须调 {@link #invalidateSkillCache} ——
+     * 包括 save / update / delete / setEnabled / 任何 AI 生成技能的落库。
+     * TTL 只是兜底，不是主要手段。
+     */
+    private final Map<Long, CachedSkills> skillCache = new ConcurrentHashMap<>();
+
+    private record CachedSkills(List<Skill> skills, Instant loadedAt) {
+    }
+
+    /** 缓存有效期，与官方技能的 refreshInterval 同量级 */
+    private static final Duration SKILL_CACHE_TTL = Duration.ofSeconds(60);
+
+    /**
+     * 让某个用户的技能缓存立刻失效。
+     * <p>⚠️ <b>凡改动 user_skill 表的地方都要调它</b>，否则用户改完看不到变化。
+     */
+    public void invalidateSkillCache(Long userId) {
+        if (userId != null) {
+            skillCache.remove(userId);
+            log.debug("用户技能缓存已失效：userId={}", userId);
+        }
     }
 
     @Override
@@ -281,6 +325,16 @@ public class UserSkillServiceImpl extends ServiceImpl<UserSkillMapper, UserSkill
         if (userId == null) {
             return List.of();
         }
+        CachedSkills cached = skillCache.get(userId);
+        if (cached != null && cached.loadedAt().plus(SKILL_CACHE_TTL).isAfter(Instant.now())) {
+            return cached.skills();
+        }
+        List<Skill> loaded = loadForChatUncached(userId);
+        skillCache.put(userId, new CachedSkills(loaded, Instant.now()));
+        return loaded;
+    }
+
+    private List<Skill> loadForChatUncached(Long userId) {
         try {
             //  可见性 = (自己的 且 已上架) 或 (别人公开的 且 已上架)
             //  ⚠️ 用显式括号包住整个 or —— MyBatis-Plus 的 or() 不带括号时，

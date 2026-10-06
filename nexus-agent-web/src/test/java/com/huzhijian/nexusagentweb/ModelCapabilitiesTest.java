@@ -30,32 +30,40 @@ class ModelCapabilitiesTest {
     }
 
     @Test
-    @DisplayName("老配置（三个字段全为 null）：默认不支持视觉，64k / 16k")
+    @DisplayName("老配置（三个字段全为 null）：默认不支持视觉，128k / 32k")
     void legacyConfigFallsBackToDefaults() {
         ModelCapabilities caps = ModelCapabilities.of(model(null, null, null));
 
         assertFalse(caps.vision(), "默认必须是不支持视觉 —— 不填就发真图会被上游拒绝");
-        assertEquals(65_536, caps.contextWindow());
-        assertEquals(16_384, caps.maxOutputTokens());
+        assertEquals(131_072, caps.contextWindow());
+        assertEquals(32_768, caps.maxOutputTokens());
     }
 
     /**
-     * 🔴 护栏（2026-10-06）：默认值<b>宁小勿大</b>，不许再被调回 256k / 32k。
+     * 🔴 护栏（2026-10-06，**当天改过一次方向**）。
      * <p>
-     * 教训：这两个数曾被填成 100 万 / 38.4 万，直接把记忆窗口撑到 10 万 token，
-     * 模型每轮要先做十万 token 的 prefill 才吐得出第一个字（首字 4 秒、长会话 21 秒）。
-     * 填大的代价（prefill 拖慢首字、max_tokens 超真实上限被 400）
-     * 远大于填小的代价（少带一点上下文），所以这里用断言把取向钉死。
+     * 最初这条断言是「默认值宁小勿大，不许再被调回 256k / 32k」，
+     * 依据是「窗口大 → prefill 重 → 首字慢」。<b>后经三次线上日志证明该因果不成立</b>：
+     * 真正的瓶颈是 {@code skillResolve}（每次对话查库，1.1 秒）与
+     * {@code CHAT_MEMORY}（同一请求内查 3 次，2.4 秒），
+     * 而当时 97 条消息（约 3 万 token）**根本没把窗口撑满**。
+     * 压窗口治不了首字，只会让人失忆 —— 而前端只会提示「建议新建对话」，
+     * 用户白白以为是自己聊得太多。
+     *
+     * <p>所以现在只保留两条真正成立的约束：<b>要有上限</b>（防误填巨大值把 prefill 拉到几十秒）
+     * 与 <b>不能小于下限</b>（小于它等于静默丢历史）。
      */
     @Test
-    @DisplayName("默认值必须保守 —— 填大的后果是首字变慢/超窗被拒，比填小严重得多")
-    void defaultsAreConservative() {
-        assertTrue(ModelCapabilities.DEFAULT_CONTEXT_WINDOW <= 131_072,
-                "上下文窗口默认值不该超过 128k：它决定记忆窗口能吃多大，而 prefill 量与它成正比");
+    @DisplayName("默认值：既要有上限兜底，也不能小到让模型静默丢历史")
+    void defaultsAreReasonable() {
+        assertTrue(ModelCapabilities.DEFAULT_CONTEXT_WINDOW <= 262_144,
+                "上下文窗口默认值不该超过 256k：它决定记忆窗口能吃多大，"
+                        + "误填一个巨大值会让 prefill 拉到几十秒");
         assertTrue(ModelCapabilities.DEFAULT_MAX_OUTPUT_TOKENS <= 32_768,
                 "最大输出默认值不该超过 32k：它会作为 max_tokens 原样发给服务商，超真实上限直接 400");
-        assertTrue(ModelCapabilities.DEFAULT.memoryWindow(1_000_000) <= 65_536,
-                "默认能力组合下的记忆窗口必须落在可控区间 —— 这就是每轮 prefill 的量级");
+        int effective = ModelCapabilities.DEFAULT.memoryWindow(1_000_000);
+        assertTrue(effective >= 80_000,
+                "默认能力组合下的记忆窗口只有 " + effective + " token，太小了 —— 会静默丢掉更早的历史");
     }
 
     @Test
@@ -71,8 +79,8 @@ class ModelCapabilitiesTest {
     @Test
     @DisplayName("填了 0 或负数：当作没填（按默认），不能算出一个负数窗口")
     void nonPositiveFallsBack() {
-        assertEquals(65_536, ModelCapabilities.of(model(false, 0, 0)).contextWindow());
-        assertEquals(16_384, ModelCapabilities.of(model(false, -1, -5)).maxOutputTokens());
+        assertEquals(131_072, ModelCapabilities.of(model(false, 0, 0)).contextWindow());
+        assertEquals(32_768, ModelCapabilities.of(model(false, -1, -5)).maxOutputTokens());
     }
 
     @Test

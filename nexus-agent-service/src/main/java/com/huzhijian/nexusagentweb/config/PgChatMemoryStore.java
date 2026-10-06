@@ -78,22 +78,51 @@ public class PgChatMemoryStore {
 
         private final RunContext runContext;
 
+        /**
+         * 🔴 请求级缓存（2026-10-06）：本次运行内已从库里读到的消息。
+         * <p>
+         * 线上实测 {@code CHAT_MEMORY msgs=97 load=721ms} 在<b>同一 runId 下出现 3 次</b>
+         * （721 + 776 + 895 ≈ 2.4 秒）—— {@code TokenWindowChatMemory} 在
+         * {@code AiServices.chat()} 内部会多次触碰 {@code messages()}（建记忆、裁剪、写入前再确认），
+         * 每一次都穿透到 DB。
+         * <p>
+         * 为什么这个缓存是<b>安全</b>的：本类实例是 {@link #forRun} 每次新建的
+         * {@code RunScopedChatMemoryStore}，<b>一个请求一个实例</b>，不会跨请求复用；
+         * 而 {@link #updateMessages} 会把 {@link #messagesStale} 置真，让写入后的读取重新查库 ——
+         * 所以 LangChain4j 写入过程中看到的一定是最新数据，不会读到过期快照。
+         */
+        private List<ChatMessage> cachedMessages;
+        private boolean messagesStale;
+
         RunScopedChatMemoryStore(RunContext runContext) {
             this.runContext = runContext;
         }
 
         @Override
         public List<ChatMessage> getMessages(Object memoryId) {
-            return PgChatMemoryStore.this.getMessages(runContext, memoryId);
+            if (cachedMessages != null && !messagesStale) {
+                log.debug("本次运行内命中消息缓存，跳过查库：runId={} msgs={}",
+                        runContext.runId(), cachedMessages.size());
+                return cachedMessages;
+            }
+            cachedMessages = PgChatMemoryStore.this.getMessages(runContext, memoryId);
+            messagesStale = false;
+            return cachedMessages;
         }
 
         @Override
         public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+            // 🔴 写入即失效：之后的任何读取都必须回库，否则 LangChain4j 内存里
+            // 已经追加了新消息、库里也变了，缓存却还是旧快照 —— 会导致历史错乱。
+            messagesStale = true;
+            cachedMessages = null;
             PgChatMemoryStore.this.updateMessages(runContext, memoryId, messages);
         }
 
         @Override
         public void deleteMessages(Object memoryId) {
+            messagesStale = true;
+            cachedMessages = null;
             PgChatMemoryStore.this.deleteMessages(memoryId);
         }
     }
