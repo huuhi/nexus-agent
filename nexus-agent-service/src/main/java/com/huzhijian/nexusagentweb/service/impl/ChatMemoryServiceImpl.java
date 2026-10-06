@@ -71,6 +71,118 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
         }
         return LEGACY_WRAPPER.matcher(text).replaceAll("").strip();
     }
+
+    // ======================================================================
+    //  🔴 superseded_by 列的降级闸门（2026-10-06）
+    //
+    //  背景：本类新增了 chat_memory.superseded_by（docs/sql/013）的读写。
+    //  而「历史接口」与「记忆加载」是本项目最核心的两条链路，它们都直接 SELECT 这一列 ——
+    //  一旦迁移脚本没执行，PostgreSQL 抛 `column "superseded_by" does not exist`，
+    //  于是【发消息】与【拉历史】一起 500，首页白屏。
+    //
+    //  为什么必须降级而不是直接报错：
+    //  · 项目惯例一直是「DB 查询失败 → 降级放行 + 明确日志」（见 QuotaServiceImpl 的两处）；
+    //  · SchemaStartupChecker 虽然会在启动期报缺列，但配置了 startup.fail-fast=false 时
+    //    应用会带着缺列启动 —— 那时更需要运行期能活下来，而不是全线 500；
+    //  · 降级后的表现是「版本切换功能不可用，但聊天完全正常」，
+    //    这比「整个用不了」好一个数量级，用户还能正常对话。
+    //
+    //  只探测一次（volatile 布尔）：缺列是部署级的既定状态，不会跑着跑着就好了，
+    //  每次都 try-catch 纯属浪费。
+    // ======================================================================
+    /** superseded_by 列是否可用；null = 还没探测过 */
+    private volatile Boolean supersededByAvailable;
+
+    /**
+     * 读历史（全量，含被替代的版本 —— 前端要靠它们做 n/n 切换）。
+     * <p>
+     * ⚠️ 与 {@link #getActiveForChat} 刻意不同：那个是给模型上下文用的，要排除被替代的。
+     */
+    private List<ChatHistory> queryAllForHistory(Object sessionId, Long userId) {
+        try {
+            return mapper.getAllByMemoryIdAndUserId(sessionId, userId);
+        } catch (Exception e) {
+            if (markSupersededUnsupported(e)) {
+                return queryAllWithoutSuperseded(sessionId, userId);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 读「当前生效」的消息（供记忆加载）。
+     * <p>
+     * 缺列时退化为 {@code getRecentForChat}（**不**排除被替代的版本）——
+     * 功能降级为「版本切换不生效」，但对话正常。
+     */
+    private List<ChatHistory> queryActiveForMemory(Object sessionId, Long userId, int limit) {
+        try {
+            return mapper.getActiveForChat(sessionId, userId, limit <= 0 ? Integer.MAX_VALUE : limit);
+        } catch (Exception e) {
+            if (markSupersededUnsupported(e)) {
+                return mapper.getRecentForChat(sessionId, userId, limit);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 缺列时用的降级查询：SELECT 不带 {@code superseded_by}。
+     * <p>
+     * 它与 {@code getAllByMemoryIdAndUserId} 的唯一差别就是那一列 ——
+     * 必须单独写一条 SQL，不能靠「把列名参数化」（列名不能是绑定参数）。
+     */
+    private List<ChatHistory> queryAllWithoutSuperseded(Object sessionId, Long userId) {
+        return mapper.getAllByMemoryIdAndUserIdWithoutSuperseded(sessionId, userId);
+    }
+
+    /**
+     * 判断这次异常是不是「superseded_by 列不存在」，并记一次降级日志。
+     * <p>
+     * 🔴 <b>必须遍历 cause 链</b>，只看最外层 {@code getMessage()} 是<b>错的</b>：
+     * MyBatis 抛的是 {@code BadSqlGrammarException}，它的 message 形如
+     * {@code "query; bad SQL grammar [select ... ]"} —— <b>里面没有任何列名</b>，
+     * 真正的 {@code ERROR: column "superseded_by" does not exist} 藏在 cause 里。
+     * 只看外层的话降级永远不会触发，缺列时照样全线 500（这个坑是
+     * {@code SupersededByFallbackTest} 抓出来的，不是想出来的）。
+     *
+     * @return true = 确认为缺列，调用方应走降级查询
+     */
+    private boolean markSupersededUnsupported(Throwable e) {
+        if (!isMissingSupersededColumn(e)) {
+            return false;
+        }
+        if (supersededByAvailable == null) {
+            supersededByAvailable = Boolean.FALSE;
+            log.error("""
+                    🔴 降级：chat_memory.superseded_by 列不存在，「重新生成的版本切换」不可用。
+                       聊天与历史**完全正常**（只是同一问题的多个回答会同时进模型上下文）。
+                       请执行：docs/sql/013_add_superseded_by.sql
+                       （进程内只探测这一次；补完列后需重启才恢复）""");
+        }
+        return true;
+    }
+
+    /**
+     * 沿 cause 链找「superseded_by 列不存在」的证据。
+     * <p>
+     * 限深 10 层：足够覆盖 MyBatis → Spring → JDBC 的包装链，
+     * 又能防御病态的自引用 cause 链导致的死循环。
+     */
+    private static boolean isMissingSupersededColumn(Throwable e) {
+        Throwable current = e;
+        for (int depth = 0; current != null && depth < 10; depth++) {
+            String message = current.getMessage();
+            if (message != null
+                    && message.contains("superseded_by")
+                    && (message.contains("does not exist") || message.contains("不存在"))) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
     @Override
     public List<ChatHistory> getByMemoryId(Object memory) {
 //        输入任意字符，则过滤工具消息
@@ -80,7 +192,7 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
     @Override
     public List<ChatHistory> getByMemoryIdAndUserId(Object memory, Long userId) {
 //        对话链路读记忆专用：必须带 user_id，否则会读到别人的会话
-        return mapper.getAllByMemoryIdAndUserId(memory, userId);
+        return queryAllForHistory(memory, userId);
     }
 
     @Override
@@ -95,12 +207,7 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
 
     @Override
     public List<ChatHistory> getActiveForChat(Object sessionId, Long userId, int limit) {
-        if (limit <= 0) {
-            // 不限制：走一个「不排除任何行」的等价查询。
-            // ⚠️ 不能退化成 getByMemoryIdAndUserId（那是历史接口，会带上被替代的版本）
-            return mapper.getActiveForChat(sessionId, userId, Integer.MAX_VALUE);
-        }
-        return mapper.getActiveForChat(sessionId, userId, limit);
+        return queryActiveForMemory(sessionId, userId, limit);
     }
 
     @Override
@@ -169,7 +276,7 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
         if (userId == null) {
             throw new UnauthorizedException("用户未登录！");
         }
-        List<ChatHistory> chatHistories = mapper.getAllByMemoryIdAndUserId(sessionId, userId);
+        List<ChatHistory> chatHistories = queryAllForHistory(sessionId, userId);
         if (chatHistories==null||chatHistories.isEmpty()) return List.of();
 //        逐行处理（2026-10-05 改）：产物归属要求**每一行**历史带上它自己的 runId，
 //        所以不能再「先映射成 ChatMessage 列表、再统一转 VO」——那样行上的 runId 就丢了。

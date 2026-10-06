@@ -77,6 +77,23 @@
     </select>
 
     <!--
+      ⚠️ 降级专用查询（2026-10-06）：与 getAllByMemoryIdAndUserId **只差 superseded_by 那一列**。
+      用途：docs/sql/013 没执行时，PostgreSQL 会抛 `column "superseded_by" does not exist`，
+      于是「拉历史」和「读记忆」两条核心链路一起 500。缺列时改走这条，功能降级为
+      「版本切换不生效」，但聊天完全正常。
+      为什么必须单独写一条 SQL：列名不能是绑定参数（`#{col}` 会被当字面量），
+      MyBatis 也没法把可选列拼进同一个语句。
+      ⚠️ resultMap 里声明了 superseded_by，缺列时该属性为 null —— 正好是「未替代」的语义。
+    -->
+    <select id="getAllByMemoryIdAndUserIdWithoutSuperseded" resultMap="BaseResultMap">
+        select id,user_id,content,type,create_at,session_id,run_id
+        from chat_memory
+        where session_id=#{sessionId}::uuid
+          and user_id=#{userId}
+        order by create_at
+    </select>
+
+    <!--
       🔴 记忆加载专用（2026-10-06）：与 getRecentForChat 唯一的差别是**排除被替代的回答**。
       <p>
       背景：「重新生成」会让同一个问题产生多版回答。模型上下文只能要当前生效的那一版，

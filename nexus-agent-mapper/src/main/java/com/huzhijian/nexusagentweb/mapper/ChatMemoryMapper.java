@@ -28,6 +28,18 @@ public interface ChatMemoryMapper extends BaseMapper<ChatHistory> {
                                                 @Param("userId") Long userId);
 
     /**
+     * 降级专用：与 {@link #getAllByMemoryIdAndUserId} 只差 {@code superseded_by} 那一列（2026-10-06）。
+     * <p>
+     * 用途：{@code docs/sql/013} 没执行时，带那一列的查询会抛
+     * {@code column "superseded_by" does not exist}，导致「拉历史」与「读记忆」两条核心链路
+     * 一起 500。缺列时走这条，功能降级为「版本切换不生效」，聊天不受影响。
+     * <p>
+     * ⚠️ 必须单独写一条 SQL：列名不能是绑定参数，MyBatis 也没法把可选列拼进同一语句。
+     */
+    List<ChatHistory> getAllByMemoryIdAndUserIdWithoutSuperseded(@Param("sessionId") Object sessionId,
+                                                                  @Param("userId") Long userId);
+
+    /**
      * 对话链路读历史专用：只取<b>最近</b> {@code limit} 条（2026-10-06 新增）。
      * <p>
      * 与 {@link #getAllByMemoryIdAndUserId} 的区别只有"条数上限"，其余（越权过滤、
