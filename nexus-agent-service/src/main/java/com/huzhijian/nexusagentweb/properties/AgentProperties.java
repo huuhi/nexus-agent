@@ -42,6 +42,7 @@ public class AgentProperties {
     private Quota quota = new Quota();
     private History history = new History();
     private Upload upload = new Upload();
+    private Websearch websearch = new Websearch();
 
     @Data
     public static class Sse {
@@ -590,6 +591,35 @@ public class AgentProperties {
          * 前端可以把自己的阈值改成读后端下发的，避免两边各写一个数字后漂移。
          */
         private int maxCount = 10;
+    }
+
+    /**
+     * 联网搜索（2026-10-07 新增，工具名 {@code web_search}）。
+     * <p>
+     * 走 <b>Tavily</b>（{@code https://api.tavily.com/search}）—— LLM 生态事实标准，
+     * 免费档每月 1000 次，返回 title/url/content 摘要，对模型友好。
+     * <p>
+     * ⚠️ 按铁律 4（密钥不进代码/配置库）：API Key **只走环境变量 {@code TAVILY_API_KEY}**，
+     * 这里刻意**不提供** yml 配置项。没配 Key 时整个工具集**不注册**
+     * （模型看不到这个工具，而不是调用了才报错）。
+     */
+    @Data
+    public static class Websearch {
+        /**
+         * 总开关（默认开）。它只控制「配了 Key 就启用」——
+         * 没配 Key 时无论本值是什么，工具集都不会注册。
+         */
+        private boolean enabled = true;
+
+        /**
+         * 单次搜索返回的结果条数（1~10）。默认 5：太少覆盖面不够，太多稀释上下文。
+         */
+        private int maxResults = 5;
+
+        /**
+         * 搜索请求超时。搜索应该在几秒内返回 —— 对话链路上工具慢一秒用户就多等一秒。
+         */
+        private Duration timeout = Duration.ofSeconds(15);
     }
 
     @Data

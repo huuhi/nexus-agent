@@ -55,19 +55,23 @@ public class BoxTool implements AgentToolSet {
     private final ToolCallGuard toolCallGuard;
     private final RunUserRegistry runUserRegistry;
     private final QuotaService quotaService;
+    /** 2026-10-07：产物魔数校验要用（读 OSS 对象头部）。 */
+    private final com.huzhijian.nexusagentweb.utils.AliOssUtil aliOssUtil;
 
     public BoxTool(SandboxClient sandboxClient,
                    SandboxSessionRegistry sandboxSessions,
                    SafeExecuteToolHandler safeExecuteToolHandler,
                    ToolCallGuard toolCallGuard,
                    RunUserRegistry runUserRegistry,
-                   QuotaService quotaService) {
+                   QuotaService quotaService,
+                   com.huzhijian.nexusagentweb.utils.AliOssUtil aliOssUtil) {
         this.sandboxClient = sandboxClient;
         this.sandboxSessions = sandboxSessions;
         this.safeExecuteToolHandler = safeExecuteToolHandler;
         this.toolCallGuard = toolCallGuard;
         this.runUserRegistry = runUserRegistry;
         this.quotaService = quotaService;
+        this.aliOssUtil = aliOssUtil;
     }
 
     /**
@@ -153,8 +157,10 @@ public class BoxTool implements AgentToolSet {
         // 🔴 不能用 UserContextHolder.getUserId()：工具跑在流式回调线程上，ThreadLocal 恒为 null，
         //    结果就是 OSS 侧拿不到 user_id（对象不归属任何用户）。必须走 RunUserRegistry 反查。
         Long userId = runUserRegistry.findUserId(memoryId);
-        return handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file",
+        Map<String, Object> result = handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file",
                 () -> sandboxClient.downloadFile(path, resolved, userId)));
+//        2026-10-07：识别「线上沙盒跑旧代码」—— 旧代码按文本读二进制，产物必坏且无从察觉
+        return requireBinaryRead(result, "download_file");
     }
 
     /**
@@ -207,7 +213,123 @@ public class BoxTool implements AgentToolSet {
             // 失败（含沙盒失效）原样回传：SafeExecuteToolHandler/handleBoxResult 已经给了模型自纠提示
             return result;
         }
-        return artifactPayload(result, path, name);
+        result = requireBinaryRead(result, "publish_artifact");
+        if (isFailure(result)) {
+            return result;
+        }
+        Map<String, Object> payload = artifactPayload(result, path, name);
+        if (isFailure(payload)) {
+            return payload;
+        }
+//        🔴 2026-10-07：发布前做**魔数校验**（第二道防线）。
+//        即使沙盒代码带了 binary_read 标志，任何环节的字节损坏都不该流到用户手里 ——
+//        10-05 的教训是「用户拿到打不开的文件」比「明确报错」糟得多。
+        @SuppressWarnings("unchecked")
+        Map<String, Object> artifact = (Map<String, Object>) payload.get("artifact");
+        String url = artifact == null ? null : (String) artifact.get("url");
+//        用「最终发布名」判断扩展名（模型可以指定 name，可能与路径不同）
+        String publishedName = artifact == null || artifact.get("name") == null
+                ? fileNameOf(path) : String.valueOf(artifact.get("name"));
+        String mismatch = magicMismatch(url, publishedName);
+        if (mismatch != null) {
+            // 尽力删掉刚上传的坏对象，别让它留在 OSS 里等人下载
+            try {
+                aliOssUtil.deleteByUrl(url);
+            } catch (Exception e) {
+                log.warn("删除损坏产物失败（忽略）：url={}", url);
+            }
+            log.error("产物魔数校验失败，已拒绝发布：path={} 原因={}", path, mismatch);
+            return structuredFailure("SANDBOX_ARTIFACT_CORRUPTED",
+                    "产物文件头校验失败：" + mismatch + "（坏文件已删除，未发布）",
+                    "沙盒服务可能在按文本模式读文件（二进制被损坏）。"
+                            + "请确认沙盒侧 nexus_agent_box 已更新到带 binary_read 标志的版本后重试；"
+                            + "不要用同一文件反复重试。");
+        }
+        return payload;
+    }
+
+    /** 沙盒下载响应里标识「按二进制读」的字段（2026-10-07 起新版 nexus_agent_box 才有） */
+    private static final String BINARY_READ_FLAG = "binary_read";
+
+    /**
+     * 🔴 识别「线上沙盒跑旧代码」。
+     * <p>
+     * 10-05 修过「二进制被按文本读」的 P0（E2B SDK format 默认 "text"，非法字节
+     * 全部替换成 U+FFFD）。症状非常有辨识度：png/jpg/docx 打不开，svg/md/html/csv 却正常
+     * —— 因为文本文件没有非法字节。但修复在**沙盒侧**，线上沙盒跑旧代码时
+     * Java 侧无从察觉：响应形状一模一样（{url, size}），用户只会看到产物又坏了。
+     * <p>
+     * 新版沙盒在下载响应里带 {@code binary_read: true}；缺这个字段就判定沙盒代码过旧，
+     * 给出**明确**的结构化错误与部署指引 —— 明确失败永远优于把坏文件发布给用户。
+     */
+    private Map<String, Object> requireBinaryRead(Map<String, Object> result, String toolName) {
+        if (result == null || isFailure(result)) {
+            return result;
+        }
+        if (result.containsKey(BINARY_READ_FLAG)) {
+            return result;
+        }
+        log.error("工具 [{}] 收到的沙盒响应缺少 {} 标志 —— 线上沙盒跑的是旧版 nexus_agent_box，"
+                + "二进制文件会被按文本读并损坏", toolName, BINARY_READ_FLAG);
+        return structuredFailure("SANDBOX_CODE_OUTDATED",
+                "沙盒服务的代码版本过旧（下载响应缺少 binary_read 标志），二进制文件会被按文本读并损坏。",
+                "请在沙盒侧重新部署 nexus_agent_box（必要时重建 E2B 模板并设置 E2B_TEMPLATE_ID）后重试。"
+                        + "在沙盒更新之前，请不要重试本工具 —— 结果只会是打不开的文件。");
+    }
+
+    /** 常见二进制格式的文件头魔数（key = 小写扩展名）。文本类（md/html/csv/svg…）不在表内、不校验 */
+    private static final Map<String, byte[]> MAGIC_BY_EXT = Map.ofEntries(
+            Map.entry("png", new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}),          // ‰PNG
+            Map.entry("jpg", new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF}),  // JPEG SOI
+            Map.entry("jpeg", new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF}),
+            Map.entry("gif", new byte[]{0x47, 0x49, 0x46, 0x38}),                 // GIF8
+            Map.entry("webp", new byte[]{0x52, 0x49, 0x46, 0x46}),                // RIFF
+            Map.entry("bmp", new byte[]{0x42, 0x4D}),                             // BM
+            Map.entry("pdf", new byte[]{0x25, 0x50, 0x44, 0x46}),                 // %PDF
+            Map.entry("docx", new byte[]{0x50, 0x4B, 0x03, 0x04}),                // PK..
+            Map.entry("xlsx", new byte[]{0x50, 0x4B, 0x03, 0x04}),
+            Map.entry("pptx", new byte[]{0x50, 0x4B, 0x03, 0x04}),
+            Map.entry("zip", new byte[]{0x50, 0x4B, 0x03, 0x04}),
+            Map.entry("doc", new byte[]{(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0}), // OLE2
+            Map.entry("xls", new byte[]{(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0}),
+            Map.entry("ppt", new byte[]{(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0})
+    );
+
+    /**
+     * 校验 OSS 对象的文件头是否与扩展名的魔数一致。
+     *
+     * @return null = 通过（或无法校验，放行）；非 null = 不匹配的原因
+     */
+    private String magicMismatch(String url, String fileName) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        String ext = extensionOf(fileName);
+        if (ext == null) {
+            return null;
+        }
+        byte[] expected = MAGIC_BY_EXT.get(ext);
+        if (expected == null) {
+            return null; // 文本类/未知格式不校验
+        }
+        byte[] head = aliOssUtil.readObjectHead(url, Math.max(expected.length + 4, 8));
+        if (head == null) {
+            // 读不到（OSS 抖动等）不拦截：发布链路本身会因下载失败而暴露
+            log.warn("魔数校验读不到对象头，放行：url={}", url);
+            return null;
+        }
+        if (head.length < expected.length) {
+            return "文件只有 " + head.length + " 字节，比 " + ext + " 的文件头还短";
+        }
+        for (int i = 0; i < expected.length; i++) {
+            if (head[i] != expected[i]) {
+                return "文件头不是合法的 ." + ext + "（实际首字节 "
+                        + String.format("%02X %02X %02X", head[0],
+                                head.length > 1 ? head[1] : 0, head.length > 2 ? head[2] : 0)
+                        + "）—— 文件内容极可能已在沙盒侧被按文本损坏";
+            }
+        }
+        return null;
     }
 
     /**

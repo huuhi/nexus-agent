@@ -283,6 +283,34 @@ public class ChatContextFactory {
     }
 
     /**
+     * 本次对话是否走**用户自带的 API Key**（2026-10-07 新增）。
+     * <p>
+     * 用途：token 配额只该约束「用平台 Key（系统内置模型）」的场景 ——
+     * 用户用自己的 Key 时，费用由他自己的供应商账号承担，平台无权用平台额度拦他。
+     * 之前 {@code ChatServiceImpl} 无条件校验配额，于是自带 Key 的用户被
+     * 「平台 token 额度已用完」挡住，而费用根本不是平台出的（用户原话：
+     * 「为啥用自己的模型还报额度没了的错」）。
+     * <p>
+     * 判定复用与 {@link #resolveCapabilities} 同一套匹配逻辑（{@code matchModel}），
+     * 保证「谁被判为自带 Key」与「实际用谁的 Key」永远一致 ——
+     * 两处口径分叉过一次就会出现"判定放行、实际走平台 Key"的漏拦。
+     */
+    public boolean usesUserProvidedModel(ModelDTO modelDTO, Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        try {
+            return matchModel(modelDTO, userId) != null;
+        } catch (Exception e) {
+//            查库失败不能当成"用自带 Key"（那等于白放行平台成本）也不能当成"用平台 Key"（那是误拦）。
+//            保守选择：按平台 Key 处理，配额该拦就拦；同时留下日志便于发现查库异常。
+            log.warn("判断是否使用自带 Key 失败，按平台 Key 处理（配额照常校验）：userId={} 原因={}",
+                    userId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 一次模型匹配的完整结果：命中的 API 配置 + 命中的模型条目。
      *
      * @param apiConfig 命中的用户 API 配置（含 baseUrl / 加密后的 Key）

@@ -132,7 +132,15 @@ def download_file(box_id:str,file_path:str,user_id:str=None):
             # 产物大小（P2-10）：前端下载卡片要展示，Java 侧也据此落库。
             # 必须是「上传给 OSS 的那串字节」的长度，不是解码后的字符数 ——
             # 旧实现报的是 len(已损坏内容)，与用户下载到的文件大小也对不上。
-            'size':len(byte_array)
+            'size':len(byte_array),
+            # 🔴 代码版本标志（2026-10-07）：**只有修复后的代码才会带这个字段**。
+            # 背景：10-05 修过「二进制被按文本读」的 P0（format 默认 "text"，非法字节
+            # 全部替换成 U+FFFD，png/jpg/docx 全损坏、svg/md/html/csv 却正常 ——
+            # 因为文本文件没有非法字节）。但修复在沙盒侧，**线上沙盒跑旧代码时
+            # Java 侧无从察觉**（响应形状一模一样），用户只会看到产物又打不开了。
+            # 现在响应里若没有 binary_read 字段，Java 侧会直接判定沙盒代码过旧并
+            # 明确报错，而不是把坏文件发布给用户。
+            'binary_read': True
         }
     except Exception as e:
         return {

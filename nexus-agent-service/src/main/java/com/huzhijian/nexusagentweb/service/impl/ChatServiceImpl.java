@@ -19,6 +19,7 @@ import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
 import com.huzhijian.nexusagentweb.dto.ModelListResult;
 import com.huzhijian.nexusagentweb.exception.ParserFileException;
+import com.huzhijian.nexusagentweb.exception.QuotaExceededException;
 import com.huzhijian.nexusagentweb.exception.RunCancelledException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
@@ -101,8 +102,10 @@ public class ChatServiceImpl implements ChatService {
         if (userId==null){
             throw new UnauthorizedException("用户未登录!");
         }
-//        配额校验放在最前面（P2-8）：超支时直接拒绝，省掉一次完整的模型调用（也不必白建沙盒）
-        quotaService.assertWithinQuota(userId);
+//        ⚠️ 2026-10-05：配额校验原本放在这里（最前面）。2026-10-07 移到 writer.start() 之后，
+//        因为它是 **SSE 请求**：异常经 GlobalExceptionHandler 变成 JSON 返回，而前端用的是
+//        EventSource（只解析 SSE 帧）→ 前端拿不到 msg，只能显示「服务异常，请稍后重试」。
+//        放到后面就能用 error 事件把真实原因（"token 配额已用完…"）送达前端。
         long tQuota = System.nanoTime();
 //        超时由 nexus.agent.sse.timeout 配置（AgentProperties 默认 1800s），必须大于最慢一次模型调用的耗时
         SseEmitter sseEmitter = new SseEmitter(agentProperties.getSse().getTimeout().toMillis());
@@ -194,6 +197,23 @@ public class ChatServiceImpl implements ChatService {
 
 //        P2-5：首帧立刻把 runId / sessionId 交给前端（内部幂等，漏调也会被后续事件兜底补发）
         writer.start();
+
+        // 🔴 2026-10-07：token 配额**只约束用平台 Key 的场景**。
+//        用户配置了自己的 API Key 时，费用由他自己的供应商账号承担，平台不该拿平台额度拦他
+//        （用户原话：「为啥用自己的模型还报额度没了的错」）。
+//        判定复用 ChatContextFactory 里的同一套模型匹配，保证与"实际用谁的 Key"一致。
+        boolean usingOwnKey = chatContextFactory.usesUserProvidedModel(chatDTO.model(), userId);
+        try {
+            if (!usingOwnKey) {
+//                放在首帧之后：这样超限时能通过 SSE error 事件把原因告诉前端，而不是丢一个 JSON 过去
+                quotaService.assertWithinQuota(userId);
+            }
+        } catch (QuotaExceededException e) {
+            log.info("token 配额拦截（经 SSE error 事件下发，前端能读到原因）：runId={} session={} 自带Key={}",
+                    runId, sessionId, usingOwnKey);
+            writer.onError(e);
+            return sseEmitter;
+        }
 //        「是否已经收到过第一个内容 token」：只用于打一次 CHAT_TTFB（流式回调线程，用原子量）
         AtomicBoolean firstContent = new AtomicBoolean(false);
 

@@ -55,13 +55,15 @@ class BoxToolPublishQuotaTest {
     private RunUserRegistry runUserRegistry;
     @Mock
     private QuotaService quotaService;
+    @Mock
+    private com.huzhijian.nexusagentweb.utils.AliOssUtil aliOssUtil;
 
     private BoxTool boxTool;
 
     @BeforeEach
     void setUp() {
         boxTool = new BoxTool(sandboxClient, sandboxSessions, handler,
-                toolCallGuard, runUserRegistry, quotaService);
+                toolCallGuard, runUserRegistry, quotaService, aliOssUtil);
         // ⚠️ 必须显式 stub 成 null：Mockito 对 Map 返回值默认给**空 Map 而不是 null**，
         //    而 BoxTool 的判据是 `blocked != null` —— 不打桩就会被"空 Map"当成命中拦截直接返回。
         when(toolCallGuard.intercept(any(), anyString(), anyString())).thenReturn(null);
@@ -103,7 +105,9 @@ class BoxToolPublishQuotaTest {
     void publishesWithRealUserIdWhenWithinQuota() {
         when(runUserRegistry.findUserId("s1")).thenReturn(7L);
         when(sandboxClient.downloadFile("/home/report.docx", "box-1", 7L))
-                .thenReturn(Map.of("url", "https://oss/report.docx", "size", 2048));
+                .thenReturn(Map.of("url", "https://oss/report.docx", "size", 2048,
+                        // 2026-10-07：新版沙盒的版本标志，缺了会被判定为旧代码而拒绝
+                        "binary_read", true));
         // mapTool 的桩要真的去执行 supplier，否则测不到"有没有走到沙盒"
         when(handler.mapTool(anyString(), any())).thenAnswer(inv -> {
             @SuppressWarnings("unchecked")

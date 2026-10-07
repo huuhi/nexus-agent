@@ -333,4 +333,46 @@ public class AliOssUtil {
             ossClient.shutdown();
         }
     }
+
+    /**
+     * 读取 OSS 对象的**头部若干字节**（2026-10-07 新增，用于产物魔数校验）。
+     * <p>
+     * 用 Range 请求只取前 N 字节，不下载整个对象 —— 产物可能几 MB，
+     * 而校验只需要文件头（各格式的魔数都在前 16 字节内）。
+     *
+     * @param fileUrl {@code sys_file.file_url} 形式的访问 URL
+     * @param n       要读的字节数
+     * @return 实际读到的字节（对象比 n 小时就是对象全长）；读取失败返回 null（由调用方决定放行与否）
+     */
+    public byte[] readObjectHead(String fileUrl, int n) {
+        String objectName = objectNameOf(fileUrl);
+        if (objectName == null) {
+            log.warn("无法从 URL 解析出 OSS 对象名，跳过头部读取：url={}", fileUrl);
+            return null;
+        }
+        String endpoint = aliOssProperties.getEndpoint();
+        String bucketName = aliOssProperties.getBucketName();
+        String region = aliOssProperties.getRegion();
+
+        OSS ossClient = OSSClientBuilder.create()
+                .endpoint(endpoint)
+                .credentialsProvider(credentialsProvider())
+                .clientConfiguration(clientConfig())
+                .region(region)
+                .build();
+        try {
+            com.aliyun.oss.model.GetObjectRequest request =
+                    new com.aliyun.oss.model.GetObjectRequest(bucketName, objectName);
+//            Range 闭区间 [0, n-1]：只拉文件头，几 MB 的产物也只传几 KB
+            request.setRange(0, n - 1L);
+            try (OSSObject ossObject = ossClient.getObject(request)) {
+                return ossObject.getObjectContent().readAllBytes();
+            }
+        } catch (Exception e) {
+            log.warn("读取 OSS 对象头部失败（校验将跳过）：object={} 原因={}", objectName, e.getMessage());
+            return null;
+        } finally {
+            ossClient.shutdown();
+        }
+    }
 }
