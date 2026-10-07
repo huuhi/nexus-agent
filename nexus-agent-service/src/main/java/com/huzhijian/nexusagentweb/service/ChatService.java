@@ -1,6 +1,7 @@
 package com.huzhijian.nexusagentweb.service;
 
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
+import com.huzhijian.nexusagentweb.dto.ModelListResult;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
@@ -35,4 +36,12 @@ public interface ChatService {
      * @return 模型名列表；**可能为空列表**（该配置下没存过任何模型且厂商不支持列表接口）
      */
     List<String> getModelList(String configId);
+
+    /**
+     * 与 {@link #getModelList(String)} 同一条链路，额外带出「是不是厂商真实返回」。
+     * <p>
+     * 2026-10-07：以前降级完全静默（401 只打一行 WARN 就返回库存的旧模型名），
+     * 用户无从判断看到的列表是不是真的。需要这个信息的调用方请用本方法。
+     */
+    ModelListResult getModelListWithMeta(String configId);
 }

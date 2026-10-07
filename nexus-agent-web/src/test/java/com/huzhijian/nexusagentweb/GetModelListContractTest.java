@@ -4,6 +4,7 @@ import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.domain.Model;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
+import com.huzhijian.nexusagentweb.dto.ModelListResult;
 import com.huzhijian.nexusagentweb.em.ModelType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
@@ -34,6 +35,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -235,6 +237,34 @@ class GetModelListContractTest {
 
         List<String> result = service.getModelList(CONFIG_ID);
         assertTrue(result.contains("Pro"), () -> "实际：" + result);
+    }
+
+    @Test
+    @DisplayName("🔴 降级必须带信号（live=false + 原因）：否则前端无从判断列表是不是真的")
+    void degradedResultIsMarked() {
+        loginAs(1L);
+        givenConfig("https://api.deepseek.com");
+
+        ModelListResult meta = service.getModelListWithMeta(CONFIG_ID);
+        assertFalse(meta.live(),
+                "降级结果必须标记 live=false —— 否则前端看到的仍是「看起来正常」的旧列表，"
+                        + "用户只能猜「后端是不是根本没请求供应商」（2026-10-07 线上疑问）");
+        assertNotNull(meta.reason(), "降级原因不能为 null，运维要靠它定性");
+        assertTrue(!meta.reason().isBlank(), "降级原因不能是空串");
+//        降级值本身仍要可用（契约不变：data 是模型名数组）
+        assertTrue(meta.names().contains("Pro"), () -> "实际：" + meta.names());
+    }
+
+    @Test
+    @DisplayName("baseUrl 为空时同样要标记降级（不是静默返回库存列表）")
+    void blankBaseUrlIsMarkedDegraded() {
+        loginAs(1L);
+        givenConfig("");
+
+        ModelListResult meta = service.getModelListWithMeta(CONFIG_ID);
+        assertFalse(meta.live());
+        assertTrue(meta.reason() != null && meta.reason().contains("baseUrl"),
+                () -> "原因应说明是 baseUrl 缺失，实际：" + meta.reason());
     }
 
     @Test

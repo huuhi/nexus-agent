@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.controller;
 import com.huzhijian.nexusagentweb.context.RunCancellationRegistry;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ModelListDTO;
+import com.huzhijian.nexusagentweb.dto.ModelListResult;
 import com.huzhijian.nexusagentweb.dto.StopChatDTO;
 import com.huzhijian.nexusagentweb.model.SystemModelRegistry;
 import com.huzhijian.nexusagentweb.service.ChatService;
@@ -133,8 +134,16 @@ public class ChatController {
                     + "厂商不支持 /v1/models 时降级返回该配置里已保存的模型名，可能返回空列表，不会报错。")
     @PostMapping("/model")
     public Result getModelList(@RequestBody @Valid ModelListDTO modelListDTO){
-        List<String> models = chatService.getModelList(modelListDTO.configId());
-        return Result.ok(models);
+//        2026-10-07：以前降级是完全静默的 —— 401 只打一行 WARN 就返回配置里保存的旧模型名，
+//        用户看到的列表"看起来正常"，于是怀疑「后端是不是根本没请求供应商」。
+//        现在把降级写进 msg：data 仍是 List<String>（契约不变），前端不读 msg 也不受影响。
+        ModelListResult result = chatService.getModelListWithMeta(modelListDTO.configId());
+        if (result.live()) {
+            return Result.ok(result.names());
+        }
+        String why = result.reason() == null ? "未知原因" : result.reason();
+        return Result.ok("厂商 /v1/models 不可用，当前返回的是配置中已保存的模型名（可能不是厂商最新列表）。原因："
+                + why, result.names());
     }
 
     /**

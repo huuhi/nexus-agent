@@ -17,6 +17,7 @@ import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.domain.UserConfig;
 import com.huzhijian.nexusagentweb.dto.ChatDTO;
 import com.huzhijian.nexusagentweb.dto.ChatUserMessage;
+import com.huzhijian.nexusagentweb.dto.ModelListResult;
 import com.huzhijian.nexusagentweb.exception.ParserFileException;
 import com.huzhijian.nexusagentweb.exception.RunCancelledException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
@@ -435,6 +436,20 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public List<String> getModelList(String configId) {
+        return getModelListWithMeta(configId).names();
+    }
+
+    /**
+     * 与 {@link #getModelList(String)} 同一条链路，但把「这份列表是不是厂商真实返回的」
+     * 这个元信息一并带出来（2026-10-07）。
+     * <p>
+     * <b>为什么需要它</b>：以前降级是<b>完全静默</b>的 —— 401 只是打一行 WARN，
+     * 然后原样返回配置里保存的旧模型名。前端与用户看到的都是一份"看起来正常"的下拉框，
+     * 于是就有了「这个接口是不是根本没向供应商请求？」的疑问。
+     * 现在 {@code live=false} 会把降级写进 {@code Result.msg}，前端能提示、运维能看见。
+     */
+    @Override
+    public ModelListResult getModelListWithMeta(String configId) {
         Long userId = UserContextHolder.getUserId();
         if (userId == null) {
             throw new UnauthorizedException("未登录！");
@@ -475,7 +490,7 @@ public class ChatServiceImpl implements ChatService {
         String baseUrl = target.getBaseUrl();
         if (baseUrl == null || baseUrl.isBlank()) {
             log.warn("API 配置 {} 的 baseUrl 为空，直接降级返回已存模型", configId);
-            return fallback;
+            return new ModelListResult(fallback, false, "该 API 配置没有填 baseUrl");
         }
         // 出网前复核：库里的数据可能是加 UrlGuard 之前写入的，仍可能指向内网
         try {
@@ -494,15 +509,56 @@ public class ChatServiceImpl implements ChatService {
                     .httpClientBuilder(new SpringRestClientBuilderFactory().create())
                     .build().listModels();
             List<String> names = listModels.stream().map(ModelDescription::name).toList();
-            return names.isEmpty() ? fallback : names;
+            return names.isEmpty()
+                    ? new ModelListResult(fallback, false, "厂商返回的模型列表为空")
+                    : new ModelListResult(names, true, null);
         } catch (ValidationException e) {
             throw e; // 上面自己抛的业务异常，原样透传，不要被下面的 catch 吞成降级
         } catch (Exception e) {
-            // 厂商不支持 /v1/models、Key 不对、网络不通 —— 统统降级，不给前端 500
-            log.warn("查询模型列表失败，降级返回已保存的模型名。configId={}，原因：{}", configId, e.getMessage());
+            String reason = shorten(e.getMessage());
+//            2026-10-07：401 必须单独定性。以前它和「厂商不支持 /v1/models」一样被吞成 WARN，
+//            结果用户在页面上只看到一份**库存的旧模型列表**，完全不知道请求其实失败了
+//            （表现为「这个接口是不是没向供应商请求？」）。
+            if (looksLikeAuthFailure(reason)) {
+                log.error("""
+
+                        ⚠️ 查询模型列表被厂商拒绝（401/403）—— 返回的是**配置里保存的旧模型名**，不是厂商的真实列表。
+                        configId={} 原因={}
+                        排查顺序：① 该 Key 本身是否有效；② 主密钥（nexus.agent.api-key-secret / API_KEY_SECRET）
+                        是否漂移 —— 漂移时解密会产出乱码并被当成 Key 发出去（见 EncryptorFactory#decryptChecked）；
+                        ③ 检索启动日志里的「主密钥指纹」，与保存该配置时那次启动比对是否一致。
+                        """, configId, reason);
+            } else {
+                log.warn("查询模型列表失败，降级返回已保存的模型名。configId={}，原因：{}", configId, reason);
+            }
             log.debug("查询模型列表失败详情", e);
-            return fallback;
+            return new ModelListResult(fallback, false, reason);
         }
+    }
+
+    /**
+     * 判定是否为「凭据被拒」（401/403），用于把真正的故障与「厂商不支持 /v1/models」区分开。
+     * <p>
+     * DeepSeek、小米等压根不实现 {@code /v1/models}，那种失败是常态、不值得报警；
+     * 而 401 意味着**用户填的 Key 或我们的解密有问题**，必须让人看见。
+     */
+    private static boolean looksLikeAuthFailure(String reason) {
+        if (reason == null) {
+            return false;
+        }
+        String lower = reason.toLowerCase();
+        return lower.contains("401") || lower.contains("403")
+                || lower.contains("unauthorized") || lower.contains("invalid api key")
+                || lower.contains("invalid_api_key") || lower.contains("authentication");
+    }
+
+    /** 异常信息截断，避免长堆栈/长响应体刷屏 */
+    private static String shorten(String message) {
+        if (message == null) {
+            return "未知原因";
+        }
+        String oneLine = message.replaceAll("\\s+", " ").strip();
+        return oneLine.length() > 200 ? oneLine.substring(0, 200) + "..." : oneLine;
     }
 
     /**
