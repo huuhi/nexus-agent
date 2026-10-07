@@ -13,6 +13,12 @@ WORKDIR /app
 #   docker compose build --build-arg UV_INDEX_URL=https://pypi.org/simple
 ARG UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV UV_DEFAULT_INDEX=${UV_INDEX_URL}
+# ⚠️ 实测国内服务器下载速度约 100KB/s（cryptography 4.5MB + e2b SDK 十几个包）。
+# uv 默认的 HTTP 超时较短，慢速连接会被判失败后重试 —— 重试一次就白等一遍，
+# 表现为「卡住不动」。放宽到 300s，让它老实等下载完。
+# 同时提高并发数：带宽小的时候，并发比单线程更能吃满带宽。
+ENV UV_HTTP_TIMEOUT=300 \
+    UV_CONCURRENT_DOWNLOADS=16
 
 # 安装 uv（快速包管理器）
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -31,6 +37,14 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 
 # 安装依赖（用 uv sync 会同步 lock 文件的确切版本）
+# ⚠️ 这一步在国内服务器上是最慢的一环：e2b SDK 依赖树里有 cryptography(4.5MB)、
+#    pydantic-core(2MB) 等十几个包，100KB/s 的带宽下要几分钟。
+#    ⚠️ 看到 "Downloading xxx" 是在**下载 wheel**，不是在编译源码 ——
+#    编译 cryptography 会显示 Building 且需要 Rust 工具链，那是另一种卡法。
+#    如果超过 10 分钟仍未结束，多半是镜像站同步不全（拿不到预编译 wheel
+#    就退回源码构建），换官方源重建：
+#      docker compose -f docker-compose.yml build \
+#        --build-arg UV_INDEX_URL=https://pypi.org/simple
 RUN uv sync --frozen --no-dev --no-install-project
 
 # 复制项目代码
