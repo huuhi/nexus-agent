@@ -36,6 +36,11 @@ RUN curl -fsSL https://dot.net/v1/dotnet-install.sh \
  && dotnet --version
 
 # ③ 中文字体（matplotlib / PDF 渲染需要）
+# ⚠️ 2026-10-07：国内服务器构建时把 apt 源换成国内镜像，否则拉索引极慢
+#    （实测 deb.debian.org 拉 9.6MB 索引超过 11 分钟未完成）。
+#    换源方法：构建前临时执行
+#      sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources
+#    或在构建时传入代理。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*

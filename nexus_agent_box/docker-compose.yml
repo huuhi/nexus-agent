@@ -49,7 +49,9 @@ services:
     healthcheck:
       # 探 /docs：FastAPI 起来后这个页面一定在，且**不依赖 E2B Key 是否有效**。
       # 若去探业务接口，Key 配错时容器会被判成不健康而反复重启，掩盖真正的原因。
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/docs"]
+      # 2026-10-07：原为 curl —— 但 slim 镜像默认没有 curl，为它单独装一次要拉几 MB 的
+      # apt 索引（国内服务器实测 688s 都没拉完，构建直接卡死）。改用镜像自带的 python。
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs', timeout=5)"]
       interval: 30s
       timeout: 5s
       retries: 5

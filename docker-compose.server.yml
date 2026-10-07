@@ -39,7 +39,13 @@ services:
     expose:
       - "8000"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/docs"]
+      # 2026-10-07：原为 ["CMD","curl","-fsS","http://localhost:8000/docs"]，
+      # 但 slim 镜像默认没有 curl，为它单独装一次要拉几 MB 的 apt 索引 ——
+      # 国内服务器实测 688s 都没拉完（实测卡在 deb.debian.org），构建直接卡死。
+      # 改用镜像自带的 python 做同样的探活，Dockerfile 那层 apt-get 已删除。
+      # ⚠️ 仍探 /docs 而非业务接口：E2B Key 配错时业务接口拿不到 200，
+      #    容器会被判成不健康反复重启，反而把真正的原因盖住。
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs', timeout=5)"]
       interval: 30s
       timeout: 5s
       retries: 5
