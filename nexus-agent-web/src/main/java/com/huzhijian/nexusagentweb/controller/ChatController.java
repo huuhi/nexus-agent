@@ -147,26 +147,6 @@ public class ChatController {
     }
 
     /**
-     * 🔴 旧契约的兼容入口：{@code GET /api/chat/model?configId=xxx}（2026-10-07 补）。
-     * <p>
-     * <b>为什么要有它</b>：2026-10-05 把这个接口从 GET 改成了 POST（不再回传密钥），
-     * 但**没有保留 GET**。前端若还没改过来，GET 会直接 405 Method Not Allowed ——
-     * 而 405 在很多前端框架里被兜底成「服务异常，请稍后重试」，压根看不出是方法不对。
-     * 用户报「模型不对 / 是不是没请求」时最容易漏掉这一种。
-     * <p>
-     * <b>为什么仍推荐 POST</b>：{@code configId} 属于用户配置标识，放 URL 里会进浏览器历史与
-     * access log。所以这个入口只是兜底 —— 每次调用都会打 WARN，日志里能直接看到是谁还没迁移。
-     * 未来确认没有调用方后删掉即可。
-     */
-    @Operation(summary = "查询模型列表（旧 GET 契约，兼容用；推荐改用 POST）", hidden = true)
-    @GetMapping("/model")
-    public Result getModelListLegacy(@RequestParam("configId") String configId) {
-        log.warn("收到旧契约的 GET /api/chat/model?configId={} —— 请前端改用 POST + 请求体（见 docs/前端增量变更.md）",
-                configId);
-        return getModelList(new ModelListDTO(configId));
-    }
-
-    /**
      * 列出**系统内置模型**（没配自带 Key 的用户可选的那批）。
      * <p>
      * 2026-10-03：系统模型从"yml 里唯一一个"改成可配列表（多供应商），
