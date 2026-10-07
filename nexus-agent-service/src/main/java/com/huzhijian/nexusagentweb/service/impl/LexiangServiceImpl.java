@@ -176,7 +176,7 @@ public class LexiangServiceImpl extends ServiceImpl<LexiangCredentialMapper, Lex
 
     private String resolveToken(LexiangCredential credential) {
         String salt = requireSalt(credential.getUserId());
-        String plainSecret = EncryptorFactory.text(salt).decrypt(credential.getAppSecret());
+        String plainSecret = EncryptorFactory.decryptChecked(salt, credential.getAppSecret(), "乐享 AppSecret");
         return tokenProvider.getToken(credential.getAppKey(), plainSecret);
     }
 

@@ -128,7 +128,7 @@ public class McpInformationServiceImpl extends ServiceImpl<McpInformationMapper,
         if (salt == null || salt.isBlank() || mcpToken == null || mcpToken.isBlank()) {
             throw new ValidationException("尚未配置 MCP Token，请先在「用户设置」里保存 MCP Token");
         }
-        String rawToken = EncryptorFactory.text(salt).decrypt(mcpToken);
+        String rawToken = EncryptorFactory.decryptChecked(salt, mcpToken, "MCP Token");
 
 
 //        这边获取mcp列表

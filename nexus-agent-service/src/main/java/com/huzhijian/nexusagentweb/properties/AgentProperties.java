@@ -41,6 +41,7 @@ public class AgentProperties {
     private Model model = new Model();
     private Quota quota = new Quota();
     private History history = new History();
+    private Upload upload = new Upload();
 
     @Data
     public static class Sse {
@@ -318,6 +319,36 @@ public class AgentProperties {
          * 但会误伤「失败后按相同参数重试一次」的合理场景。
          */
         private int duplicateThreshold = 2;
+
+        /**
+         * 对**前端**隐藏的工具名（2026-10-07 新增）。
+         * <p>
+         * 列出的工具照常执行、照常进模型上下文，但：
+         * <ul>
+         *   <li>不产生 {@code tool_execution} / {@code tool_execution_result} 事件（SSE 静默）；</li>
+         *   <li>不出现在 {@code GET /api/history/{sessionId}} 的返回里（刷新页面也不会冒出来）。</li>
+         * </ul>
+         * 目的是把「内部基建动作」（建沙盒、读写记忆、记日志）从对话流里拿掉 ——
+         * 用户看不懂，也不该看到，更不该白占一屏。
+         * <p>
+         * 🔴 <b>只过滤展示层，绝不动存储层</b>：工具调用与结果必须留在 {@code chat_memory} 里，
+         * 因为它们是模型上下文的一部分 —— OpenAI 兼容协议要求 {@code tool_calls}
+         * 必须跟对应的 {@code tool_result} 配对，从记忆里删掉会让下一轮请求直接 400。
+         * 过滤只发生在 {@code SseResponseConverter} 与 {@code ChatMemoryServiceImpl#toMessageVO} 两处。
+         * <p>
+         * 匹配时忽略大小写与首尾空格。工具名取自各 {@code @Tool(name = "...")}。
+         * 置空（{@code hidden-tools: []}）即全部可见。
+         * <p>
+         * ⚠️ 按铁律：本列表的<b>唯一事实源是这里的默认值</b>，任何 profile yml 都不要再声明
+         * （写了会整份覆盖这里，而代码看起来毫无变化）。护栏见 {@code ToolVisibilityDriftTest}。
+         */
+        private List<String> hiddenTools = new ArrayList<>(List.of(
+                "create_box",            // 建/复用沙盒：纯内部准备动作
+                "delete_box",            // 销毁沙盒：用户不关心按量计费的回收
+                "search_user_memory",    // 检索用户画像：读了什么记忆不该摊开给用户看
+                "save_user_data",        // 存长期记忆：同上，显示出来还会让人不适
+                "record_log"             // 记录反馈：纯后台动作
+        ));
     }
 
     @Data
@@ -538,6 +569,27 @@ public class AgentProperties {
          * 周期按**服务端默认时区**计算。
          */
         private QuotaPeriod period = QuotaPeriod.NONE;
+    }
+
+    /**
+     * 上传相关的限制（2026-10-07 与 fronted 对齐后新增）。
+     * <p>
+     * ⚠️ 按铁律：这几个键的<b>唯一事实源是本类的默认值</b>，
+     * 任何 profile yml 都不要再声明（写了会盖掉这里，且代码看起来毫无变化）。
+     */
+    @Data
+    public static class Upload {
+        /**
+         * 单次请求最多允许多少个文件（`POST /api/file`）。
+         * <p>
+         * 2026-10-07 定为 <b>10</b>：由 fronted 拍板（「要，单次最多 10 个，超限前端直接拦下并提示」）。
+         * <p>
+         * ⚠️ <b>前端会先拦，但后端必须自己也拦</b> —— 前端的拦截只是体验优化，
+         * 不是安全边界：直接调接口、换客户端、脚本批量都绕得过去。
+         * 这里是第二道防线，同时也是「契约的机器可读版本」：
+         * 前端可以把自己的阈值改成读后端下发的，避免两边各写一个数字后漂移。
+         */
+        private int maxCount = 10;
     }
 
     @Data

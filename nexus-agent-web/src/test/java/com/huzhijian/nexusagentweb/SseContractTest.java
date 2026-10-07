@@ -53,7 +53,9 @@ class SseContractTest {
 
         Recorder(boolean isNewSession, ChatHistoryListService history) {
             super(new SseEmitter(), isNewSession, history, "sess-1", 1L, "你好", RUN_ID,
-                    NEVER_FLUSH_CHARS, NEVER_FLUSH_MILLIS);
+                    NEVER_FLUSH_CHARS, NEVER_FLUSH_MILLIS,
+                    // 本测试不涉及工具可见性：传 null = 不隐藏任何工具（与改动前行为一致）
+                    null);
         }
 
         @Override

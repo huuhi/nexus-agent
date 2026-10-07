@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.util.Date;
 
 import com.huzhijian.nexusagentweb.em.BizType;
+import com.huzhijian.nexusagentweb.em.UploadFailCode;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.typehandler.PgEnumTypeHandler;
 import lombok.Builder;
@@ -48,9 +49,22 @@ public class SysFile {
     private Long fileSize;
 
     /**
-     * 
+     *
      */
     private String failReason;
+
+    /**
+     * 失败原因的**机器可读**码（2026-10-07）。
+     * <p>
+     * ⚠️ <b>不入库</b>（{@code exist = false}）：它只用于把失败类型传回前端，
+     * 落库没有意义 —— 列表页渲染的是 {@code failReason}（给人看的中文），
+     * 而前端判断分支用的是这个码，两者都在当次响应里就够。
+     * 加这一列要改 schema（铁律 6），为一个纯传输字段付迁移成本不划算。
+     * <p>
+     * 成功时为 {@code null}。
+     */
+    @TableField(exist = false)
+    private UploadFailCode failCode;
 
     /**
      * 

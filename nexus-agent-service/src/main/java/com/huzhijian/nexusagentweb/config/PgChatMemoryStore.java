@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.huzhijian.nexusagentweb.context.ContextUsage;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.domain.ChatHistory;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
@@ -15,6 +16,7 @@ import dev.langchain4j.data.message.ChatMessageDeserializer;
 import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.data.message.ChatMessageType;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -65,9 +67,16 @@ public class PgChatMemoryStore {
     /**
      * 为一次对话生成记忆存储实例，把跨线程需要的数据（用户 ID、附件元数据）绑定进去。
      * 在请求线程上调用一次，随后交给 LangChain4j 使用。
+     *
+     * @param usage     本次运行的「上下文用量」快照，加载完历史后回填（2026-10-06）。
+     *                  <b>可为 null</b>（如单测直接构造时）—— 那时只是不统计用量，不影响对话。
+     * @param estimator 用于估算历史 token 数。<b>刻意由调用方传入</b>：BPE 词表首次加载
+     *                  有冷启动成本，与 {@code TokenWindowChatMemory} 共用同一个实例可以只付一次
+     *                  （2026-10-06：线上 preflight 里 JIT + 词表加载曾占掉整秒级耗时）。
+     *                  可为 null，含义同 {@code usage}。
      */
-    public ChatMemoryStore forRun(RunContext runContext) {
-        return new RunScopedChatMemoryStore(runContext);
+    public ChatMemoryStore forRun(RunContext runContext, ContextUsage usage, TokenCountEstimator estimator) {
+        return new RunScopedChatMemoryStore(runContext, usage, estimator);
     }
 
     /**
@@ -77,6 +86,8 @@ public class PgChatMemoryStore {
     private class RunScopedChatMemoryStore implements ChatMemoryStore {
 
         private final RunContext runContext;
+        private final ContextUsage usage;
+        private final TokenCountEstimator estimator;
 
         /**
          * 🔴 请求级缓存（2026-10-06）：本次运行内已从库里读到的消息。
@@ -94,8 +105,10 @@ public class PgChatMemoryStore {
         private List<ChatMessage> cachedMessages;
         private boolean messagesStale;
 
-        RunScopedChatMemoryStore(RunContext runContext) {
+        RunScopedChatMemoryStore(RunContext runContext, ContextUsage usage, TokenCountEstimator estimator) {
             this.runContext = runContext;
+            this.usage = usage;
+            this.estimator = estimator;
         }
 
         @Override
@@ -107,7 +120,32 @@ public class PgChatMemoryStore {
             }
             cachedMessages = PgChatMemoryStore.this.getMessages(runContext, memoryId);
             messagesStale = false;
+//            2026-10-06：回填「本次会话积累了多少上下文」，供前端判断要不要建议开新会话。
+//            ⚠️ 放在这里而不是外层 getMessages：缓存命中时同样要记，否则用量会是 0。
+            recordUsage(cachedMessages);
             return cachedMessages;
+        }
+
+        /**
+         * 把本次加载的历史规模写进用量快照。
+         * <p>
+         * 估算失败（比如遇到估算器不认识的内容类型）时记 {@code -1} 而不是 0：
+         * 0 会被前端读成「一点没用」，而实际是「没算出来」，两者该走不同分支。
+         */
+        private void recordUsage(List<ChatMessage> messages) {
+            if (usage == null) {
+                return;
+            }
+            int tokens = -1;
+            if (estimator != null) {
+                try {
+                    tokens = estimator.estimateTokenCountInMessages(messages);
+                } catch (Exception e) {
+                    log.warn("估算历史 token 失败（不影响对话，只是本次不上报用量）：runId={} 原因={}",
+                            runContext.runId(), e.getMessage());
+                }
+            }
+            usage.recordLoaded(messages.size(), tokens);
         }
 
         @Override

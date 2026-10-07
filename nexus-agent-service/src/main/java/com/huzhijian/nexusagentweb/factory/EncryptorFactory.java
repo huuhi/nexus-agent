@@ -57,6 +57,94 @@ public class EncryptorFactory {
         return Encryptors.text(secretKey(), salt);
     }
 
+    /**
+     * 🔴 解密用户凭据并**校验结果**（2026-10-07 新增）。
+     * <p>
+     * <b>为什么不能直接用 {@link #text(String)} 的 decrypt</b>：Spring 的
+     * {@code Encryptors.text()} 用 AES-CBC + 随机 IV，<b>解密不校验完整性</b> ——
+     * 主密钥不对时它<b>不会抛异常</b>，而是解出一串乱码。这串乱码随后被当成 API Key
+     * 原样发给厂商，厂商只回一句 {@code 401 Invalid API Key}。
+     * 于是「保存时用的主密钥」与「运行时用的主密钥」不一致这个真实原因被完全掩盖，
+     * 表现为「我没改 Key 啊」「我换了个新 Key 还是 401」（2026-10-07 线上就是这个症状）。
+     * <p>
+     * 所以这里在解密后做一次**形状校验**：真实凭据必然是可打印 ASCII
+     * （各家 API Key 都是字母数字 + 少量符号），解出乱码时几乎必然含非 ASCII 或控制字符。
+     * 不通过就抛<b>带明确原因</b>的异常，绝不让乱码流到出网请求里。
+     *
+     * @param salt   用户盐值
+     * @param cipher 密文
+     * @param what   凭据用途（"API Key" / "MCP Token" / "乐享 AppSecret"），只用于报错文案
+     * @return 解密后的明文（已校验）
+     * @throws IllegalStateException 解密失败，或解出来的东西明显不是有效凭据
+     */
+    public static String decryptChecked(String salt, String cipher, String what) {
+        if (cipher == null || cipher.isBlank()) {
+            throw new IllegalStateException(what + " 为空：该配置没有保存过凭据。");
+        }
+        String plain;
+        try {
+            plain = text(salt).decrypt(cipher);
+        } catch (Exception e) {
+//            密文结构不对（长度/填充错误）—— 多半就是主密钥不匹配或密文被改过
+            throw new IllegalStateException(what + " 解密失败（" + e.getClass().getSimpleName() + "）："
+                    + "主密钥（nexus.agent.api-key-secret / API_KEY_SECRET）很可能与加密时不是同一把，"
+                    + "或密文已损坏。请核对主密钥后重新保存一次配置。", e);
+        }
+        if (plain == null || plain.isBlank()) {
+            throw new IllegalStateException(what + " 解密结果为空：主密钥或盐值可能与加密时不一致。");
+        }
+        String bad = describeWhyNotCredential(plain);
+        if (bad != null) {
+            throw new IllegalStateException(what + " 解密结果异常（" + bad + "）："
+                    + "几乎可以确定是主密钥与加密时不是同一把（解密不校验完整性，会静默产出乱码）。"
+                    + "请核对 nexus.agent.api-key-secret / API_KEY_SECRET 后重新保存配置。");
+        }
+        return plain;
+    }
+
+    /**
+     * 判断明文是否"明显不是凭据"。
+     *
+     * @return null = 看着正常；非 null = 异常原因描述
+     */
+    private static String describeWhyNotCredential(String plain) {
+//        替换字符 U+FFFD 是「字节流被按错误编码解码」的典型产物，AES 解错时高发
+        if (plain.indexOf('\uFFFD') >= 0) {
+            return "含替换字符 U+FFFD";
+        }
+        int nonPrintable = 0;
+        for (int i = 0; i < plain.length(); i++) {
+            char c = plain.charAt(i);
+            if (c < 0x20 || c > 0x7E) {
+                nonPrintable++;
+            }
+        }
+        if (nonPrintable > 0) {
+            return "含 " + nonPrintable + " 个非可打印字符（总长 " + plain.length() + "）";
+        }
+        return null;
+    }
+
+    /**
+     * 主密钥的短指纹（SHA-256 前 12 位十六进制）。
+     * <p>
+     * 只用于**比对两次启动是不是同一把密钥**，不可逆推出密钥本身，可以安全打进日志。
+     */
+    private static String fingerprint(String secret) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 6 && i < digest.length; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+//            SHA-256 是 JDK 强制实现的算法，到不了这里
+            return "unknown";
+        }
+    }
+
     private static String secretKey() {
         String key = secretKey;
         if (key == null) {
@@ -65,6 +153,14 @@ public class EncryptorFactory {
                 if (key == null) {
                     key = resolveSecretKey();
                     secretKey = key;
+//                    2026-10-07：打主密钥的**指纹**（不是密钥本身）。
+//                    用途：判断「保存凭据时」与「使用凭据时」是不是同一把主密钥 ——
+//                    不一致时解密会静默产出乱码、厂商只回 401，没有指纹根本无从比对。
+//                    运维只需 grep "主密钥指纹" 看两次启动的值是否相同。
+                    log.info("主密钥指纹={}（长度 {}，来源：{}）",
+                            fingerprint(key), key.length(),
+                            configuredSecret != null && !configuredSecret.isBlank()
+                                    ? "nexus.agent.api-key-secret" : "环境变量 API_KEY_SECRET");
                 }
             }
         }

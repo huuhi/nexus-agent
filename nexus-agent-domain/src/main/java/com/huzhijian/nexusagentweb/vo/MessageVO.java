@@ -105,6 +105,26 @@ public class MessageVO {
         private String id;
         private String toolName;
         private Object arguments;
+        /**
+         * 同批并行调用里的**序号**（2026-10-07 新增，来自模型流式帧的 {@code index}）。
+         * <p>
+         * 🔴 <b>为什么前端不该只拿 {@link #id} 做列表 key</b>：
+         * {@code id} 是模型/供应商给的，<b>可能为 null、也可能重复</b> ——
+         * 尤其流式帧里除首帧外 id 常常不带，而历史行里某些供应商根本不给 id。
+         * frontend 就踩过：工具卡列表用 {@code call.id} 做 {@code v-for} key，
+         * id 缺失/重复导致 key 撞车，Vue patch 拿到 null el 抛
+         * {@code Cannot set properties of null (setting '__vnode')}，整个应用渲染停摆。
+         * <p>
+         * {@code index} 在同一批调用里<b>稳定且唯一</b>（首帧就有，不会为 null），
+         * 要做 key 请优先用它（或 {@code 消息id + index}）；{@code id} 只用于
+         * 与 {@code tool_execution_result} 配对 —— 而配对也可能配不上（见契约文档）。
+         * <p>
+         * ⚠️ 仅 SSE 的 {@code tool_execution} 事件带它；<b>历史接口没有</b> ——
+         * 历史来自 {@code chat_memory} 的序列化消息，langchain4j 的
+         * {@code ToolExecutionRequest} 不含 index（历史侧改为后端兜底合成 id，见
+         * {@code ChatMemoryServiceImpl#ensureToolIds}）。
+         */
+        private Integer index;
     }
     @Data
     @Builder

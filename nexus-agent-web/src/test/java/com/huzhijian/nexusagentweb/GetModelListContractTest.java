@@ -23,6 +23,7 @@ import com.huzhijian.nexusagentweb.observability.RunMetricsReporter;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.impl.ChatServiceImpl;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
+import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -97,7 +98,9 @@ class GetModelListContractTest {
                 mock(RunCancellationRegistry.class),
                 mock(ChatMemoryService.class),
                 userConfigService,
-                new UrlGuard(false));
+                new UrlGuard(false),
+                // 2026-10-07：工具可见性判定，本用例不碰（mock 后 isHidden 一律 false）
+                mock(ToolVisibility.class));
     }
 
     @AfterEach

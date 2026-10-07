@@ -78,7 +78,7 @@ class ProdLatencyGuardTest {
     }
 
     @Test
-    @DisplayName("记忆窗口默认值不得高于 32k —— 它就是模型每轮的 prefill 量")
+    @DisplayName("记忆窗口默认值：既要有上限，也不能小到装不下一个正常会话")
     void codeDefaultMemoryWindowStaysSmall() {
         int window = new AgentProperties().getMemory().getMaxTokens();
         assertTrue(window > 0 && window <= MAX_MEMORY_WINDOW,
@@ -115,11 +115,16 @@ class ProdLatencyGuardTest {
      * 断言的是<b>实际生效</b}的记忆窗口，而不是声明值。
      * <p>
      * 为什么不能直接禁掉大的 {@code contextWindow}：它是模型的<b>真实能力</b>
-     * （确实有 1M 上下文的模型），而且真正决定 prefill 量的
-     * {@code memoryWindow = min(max-tokens, contextWindow - maxOutputTokens)}
-     * 已经被 {@code nexus.agent.memory.max-tokens} 兜住了 ——
-     * 声明 100 万但 max-tokens 是 24000 时，实际窗口仍是 24000，无害。
+     * （确实有 1M 上下文的模型），真正决定 prefill 量的是
+     * {@code memoryWindow = min(max-tokens, contextWindow - maxOutputTokens)}。
      * 所以这里算一遍实际值再断言，既钉死首字预算，又不误伤真实的大窗口模型。
+     * <p>
+     * 🔴 <b>2026-10-06 晚间：这里原来测错了对象。</b>
+     * {@code globalMax} 直接取 {@code new AgentProperties()} 的<b>代码默认值</b>，
+     * 而 prod yml 里当时白纸黑字写着 {@code max-tokens: 24000} ——
+     * profile 属性源优先级更高，线上真正生效的是 24000，本测试却按 300000 算，
+     * 于是「1M 模型实际只剩 2.4 万 token 窗口」这件事在三个护栏全绿的情况下上线了。
+     * <b>读配置文件的测试，就必须读那份文件里写了什么，不能读默认值。</b>
      */
     @Test
     @DisplayName("prod 里每个系统模型的实际生效窗口：要有上限，也不能小到装不下一个会话")
@@ -127,7 +132,9 @@ class ProdLatencyGuardTest {
         Path prod = repoRoot().resolve("nexus-agent-web/src/main/resources/application-prod.yml");
         assertTrue(Files.exists(prod), "找不到 application-prod.yml");
 
-        int globalMax = new AgentProperties().getMemory().getMaxTokens();
+//        ⚠️ 必须用「prod 实际声明的值」而不是代码默认值：
+//        prod 的属性源优先级高于 AgentProperties，写了就是它说了算。
+        int globalMax = declaredMemoryMaxTokens(prod);
         Object systemModels = dig(new Yaml().load(Files.readString(prod)),
                 "nexus", "agent", "system-models");
         if (!(systemModels instanceof List<?> providers)) {
@@ -152,6 +159,30 @@ class ProdLatencyGuardTest {
         }
     }
 
+    /**
+     * 取某个 profile yml 里<b>实际声明</b>的 {@code nexus.agent.memory.max-tokens}；
+     * 没声明就回落到代码默认值（那时确实是代码默认说了算）。
+     * <p>
+     * 存在的原因见 {@link #prodSystemModelsEffectiveWindowStaysReasonable} 的注释 ——
+     * 用默认值去算「prod 的生效窗口」正是 2026-10-06 那次漏网的直接原因。
+     */
+    private static int declaredMemoryMaxTokens(Path profileYml) throws IOException {
+        Object declared = dig(new Yaml().load(Files.readString(profileYml)),
+                "nexus", "agent", "memory", "max-tokens");
+        if (declared instanceof Number n) {
+            return n.intValue();
+        }
+        if (declared instanceof String s && !s.isBlank()) {
+//            形如 "24000"；解析不了就当成没声明，让调用方走默认值分支
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return new AgentProperties().getMemory().getMaxTokens();
+    }
+
     private static void checkEffectiveWindow(int globalMax, Object contextWindow,
                                              Object maxOutputTokens, Object modelName, Object providerId) {
         Model meta = new Model();
@@ -162,16 +193,42 @@ class ProdLatencyGuardTest {
         if (maxOutputTokens instanceof Integer out) {
             meta.setMaxOutputTokens(out);
         }
-        int effective = ModelCapabilities.of(meta).memoryWindow(globalMax);
+        ModelCapabilities caps = ModelCapabilities.of(meta);
+        int effective = caps.memoryWindow(globalMax);
+//        modelName 为 null = 检查的是**供应商级**默认值（旗下模型不填元数据时会拿到多大窗口），
+//        说清楚，别在报错里留一个裸 null 让人以为是解析坏了。
+        String who = (modelName == null
+                ? "供应商 " + providerId + " 的**供应商级默认**窗口"
+                : "系统模型 " + modelName + "（供应商 " + providerId + "）");
+
         assertTrue(effective <= MAX_MEMORY_WINDOW,
-                "系统模型 " + modelName + "（供应商 " + providerId + "）实际生效的记忆窗口是 " + effective
+                who + "实际生效的记忆窗口是 " + effective
                         + " token，超出上限 " + MAX_MEMORY_WINDOW
                         + " —— 请给该模型填真实的 contextWindow / maxOutputTokens。");
-        assertTrue(effective >= MIN_USEFUL_WINDOW,
-                "系统模型 " + modelName + "（供应商 " + providerId + "）实际生效的记忆窗口只有 " + effective
-                        + " token，**小于 max-tokens 上限 " + MIN_USEFUL_WINDOW + "** —— 说明卡在"
-                        + " contextWindow - maxOutputTokens 那一侧：该模型的元数据填得太小，"
-                        + " 会让它**静默丢掉更早的历史**，表现为「聊了几十轮就开始忘事」。"
+
+        if (effective >= MIN_USEFUL_WINDOW) {
+            return;
+        }
+//        🔴 两种「窗口太小」的成因完全不同，修法也完全不同 —— 报错时必须分开说，
+//        否则下次排查会被带到错误方向（2026-10-06 反向验证时亲历：
+//        真正卡在全局天花板，报错却说「模型元数据填得太小」）。
+        int modelSide = caps.contextWindow() - caps.maxOutputTokens();
+        if (globalMax < MIN_USEFUL_WINDOW) {
+            assertTrue(false,
+                    who + "实际生效的记忆窗口只有 " + effective + " token（< " + MIN_USEFUL_WINDOW + "）—— "
+                            + "卡在**全局天花板** nexus.agent.memory.max-tokens=" + globalMax + " 这一侧。"
+                            + " 模型自己的窗口是 " + caps.contextWindow() + "、输出上限 " + caps.maxOutputTokens()
+                            + "（可容纳 " + modelSide + " token），完全够用，是被这个全局值压住了。"
+                            + " 表现为「1M 上下文的模型聊几轮就开始忘事」。"
+                            + " 请调高 AgentProperties.Memory.maxTokens 的默认值；"
+                            + " 若这个值来自某个 profile yml，那份文件才是罪魁祸首（见 MemoryWindowDriftTest）。");
+        }
+        assertTrue(false,
+                who + "实际生效的记忆窗口只有 " + effective + " token（< " + MIN_USEFUL_WINDOW + "）—— "
+                        + "卡在**模型元数据** contextWindow - maxOutputTokens = " + modelSide + " 这一侧"
+                        + "（全局天花板 " + globalMax + " 并没有卡住它）。"
+                        + " 该模型的元数据填得太小，会让它**静默丢掉更早的历史**，"
+                        + " 表现为「聊了几十轮就开始忘事」。"
                         + " 请给该模型填真实的 contextWindow / maxOutputTokens。");
     }
 

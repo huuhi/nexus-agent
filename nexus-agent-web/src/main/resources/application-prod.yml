@@ -188,19 +188,25 @@ nexus:
       # 兜底时间阈值：距上次推送超过这么久就推一帧（60ms ≈ 16 帧/秒，与屏幕刷新率相当）
       flush-interval: 60ms
     memory:
-      # 对话记忆窗口的 token 上限（只影响送给模型的上下文，不影响已入库的消息）
+      # ❗ 这里【不要】写 nexus.agent.memory.max-tokens —— 理由与上面的 sse.timeout 完全同构：
+      #    prod 的属性源优先级高于代码默认值，写在这里就会把 AgentProperties 的默认值盖掉。
       #
-      # 🔴 2026-10-06：从 100000 下调到 24000 —— 这是首字延迟治理里**收益最大的一刀**。
-      #    这个值就是「每轮发给模型的历史有多少 token」，直接等于模型的 prefill 量：
-      #    历史越长，模型吐第一个字之前要算的越多。10 万 token 的历史下，
-      #    光 prefill 就要几秒，而且**越聊越慢**（用户实测长会话首字 21 秒）。
-      #    24000 token ≈ 50~80 轮对话，对 agent 场景足够，prefill 压力小一个数量级。
+      # 🔴 2026-10-06 晚间事故的复盘（用户报「聊几次就提示新建会话，1M 上下文怎么可能这么快没了」）：
+      #    这里曾残留 `max-tokens: 24000`，而 Java 默认值当天已经修正回 300000 ——
+      #    结果以 prod 运行时**实际生效的是 24000**，1M 上下文的 mimo 模型被砍到 2.4 万 token。
+      #    更糟的是当时三个护栏测试全部通过：它们都用 `new AgentProperties()` 的
+      #    **代码默认值**去算生效窗口，没人读这份文件里真正写了什么。
+      #    这是「配置漂移 + 护栏测错了对象」的叠加，与 2026-10-05 的 SSE timeout 是同一类事故。
       #
-      # ⚠️ 调大的代价是**首字变慢**（不是内存或数据库变慢），调小的代价是「模型忘事」。
-      #    实际生效值 = min(本值, 该模型的 contextWindow - maxOutputTokens)，
-      #    所以把模型的 contextWindow 填得再大，也**不会**让窗口超过这里。
-      #    想确认每轮到底发了多少，看日志里的 CHAT_MEMORY（条数 / 估算 token / 窗口）。
-      max-tokens: 24000
+      # ⚠️ 想调窗口，改 AgentProperties.Memory.maxTokens 的默认值（全项目唯一事实源）。
+      #    已有 MemoryWindowDriftTest 盯着：这里再出现该键会直接测试失败。
+      #
+      # 生效值的算法（改前先看懂）：min(该默认值, 模型的 contextWindow - maxOutputTokens)。
+      #    所以 1M 上下文的模型要真正用满，**两边都得对**：
+      #      · 这里的天花板（代码默认 300000）
+      #      · 该模型自己填的 contextWindow（见上面的 system-models）
+      #    想确认每轮到底发了多少，看日志里的 CHAT_MEMORY（条数 / 估算 token / 窗口），
+      #    或看 finish 事件里的 context 字段（同一口径，前端可直接展示）。
       # token 估算器使用的模型名。注意它只用于本地估算，不产生 API 调用；
       # 与真实使用的模型不一致会导致窗口裁剪不准，换主力模型时建议同步改
       token-estimator-model: gpt-4o

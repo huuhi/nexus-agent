@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.impl.FileServiceImpl;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
@@ -59,7 +60,7 @@ class FileServiceBatchDeleteTest {
     @BeforeEach
     void setUp() {
         fileMapper = mock(FileMapper.class);
-        fileService = new FileServiceImpl(ossUtil, mock(QuotaService.class));
+        fileService = new FileServiceImpl(ossUtil, mock(QuotaService.class), new AgentProperties());
         // ServiceImpl#baseMapper 是 protected 字段，纯单测里只能反射塞
         ReflectionTestUtils.setField(fileService, "baseMapper", fileMapper);
         initTableInfo();

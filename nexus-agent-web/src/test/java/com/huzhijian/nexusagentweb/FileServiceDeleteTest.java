@@ -7,6 +7,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.impl.FileServiceImpl;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
@@ -58,7 +59,7 @@ class FileServiceDeleteTest {
     @BeforeEach
     void setUp() throws Exception {
         fileMapper = mock(FileMapper.class);
-        fileService = new FileServiceImpl(ossUtil, mock(QuotaService.class));
+        fileService = new FileServiceImpl(ossUtil, mock(QuotaService.class), new AgentProperties());
         // ServiceImpl#baseMapper 是 protected 字段，纯单测里只能反射塞，
         // 否则 query() / removeById() 一调就 NPE
         Field field = ServiceImpl.class.getDeclaredField("baseMapper");

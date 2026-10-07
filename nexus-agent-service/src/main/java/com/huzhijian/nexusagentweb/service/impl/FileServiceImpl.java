@@ -6,10 +6,12 @@ import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.domain.SysFile;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
+import com.huzhijian.nexusagentweb.em.UploadFailCode;
 import com.huzhijian.nexusagentweb.exception.NotSupportException;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
 import com.huzhijian.nexusagentweb.mapper.FileMapper;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.FileService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
@@ -41,10 +43,13 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
 
     private final AliOssUtil ossUtil;
     private final QuotaService quotaService;
+    /** 上传限制（单次个数上限等，2026-10-07） */
+    private final AgentProperties agentProperties;
 
-    public FileServiceImpl(AliOssUtil ossUtil, QuotaService quotaService) {
+    public FileServiceImpl(AliOssUtil ossUtil, QuotaService quotaService, AgentProperties agentProperties) {
         this.ossUtil = ossUtil;
         this.quotaService = quotaService;
+        this.agentProperties = agentProperties;
     }
 
     @Override
@@ -52,6 +57,16 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
     public List<KnowledgeFileVO> uploadFile(MultipartFile[] files,BizType bizType) {
         if (files==null||files.length==0){
             throw new ValidationException("文件为空！");
+        }
+//        🔴 2026-10-07：个数上限（与 fronted 对齐，他拍板「单次最多 10 个」）。
+//        前端会先拦下并提示，但那是体验优化不是安全边界 —— 直接调接口、换客户端都绕得过去，
+//        所以后端必须自己也拦。放在**最前面**（配额校验之前）：这是请求级问题，
+//        没必要为了一个必然失败的请求先去查配额。
+        int maxCount = agentProperties.getUpload().getMaxCount();
+        if (maxCount > 0 && files.length > maxCount) {
+            log.warn("单次上传文件数超限：userId={} 本次={} 上限={}",
+                    UserContextHolder.getUserId(), files.length, maxCount);
+            throw new ValidationException("单次最多上传 " + maxCount + " 个文件，本次 " + files.length + " 个，请分批上传");
         }
         List<SysFile> fileList =new ArrayList<>();
         Long userId = UserContextHolder.getUserId();
@@ -61,21 +76,31 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         for (MultipartFile file : files) {
             if (file==null||file.isEmpty()) continue;
             String originalFilename = file.getOriginalFilename();
-//        判断类型
             String fileExtension = FileTypeUtils.getFileExtension(originalFilename);
+//            🔴 2026-10-07：类型不支持**不再静默跳过**。
+//            原实现是 `continue` —— 文件既不入库也不报错，返回列表里直接没有它，
+//            前端拿不到任何失败信号，用户看到的就是「传完了但列表里没这个东西」
+//            （用户原话「什么文件都能传，很离谱」的真正来源）。
+//            改成逐条标记失败（fronted 拍板选 A：坏文件不毁掉整批），与 OSS 上传失败同一套结构。
             if (!FileTypeUtils.isSupportedDocument(fileExtension)) {
+                fileList.add(failedFile(originalFilename, file.getSize(), fileExtension, bizType, userId,
+                        UploadFailCode.UNSUPPORTED_TYPE,
+                        "不支持的文件类型（." + fileExtension + "），支持：" + FileTypeUtils.supportedExtensionsText()));
                 continue;
             }
             String url = "";
             String failReason="";
+            UploadFailCode failCode = null;
             try {
                 url= ossUtil.uploadDocument(file.getBytes(), fileExtension,userId);
                 log.info("添加成功，url:{}",url);
             } catch (ValidationException e) {
                 // OSS 失败（凭证 / 网络 / 服务端拒绝）—— AliOssUtil 已转成带原因的业务异常
                 failReason="上传失败！"+clip(e.getMessage());
+                failCode = UploadFailCode.UPLOAD_FAILED;
             }catch (IOException e){
                 failReason="读取文件失败！"+clip(e.getMessage());
+                failCode = UploadFailCode.UPLOAD_FAILED;
             }
             SysFile knowledgeFile = SysFile.builder()
                     .fileSize(file.getSize())
@@ -85,6 +110,7 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
                     .bizType(bizType)
                     .uploadStatus(failReason.isEmpty()? UploadStatus.SUCCESS: UploadStatus.FAILED)
                     .failReason(failReason)
+                    .failCode(failCode)
                     .userId(userId)
                     .build();
             fileList.add(knowledgeFile);
@@ -92,6 +118,28 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, SysFile>
         saveBatch(fileList);
         return BeanUtil.copyToList(fileList, KnowledgeFileVO.class);
 
+    }
+
+    /**
+     * 构造一条「失败」的文件记录。
+     * <p>
+     * ⚠️ <b>刻意也要入库</b>：与 OSS 上传失败的既有行为保持一致 ——
+     * 前端的文件列表本来就靠 {@code uploadStatus} / {@code failReason} 渲染失败行，
+     * 用户能看到「这个没传上去，原因是 xx」。不入库的话又变回「什么都没发生」。
+     */
+    private static SysFile failedFile(String fileName, Long fileSize, String extension, BizType bizType,
+                                      Long userId, UploadFailCode failCode, String failReason) {
+        return SysFile.builder()
+                .fileSize(fileSize)
+                .fileName(fileName)
+                .fileUrl("")
+                .extension(extension == null ? "" : extension.toUpperCase())
+                .bizType(bizType)
+                .uploadStatus(UploadStatus.FAILED)
+                .failReason(failReason)
+                .failCode(failCode)
+                .userId(userId)
+                .build();
     }
 
 

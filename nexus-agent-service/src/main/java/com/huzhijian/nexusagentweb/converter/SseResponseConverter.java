@@ -1,8 +1,10 @@
 package com.huzhijian.nexusagentweb.converter;
 
+import com.huzhijian.nexusagentweb.context.ContextUsage;
 import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.em.SseEventType;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
+import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import com.huzhijian.nexusagentweb.vo.SseEvent;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -85,6 +87,16 @@ public class SseResponseConverter {
     private volatile boolean disconnected;
     /** 心跳任务：长时间不吐字（工具执行中）时防止中间代理（Nginx 默认读超时 60s）掐断连接 */
     private java.util.concurrent.ScheduledFuture<?> heartbeatTask;
+    /**
+     * 工具调用的展示层可见性判定（2026-10-07）。
+     * <p>
+     * 见 {@link com.huzhijian.nexusagentweb.tools.ToolVisibility} 的类注释：
+     * 这里<b>只决定要不要发事件</b>，工具照常执行、结果照常进模型上下文。
+     * <p>
+     * 允许为 {@code null}（单测直接 new builder 时不传）：null 视为「不隐藏任何工具」，
+     * 保持既有行为，避免为了一个配置项到处改测试。
+     */
+    private final ToolVisibility toolVisibility;
 
     /** 共享心跳调度池（单线程、daemon）：任务很轻（一次 send），cancel 后线程复用，避免每请求泄漏线程 */
     private static final java.util.concurrent.ScheduledExecutorService HEARTBEAT_POOL =
@@ -97,7 +109,9 @@ public class SseResponseConverter {
     @Builder
     public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService,
                                 String sessionId, Long userId, String message, String runId,
-                                Integer flushMaxChars, Long flushIntervalMillis) {
+                                Integer flushMaxChars, Long flushIntervalMillis,
+                                ToolVisibility toolVisibility) {
+        this.toolVisibility = toolVisibility;
         this.emitter = sseEmitter;
         this.isNewSession = isNewSession;
         this.isFinished = new AtomicBoolean(false);
@@ -263,18 +277,32 @@ public class SseResponseConverter {
         String id = toolcall.id();
         String arguments = toolcall.partialArguments();
 
-        sendRequest(name, arguments, id);
+//        2026-10-07：把同批调用的序号（index）一并下发。它比 id 可靠 ——
+//        id 由供应商给，可能缺失/重复（frontend 用它做 key 直接把应用渲染搞崩过），
+//        而 index 首帧就有且在同一批里唯一。前端做列表 key 请优先用它。
+        sendRequest(name, arguments, id, toolcall.index());
 
     }
 
     private void sendRequest(String name, String arguments, String id) {
+        sendRequest(name, arguments, id, null);
+    }
+
+    private void sendRequest(String name, String arguments, String id, Integer index) {
         if (isFinished.get()) return;
+//        2026-10-07：对前端隐藏的工具不推 tool_execution 事件。
+//        注意这里**不能**顺手 flushPending —— 正文缓冲留着继续攒，
+//        下一个可见事件或收尾时会照常发掉，顺序不会乱。
+        if (isHidden(name)) {
+            return;
+        }
         // 工具事件之前先把正文缓冲发掉，否则前端会先看到工具卡片、后看到该卡片前的正文
         flushPending();
         MessageVO.ToolRequestVO vo = MessageVO.ToolRequestVO.builder()
                 .toolName(name)
                 .arguments(arguments)
                 .id(id)
+                .index(index)
                 .build();
         MessageVO msg = MessageVO.builder()
                 .type(MessageType.TOOL_EXECUTION)
@@ -289,6 +317,11 @@ public class SseResponseConverter {
 
     public void writeToolResult(ToolExecutionRequest request, boolean isError, String result) {
         if (isFinished.get()) return;
+//        与 sendRequest 成对：请求事件被隐藏时，结果事件也必须隐藏 ——
+//        否则前端会收到一个「没有对应请求」的孤儿结果，卡片永远等不到配对。
+        if (request != null && isHidden(request.name())) {
+            return;
+        }
         flushPending();
         MessageVO.ToolResultVO vo = MessageVO.ToolResultVO.builder()
                 .id(request.id())
@@ -301,6 +334,15 @@ public class SseResponseConverter {
                 .toolResultVO(vo)
                 .build();
         send(SseEventType.TOOL_EXECUTION_RESULT, msg);
+    }
+
+    /**
+     * 该工具是否只在后台跑、不发给前端（2026-10-07）。
+     * <p>
+     * ⚠️ toolVisibility 为 null（单测未注入）时一律返回 false，保持既有行为。
+     */
+    private boolean isHidden(String toolName) {
+        return toolVisibility != null && toolVisibility.isHidden(toolName);
     }
 
     /**
@@ -350,6 +392,48 @@ public class SseResponseConverter {
     }
 
     /**
+     * 本次运行的「上下文用量」快照（2026-10-06 新增）。
+     * <p>
+     * ⚠️ 这是个<b>可变</b>对象，历史由 LangChain4j 在 {@code AiServices.chat()} 内部加载后才回填，
+     * 所以<b>必须在 {@code chat()} 返回之后</b>再把它交给这里 ——
+     * 传早了读到的是空壳（全 0）。
+     * <p>
+     * 不调用也不会出错，只是收尾事件的 data 里不会有 {@code context} 字段。
+     */
+    private volatile ContextUsage contextUsage;
+
+    /**
+     * 登记上下文用量快照，随 {@code finish} / {@code stopped} / {@code error} 下发给前端。
+     */
+    public void markContextUsage(ContextUsage usage) {
+        this.contextUsage = usage;
+    }
+
+    /**
+     * 把上下文用量塞进收尾事件的 data（缺快照时返回原 map，不制造 null 字段）。
+     * <p>
+     * 字段设计成<b>扁平</b>而不是嵌套对象：与 {@code ttfbMs} 同一层，前端一次解构就够，
+     * 不必为了三个数字再判一层空。
+     * <pre>
+     * contextWindow: 300000   // 本次记忆窗口（token）
+     * contextUsed:   12480    // 本次加载的历史估算 token（-1 = 没算出来）
+     * contextMsgs:   42       // 本次加载的历史条数
+     * contextRatio:  0.0416   // contextUsed / contextWindow，> 1 表示已开始丢更早的历史
+     * </pre>
+     */
+    private Map<String, Object> withContext(Map<String, Object> data) {
+        ContextUsage usage = this.contextUsage;
+        if (usage == null) {
+            return data;
+        }
+        data.put("contextWindow", usage.window());
+        data.put("contextUsed", usage.loadedTokens());
+        data.put("contextMsgs", usage.loadedMsgs());
+        data.put("contextRatio", Math.round(usage.ratio() * 10_000) / 10_000.0);
+        return data;
+    }
+
+    /**
      * 把 ttfb 塞进收尾事件的 data（字段缺失时返回原 map，不制造 null 字段）。
      * <p>
      * ⚠️ 刻意用「缺字段」而不是「{@code ttfbMs: null}」：契约里写明该字段
@@ -392,9 +476,9 @@ public class SseResponseConverter {
         } catch (Exception e) {
             log.warn("叫停时补发尾部正文失败（已发内容不受影响）：runId={} 原因={}", runId, e.getMessage());
         }
-        send(SseEventType.STOPPED, withTtfb(new LinkedHashMap<>(Map.of(
+        send(SseEventType.STOPPED, withContext(withTtfb(new LinkedHashMap<>(Map.of(
                 "reason", "用户停止了本次生成",
-                "partial", partialChars))));
+                "partial", partialChars)))));
         safeComplete();
     }
 
@@ -420,7 +504,7 @@ public class SseResponseConverter {
         payload.put("type", MessageType.ERROR.getValue());
         payload.put("message", reason);
         payload.put("hint", "请把 runId 提供给开发者，可在服务端日志中检索 \"RUN runId=" + runId + "\" 定位本次运行");
-        send(SseEventType.ERROR, withTtfb(payload));
+        send(SseEventType.ERROR, withContext(withTtfb(payload)));
     }
 
     /**
@@ -439,7 +523,8 @@ public class SseResponseConverter {
             if (isNewSession) {
                 chatHistoryListService.createTitle(sessionId, message, answer.toString(), userId);
             }
-            send(SseEventType.FINISH, withTtfb(new LinkedHashMap<>(Map.of("status", "DONE"))));
+            send(SseEventType.FINISH,
+                    withContext(withTtfb(new LinkedHashMap<>(Map.of("status", "DONE")))));
             emitter.complete();
             isFinished.set(true);
         } catch (Exception e) {

@@ -4,6 +4,7 @@ import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.em.UploadStatus;
 import com.huzhijian.nexusagentweb.exception.ValidationException;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.impl.FileServiceImpl;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
@@ -54,7 +55,7 @@ class FileServiceUploadFailureTest {
 
     @BeforeEach
     void setUp() {
-        fileService = spy(new FileServiceImpl(ossUtil, mock(QuotaService.class)));
+        fileService = spy(new FileServiceImpl(ossUtil, mock(QuotaService.class), new AgentProperties()));
         // 绕开 MyBatis-Plus 的批量插入（需要真实 SqlSessionFactory）：本用例只关心降级逻辑
         doReturn(true).when(fileService).saveBatch(anyCollection());
         UserContextHolder.saveId(1L);

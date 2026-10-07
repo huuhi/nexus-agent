@@ -13,6 +13,7 @@ import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.exception.UnauthorizedException;
 import com.huzhijian.nexusagentweb.mapper.ChatMemoryMapper;
 import com.huzhijian.nexusagentweb.service.ChatMemoryService;
+import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.vo.AttachedFileVO;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import dev.langchain4j.data.message.*;
@@ -39,6 +40,9 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
 
     @Resource
     private ChatMemoryMapper mapper;
+    /** 2026-10-07：工具调用的展示层可见性（决定历史里要不要出现某条工具消息） */
+    @Resource
+    private ToolVisibility toolVisibility;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 //    文件
     private final Pattern FILE_PATTERN = Pattern.compile(
@@ -298,6 +302,8 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
 //            不返回就没法做切换了，它只是不参与模型上下文。
             vo.setId(entity.getId());
             vo.setSupersededBy(entity.getSupersededBy());
+//            2026-10-07：历史里工具 id 缺失时合成一个唯一 id（见 ensureToolIds 注释）
+            ensureToolIds(vo, entity.getId());
             result.add(vo);
         }
         return result;
@@ -384,17 +390,37 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
                     //	"type": "USER"
                 }
                 case AiMessage aiMessage -> {
+//                    2026-10-07：对前端隐藏的工具，其调用项要从历史里剔除 ——
+//                    否则「实时流看不到、刷新页面又冒出来」，等于没屏蔽。
+//                    ⚠️ 只过滤这一层的展示：chat_memory 里的原始消息一个字都不动，
+//                    模型上下文仍需要完整的 tool_calls（见 ToolVisibility 类注释）。
+                    List<MessageVO.ToolRequestVO> requestVOList =
+                            aiMessage.toolExecutionRequests() == null
+                                    ? List.of()
+                                    : aiMessage.toolExecutionRequests().stream()
+//                                    并行调用时一条 AiMessage 可能带多个工具请求，
+//                                    只剔隐藏的那些，可见的照常留下（不能整条丢，那会连正文一起丢）
+                                    .filter(request -> !isHiddenTool(request == null ? null : request.name()))
+                                    .map(request -> MessageVO.ToolRequestVO.builder()
+                                            .toolName(request.name())
+                                            .id(request.id())
+                                            .arguments(request.arguments()).build())
+                                    .toList();
+//                    整条消息只剩隐藏工具（无正文、无思考、无可见调用）时不返回 ——
+//                    否则前端会渲染出一个空气泡
+                    if (requestVOList.isEmpty() && isBlank(aiMessage.text()) && isBlank(aiMessage.thinking())) {
+                        return null;
+                    }
                     messageVOBuilder.type(MessageType.AI);
                     messageVOBuilder.content(aiMessage.text());
                     messageVOBuilder.thinking(aiMessage.thinking());
-//                toolExecutionRequests
-                    List<MessageVO.ToolRequestVO> requestVOList = aiMessage.toolExecutionRequests().stream().map(request -> MessageVO.ToolRequestVO.builder()
-                            .toolName(request.name())
-                            .id(request.id())
-                            .arguments(request.arguments()).build()).toList();
                     messageVOBuilder.toolRequestList(requestVOList);
                 }
                 case ToolExecutionResultMessage toolResult -> {
+//                    与上面成对：请求被剔掉时，结果行也必须剔掉（否则前端收到孤儿结果）
+                    if (isHiddenTool(toolResult.toolName())) {
+                        return null;
+                    }
                     messageVOBuilder.type(MessageType.TOOL_EXECUTION_RESULT);
                     MessageVO.ToolResultVO resultVO = MessageVO.ToolResultVO.builder()
                             .isError(toolResult.isError())
@@ -412,6 +438,55 @@ public class ChatMemoryServiceImpl extends ServiceImpl<ChatMemoryMapper, ChatHis
             return messageVOBuilder.build();
     }
 
+
+    /**
+     * 🔴 工具 id 缺失时合成一个**唯一** id（2026-10-07，frontend 踩坑后补的兜底）。
+     * <p>
+     * <b>为什么必须有这一层</b>：{@code toolRequestList[].id} 与 {@code toolResultVO.id}
+     * 都是**模型/供应商给的字符串**，我们原样透传 —— 它可能为 {@code null}，
+     * 也可能在同一批里重复（某些供应商的兼容层压根不回传 tool_call id）。
+     * frontend 用 {@code call.id} 做 {@code v-for} 的 key，id 撞车时 Vue 的 patch
+     * 拿到 null el，抛 {@code Cannot set properties of null (setting '__vnode')}，
+     * 结果是整个应用渲染停摆（点历史记录后点什么都没反应）。
+     * <p>
+     * 形如 {@code row-1002#0}：带行主键，<b>全局唯一</b>（不只是同一条消息内唯一），
+     * 所以前端即便把不同消息的工具卡铺进同一个列表也不会撞。
+     * <p>
+     * ⚠️ 只补**展示层**，不动 {@code chat_memory}：记忆里那条消息要保持原样，
+     * 否则模型下一轮收到的 tool_call id 与它自己发的不一致（且会破坏配对语义）。
+     */
+    private static void ensureToolIds(MessageVO vo, Long rowId) {
+        List<MessageVO.ToolRequestVO> requests = vo.getToolRequestList();
+        if (requests != null) {
+            for (int i = 0; i < requests.size(); i++) {
+                MessageVO.ToolRequestVO r = requests.get(i);
+                if (r != null && isBlank(r.getId())) {
+                    r.setId(syntheticId(rowId, i));
+                }
+            }
+        }
+        MessageVO.ToolResultVO result = vo.getToolResultVO();
+        if (result != null && isBlank(result.getId())) {
+            result.setId(syntheticId(rowId, 0));
+        }
+    }
+
+    private static String syntheticId(Long rowId, int index) {
+        return "row-" + (rowId == null ? "unknown" : rowId) + "#" + index;
+    }
+
+    /**
+     * 该工具是否对前端隐藏（2026-10-07）。
+     * <p>
+     * {@code toolVisibility} 未注入时（单测等）返回 false —— 宁可多显示，也不要把历史吞掉。
+     */
+    private boolean isHiddenTool(String toolName) {
+        return toolVisibility != null && toolVisibility.isHidden(toolName);
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
 
     private static boolean isFileOrImageWrapper(String text) {
         return (text.startsWith(FILE_START) && text.endsWith(FILE_END))

@@ -138,7 +138,9 @@ class FrontendTelemetryTest {
 
         Recorder() {
             super(new SseEmitter(), false, mock(ChatHistoryListService.class),
-                    SESSION_ID, 1L, "你好", RUN_ID, 1, 1L);
+                    SESSION_ID, 1L, "你好", RUN_ID, 1, 1L,
+                    // 本测试不涉及工具可见性：传 null = 不隐藏任何工具（与改动前行为一致）
+                    null);
             start();
         }
 

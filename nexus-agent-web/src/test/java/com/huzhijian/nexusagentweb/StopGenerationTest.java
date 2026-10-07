@@ -206,8 +206,9 @@ class StopGenerationTest {
         Recorder(SseEmitter emitter, boolean isNewSession, ChatHistoryListService history,
                  String sessionId, Long userId, String message, String runId,
                  Integer flushChars, Long flushMillis) {
+            // 本测试不涉及工具可见性：传 null = 不隐藏任何工具（与改动前行为一致）
             super(emitter, isNewSession, history, sessionId, userId, message, runId,
-                    flushChars, flushMillis);
+                    flushChars, flushMillis, null);
             start();
         }
 

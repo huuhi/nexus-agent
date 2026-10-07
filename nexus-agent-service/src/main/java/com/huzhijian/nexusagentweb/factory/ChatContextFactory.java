@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.factory;
 import cn.hutool.json.JSONUtil;
 import com.huzhijian.nexusagentweb.config.PgChatMemoryStore;
 import com.huzhijian.nexusagentweb.context.ChatContext;
+import com.huzhijian.nexusagentweb.context.ContextUsage;
 import com.huzhijian.nexusagentweb.context.RunContext;
 import com.huzhijian.nexusagentweb.domain.APIConfig;
 import com.huzhijian.nexusagentweb.domain.Model;
@@ -98,15 +99,24 @@ public class ChatContextFactory {
 //        而不是只能回一句"我没有这个能力"。
         McpInformationService.McpResolution mcp = mcpInformationService.getMcp(chatDTO.MCPs(),userId);
         long t2 = System.nanoTime();
+        int memoryWindow = capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens());
 //        记忆存储绑定本次运行的上下文，必须这样做：
 //        LangChain4j 在**流式回调线程**上调用 ChatMemoryStore.updateMessages，
 //        那时请求线程的 ThreadLocal 已经取不到值——历史上附件元数据就是这样丢的，
 //        userId 也只能靠 Redis 缓存兜底（而那个 key 仅 5 分钟）。
-        ChatMemoryStore memoryStore = chatMemoryStore.forRun(runContext);
+//
+//        🔴 2026-10-06：估算器在这里**建一次**，同时给 TokenWindowChatMemory（裁剪窗口）
+//        与记忆存储（统计用量）用。BPE 词表首次加载有冷启动成本（线上实测占整秒级），
+//        建两个实例等于付两次。
+        MultimodalTokenCountEstimator estimator = new MultimodalTokenCountEstimator(
+                agentProperties.getMemory().getTokenEstimatorModel(),
+                agentProperties.getMemory().getImageTokens());
+//        上下文用量快照：先建壳，历史加载后由记忆存储回填（前端据此判断要不要建议开新会话）
+        ContextUsage contextUsage = new ContextUsage(memoryWindow);
+        ChatMemoryStore memoryStore = chatMemoryStore.forRun(runContext, contextUsage, estimator);
 //        工具由注册表统一解析：常驻工具（沙盒/系统日志/长期记忆）恒启用；
 //        按需工具（知识库检索）由各自的 enabled() 依据请求参数决定开关。
 //        新增工具只需实现 AgentToolSet 并加 @Component，不必改本类。
-        int memoryWindow = capabilities.memoryWindow(agentProperties.getMemory().getMaxTokens());
         Object[] tools = toolRegistry.resolve(ToolSelection.from(chatDTO)).toArray();
         log.debug("本次注册的工具集：{}", toolRegistry.keys());
 //        🔴 2026-10-06：tools 与 skills 拆开计时。
@@ -124,10 +134,7 @@ public class ChatContextFactory {
 //                        记忆窗口：以前是全局写死的 nexus.agent.memory.max-tokens（100000），
 //                        与真实模型无关 —— 256k 窗口的模型白白浪费，8k 窗口的模型则被上游拒。
 //                        2026-10-03：按「该模型的上下文窗口 − 最大输出」算，再受全局上限兜住。
-                        .maxTokens(memoryWindow,
-                                new MultimodalTokenCountEstimator(
-                                        agentProperties.getMemory().getTokenEstimatorModel(),
-                                        agentProperties.getMemory().getImageTokens()))
+                        .maxTokens(memoryWindow, estimator)
                         .chatMemoryStore(memoryStore)
                         .id(sessionId)
                         .build());
@@ -195,6 +202,7 @@ public class ChatContextFactory {
                 .mcpUnavailable(mcp.unavailableNames())
                 .skills(skills)
                 .skillsText(skillLoader.formatResolved(skills))
+                .contextUsage(contextUsage)
                 .build();
     }
 
@@ -367,7 +375,10 @@ public class ChatContextFactory {
         Model model = matched.model();
 
         String secretApiKey = apiConfig.getAPIKey();
-        String apiKey = EncryptorFactory.text(matched.salt()).decrypt(secretApiKey);
+//        2026-10-07：改用带校验的解密。以前解错主密钥会拿到一串乱码并直接发给厂商，
+//        厂商只回 401 Invalid API Key，真实原因（主密钥不一致）被完全掩盖。
+        String apiKey = EncryptorFactory.decryptChecked(matched.salt(), secretApiKey, "API Key");
+        log.debug("使用用户自带 Key：configId={} baseUrl={}", apiConfig.getId(), apiConfig.getBaseUrl());
 //          输出上限与上下文窗口来自**该模型的元数据**（2026-10-03），不再是全局写死：
 //          用户在配置里填了就按填的来，没填走 32k 默认
         ModelCapabilities capabilities = ModelCapabilities.of(model);

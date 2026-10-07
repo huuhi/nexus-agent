@@ -34,6 +34,7 @@ import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
+import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
@@ -84,6 +85,8 @@ public class ChatServiceImpl implements ChatService {
     // 2026-10-05：getModelList 改为按 configId 查库解密，需要下面两个依赖
     private final UserConfigService userConfigService;
     private final UrlGuard urlGuard;
+    // 2026-10-07：决定哪些工具调用只后台跑、不下发给前端（见 ToolVisibility 类注释）
+    private final ToolVisibility toolVisibility;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -179,7 +182,14 @@ public class ChatServiceImpl implements ChatService {
                 .flushIntervalMillis(agentProperties.getSse().getFlushInterval().toMillis())
                 .message(converter.extractFirstText(messages)).userId(userId)
                 .sseEmitter(sseEmitter)
+//                2026-10-07：把「哪些工具对前端隐藏」的判定交给 writer
+                .toolVisibility(toolVisibility)
                 .build();
+//        🔴 2026-10-06：上下文用量必须在 chat() 返回**之后**再登记 ——
+//        历史是 LangChain4j 在 chat() 内部同步加载的（TokenWindowChatMemory 触发
+//        ChatMemoryStore.getMessages），返回时快照才被回填。传早了前端会收到全 0。
+//        前端据此判断「要不要建议开新会话」，不再靠自己数消息条数。
+        writer.markContextUsage(chatContext.getContextUsage());
 
 //        P2-5：首帧立刻把 runId / sessionId 交给前端（内部幂等，漏调也会被后续事件兜底补发）
         writer.start();
@@ -476,12 +486,7 @@ public class ChatServiceImpl implements ChatService {
         }
 
         try {
-            String apiKey = EncryptorFactory.text(salt).decrypt(target.getAPIKey());
-            if (apiKey == null || apiKey.isBlank()) {
-                // 换过盐值或密文被改过 —— 与 UserConfigServiceImpl.decryptKey 同因
-                log.warn("API 配置 {} 解密出空 Key，疑似盐值变更", configId);
-                throw new ValidationException("API Key 解密失败，请重新保存一次配置");
-            }
+            String apiKey = EncryptorFactory.decryptChecked(salt, target.getAPIKey(), "API Key");
             List<ModelDescription> listModels = OpenAiModelCatalog
                     .builder()
                     .apiKey(apiKey)

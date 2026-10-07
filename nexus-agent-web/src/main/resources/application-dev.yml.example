@@ -97,8 +97,12 @@ nexus:
       flush-max-chars: 200
       flush-interval: 60ms
     memory:
-      # 对话记忆窗口的 token 上限（只影响送给模型的上下文，不影响已入库的消息）
-      max-tokens: 100000
+      # ❗ 不要写 max-tokens —— 理由同上面的 sse.timeout：profile 属性源优先级高于
+      #    AgentProperties 的默认值，写在这里就会盖掉它。
+      #    2026-10-06 生产上正是 prod 残留 `max-tokens: 24000` 把 1M 上下文的模型
+      #    压成 2.4 万 token 窗口（表现为「聊几次就被提示新建会话」）。
+      #    想调窗口，改 AgentProperties.Memory.maxTokens 的默认值。
+      #    已有 MemoryWindowDriftTest 盯着：这里再出现该键会直接测试失败。
       # token 估算器使用的模型名。注意它只用于本地估算，不产生 API 调用；
       # 与真实使用的模型不一致会导致窗口裁剪不准，换主力模型时建议同步改
       token-estimator-model: gpt-4o

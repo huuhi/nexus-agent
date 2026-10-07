@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb;
 import com.huzhijian.nexusagentweb.context.UserContextHolder;
 import com.huzhijian.nexusagentweb.em.BizType;
 import com.huzhijian.nexusagentweb.exception.QuotaExceededException;
+import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.impl.FileServiceImpl;
 import com.huzhijian.nexusagentweb.utils.AliOssUtil;
@@ -58,7 +59,7 @@ class FileServiceFileQuotaTest {
         QuotaService quota = mock(QuotaService.class);
         doThrow(new QuotaExceededException("今日文件与产物数量已达上限（已用 100 / 上限 100），明天 00:00 自动重置。"))
                 .when(quota).assertWithinFileQuota(1L);
-        FileServiceImpl fileService = new FileServiceImpl(ossUtil, quota);
+        FileServiceImpl fileService = new FileServiceImpl(ossUtil, quota, new AgentProperties());
 
         MultipartFile file = mock(MultipartFile.class);
 

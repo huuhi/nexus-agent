@@ -141,6 +141,7 @@ class SnowflakeIdPrecisionTest {
                 "a.pdf",                      // fileName
                 1024L,                        // fileSize
                 null,                         // failReason
+                null,                         // failCode（2026-10-07 新增，成功时为 null）
                 null,                         // uploadStatus
                 null,                         // createTime
                 BizType.CHAT,                 // bizType

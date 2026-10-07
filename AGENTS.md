@@ -32,6 +32,21 @@
    并在 [§11 变更记录](#11-变更记录本文件维护的更新日志) 里写一行「前端需要同步：……」。
    **不写就等于没改完。** 详见 [§8.1](#81-前端文档同步规则)。
 
+10. **🔴 `AgentProperties` 里的键，禁止在任何 profile yml 里重复声明。**
+    profile 属性源的优先级**高于**代码默认值 —— 在 `application-prod.yml` 里写一行，
+    就等于把 `AgentProperties` 的默认值静默废掉，而代码那边看起来完全没变。
+    这个坑在本项目**已经炸过两次，且两次都逃过了当时所有的护栏测试**：
+    - 2026-10-05：`prod` 残留 `sse.timeout: 120s` → 任务跑满 2 分钟必断；
+    - 2026-10-06：`prod` 残留 `memory.max-tokens: 24000` → 1M 上下文的模型实际只剩 2.4 万 token 窗口。
+
+    **唯一事实源是 `AgentProperties` 的字段默认值**，要改就改那里（全项目只此一处）。
+    现有护栏：`SseTimeoutDriftTest`（盯 `sse.timeout`）、`MemoryWindowDriftTest`（盯 `memory.max-tokens`）。
+    <br>⚠️ **新增一个 `AgentProperties` 字段时，顺手给它配一条同款护栏** ——
+    手工比对过（2026-10-06 全仓扫描）：目前 prod 里其余声明的值都与默认值一致，
+    属于冗余无害；但它们全都是「下次改默认值时的定时炸弹」。
+    <br>⚠️ **写这类护栏时最容易犯的错：用 `new AgentProperties()` 的默认值去算生效值。**
+    那正是 2026-10-06 漏网的原因 —— 读配置文件的测试必须读**那份文件里写了什么**。
+
 ---
 
 ## 1. 项目是什么
@@ -471,7 +486,10 @@ public class XxxTool implements AgentToolSet {
 > 3. 方法第一行接 `ToolCallGuard`，指纹只传「能区分是不是同一次调用」的关键参数；
 > 4. 所有外部调用包 `SafeExecuteToolHandler`，`toolName` 与 `@Tool(name=)` 保持一致；
 > 5. 失败要让模型能理解与自纠（结构化 `errorCode` + `hint`，见 §6.5）；
-> 6. 高成本/有副作用的工具**必须**考虑超时（HTTP 层统一超时见 §15 `tools.http-timeout`）。
+> 6. 高成本/有副作用的工具**必须**考虑超时（HTTP 层统一超时见 §15 `tools.http-timeout`）；
+> 7. **判断这个工具要不要给用户看**（2026-10-07 起）：内部基建动作（建沙盒、读写记忆、记日志）
+>    要加进 `AgentProperties.Tools.hiddenTools`，见 §6.21「工具可见性」。默认可见，
+>    忘了加的表现是"用户又看到一堆看不懂的内部卡片"。
 
 **第 2 步：没有了。** 不需要改 `ChatContextFactory`、不需要改任何配置
 （Spring 会把所有 `AgentToolSet` 实现注入 `ToolRegistry`）。
@@ -1155,6 +1173,43 @@ RUN runId=9f2c8a1b3d4e5f60 session=8b1e... user=1 model=deepseek-v4-flash cost=7
 
 ---
 
+### 6.21 工具可见性：哪些工具调用不发给用户看（2026-10-07）
+
+> 诉求：用户反馈「创建沙盒、查看用户记忆这种内部动作不该摊在对话里」，
+> 而「执行代码」这类功能性动作要照常显示。
+
+**配置**：`nexus.agent.tools.hidden-tools`（`AgentProperties.Tools.hiddenTools`，
+**唯一事实源，任何 profile yml 都不许声明** —— 它是 List，yml 里写一份会**整份取代**而不是合并，
+护栏 `ToolVisibilityDriftTest`）。
+
+默认隐藏 5 个：`create_box` / `delete_box` / `search_user_memory` / `save_user_data` / `record_log`。
+置空数组 = 全部可见。
+
+**判定入口**：`ToolVisibility#isHidden(toolName)`（忽略大小写与空格；null / 空白一律放行）。
+
+**两个过滤点，缺一不可**：
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| 实时流 | `SseResponseConverter#sendRequest` / `#writeToolResult` | 不推 `tool_execution` / `tool_execution_result` |
+| 历史 | `ChatMemoryServiceImpl#toMessageVO` | `GET /api/history/{sessionId}` 不返回（读取时过滤，库里不动） |
+
+🔴 **三条硬约束**（改动时别踩）：
+
+1. **绝不动存储层**。`chat_memory` 里的 `tool_calls` 与 `tool_result` 必须成对留着 ——
+   OpenAI 兼容协议要求 `tool_calls` 后面必须跟配对 id 的 `tool_result`，
+   删掉任何一半，下一轮请求会被供应商直接拒（400）。过滤只在"转给前端"这一瞬发生。
+2. **请求与结果必须一起隐藏**。只发一半会在前端留下一个永远等不到配对的孤儿结果卡片。
+3. **并行调用逐项过滤**。一条 `AiMessage` 可能带多个 `tool_calls`；
+   只有「正文、思考、可见调用」全空时才整条不返回，否则前端会渲染空气泡。
+
+**已知取舍**：隐藏工具执行期间前端收不到任何事件（画面静默）。用户已拍板不加「处理中」事件，
+连接由 15s 心跳注释帧保活。若日后觉得静默太久，加事件要同时改 `docs/sse-contract.md` 与前端。
+
+**新增工具时**：默认可见。属于内部基建的就加进 `hiddenTools`，并同步 `docs/前端增量变更.md`。
+
+---
+
 ## 7. API 一览（真实前缀是 `/api`）
 
 | 方法 | 路径 | Controller | 说明 |
@@ -1321,6 +1376,11 @@ Swagger 相关路径（`/swagger-ui.html`、`/swagger-ui/**`、`/v3/api-docs**`�
 
 | 日期 | 变更 | 影响文件 | 备注 |
 |---|---|---|---|
+| 2026-10-07（晚 3） | **🔴 线上 401 Invalid API Key：主密钥漂移会让解密静默产出乱码，并被当成 Key 发给厂商** | 改 `EncryptorFactory`（新增 `decryptChecked` + `fingerprint` + 主密钥指纹启动日志）、`ChatContextFactory`、`ChatServiceImpl`、`UserConfigServiceImpl`、`LexiangServiceImpl`、`McpInformationServiceImpl`（6 处解密全部换成带校验版）；新增 `EncryptorFactoryDecryptTest`(5) | **无前端契约变更**（报错文案变了：解密异常现在是明确的中文原因，不再是厂商那句 401）。**<br>**① 用户报「没改 Key / 换了个新 Key 还是 401」。根因隐患：Spring 的 `Encryptors.text()` 是 AES-CBC + 随机 IV，**解密不校验完整性** —— 主密钥与加密时不是同一把时它**不抛异常**，而是解出一串乱码；乱码被原样发给厂商，厂商只回 401，真实原因被完全掩盖。<br>**② 所以 `decryptChecked` 在解密后校验形状**：凭据必须是可打印 ASCII（各家 API Key 都是字母数字+少量符号），含 U+FFFD 或非可打印字符即判定为乱码并抛带原因的异常 —— **绝不让乱码流出网**。<br>**③ 启动日志新增「主密钥指纹」（SHA-256 前 12 位）**：用于比对「保存凭据时」与「使用凭据时」是不是同一把密钥，没有指纹时这类问题只能靠猜。<br>**④ ⚠️ 排查 401 的第一步是看 `CHAT_DECISION` 那行**：`模型=用户自带:xxx` 才走加密链路；`模型=系统默认(用户未配置该模型)` 走的是 **系统内置模型的环境变量 Key（`${DEEPSEEK}` 等）**，此时换自带 Key 当然无效。<br>**⑤ 反向验证**：用 A 加密、换 B 解密，测试必须变红（`wrongMasterKeyMustFailLoudly`）。<br>测试 **602→607**（新增 5），0 失败 |
+| 2026-10-07（晚 2） | **🔴 工具 `id` 不可用作列表 key**：`tool_execution` 新增 `index`；历史侧空 id 兜底合成（frontend 踩坑后根治） | 改 `MessageVO.ToolRequestVO`（+`index`）、`SseResponseConverter#writeToolRequestWithStream`（下发 index，`sendRequest` 加重载）、`ChatMemoryServiceImpl`（+`ensureToolIds`/`syntheticId`）；`docs/sse-contract.md` §3.3/§3.4、`docs/前端增量变更.md`；新增 2 条用例 | **前端需要同步（已写进 `docs/前端增量变更.md`）：`toolRequestList[]` 新增可选 `index`（仅 SSE 有，历史没有）；历史里工具 id 为 null 时后端合成 `row-<行id>#<序号>`。**<br>**① frontend 报「点历史记录后整个应用卡死」，根因是他用 `call.id` 做 `v-for` key：id 缺失/重复 → key 撞车 → Vue patch 拿到 null el → `Cannot set properties of null (setting '__vnode')`。**<br>**② 🔴 我核实后确认这是后端契约缺陷不是前端粗心**：`PartialToolCall.id()` 由供应商给、后端原样透传从未加工 —— 流式帧除首帧外 id 常为 null，某些兼容层完全不回传，同一批多条全是 null。**而 `PartialToolCall.index()` 一直存在、首帧就有、同批唯一，我们却从没下发。** 契约里"只是稀疏"这种措辞不够，已改成"可能缺失，也可能重复 —— 不要用 id 做 key"。<br>**③ 历史侧为什么必须兜底**：历史消息是 langchain4j 序列化的，`ToolExecutionRequest` 不含 index，只能合成 id。形如 `row-1002#0`，**带行主键所以全局唯一**（前端把不同消息的工具卡铺进同一个列表也不撞）。⚠️ 只补展示层，不动 `chat_memory` —— 动了会破坏模型侧的配对语义。<br>**④ 另一条易漏**：工具调用请求挂在 **AI 行的 `toolRequestList`** 上，不是独立的 `TOOL_EXECUTION` 类型行；frontend 以前只认后者 → 历史里工具卡丢参数、只剩孤儿结果。<br>测试 **600→602**（新增 2），0 失败 |
+| 2026-10-07（晚） | **内部工具调用不再下发给前端（工具可见性）**：5 个基建工具照常执行，但不推 SSE 事件、不进历史 | 新增 `tools/ToolVisibility`；改 `AgentProperties.Tools`（+`hiddenTools`）、`SseResponseConverter`（+字段与 2 处过滤）、`ChatServiceImpl`（传参）、`ChatMemoryServiceImpl#toMessageVO`（历史过滤）、5 个既有测试（补构造参数）；`docs/sse-contract.md` §3.3/§3.4、`docs/前端增量变更.md`；新增 `ToolVisibilityTest`(6)、`ToolVisibilityDriftTest`(2)、`SseToolVisibilityTest`(5)、`HistoryToolVisibilityTest`(5) | **前端需要同步（已写进 `docs/前端增量变更.md`）：事件与历史结构一行未改，只是 `create_box` / `delete_box` / `search_user_memory` / `save_user_data` / `record_log` 这 5 个工具不再出现；清单可配，前端不要硬编码工具名。**<br>**① 🔴 只过滤展示层，绝不动存储层**：工具调用与结果必须留在 `chat_memory` —— OpenAI 兼容协议要求 `tool_calls` 后面必须跟配对 id 的 `tool_result`，从记忆里删掉任何一半，下一轮请求会被供应商直接拒（400）。所以过滤点只有 `SseResponseConverter#sendRequest` / `#writeToolResult`（实时流）与 `ChatMemoryServiceImpl#toMessageVO`（历史）两处，存储层一个字没动。<br>**② 只在 SSE 屏蔽是不够的**：刷新页面历史会把藏起来的卡片原样带回，表现为「当时看不见、刷新又有了」，比不屏蔽更让人困惑。历史过滤发生在**读取时**，`chat_memory` 里的行不动。<br>**③ 隐藏工具执行期间画面静默是预期行为**（用户拍板：不加「处理中」事件），连接靠 15s 心跳注释帧保活；前端不要把「收到工具事件」当唯一加载信号。<br>**④ 并行调用要逐项过滤**：一条 `AiMessage` 可能带多个 `tool_calls`，只剔隐藏的那些；**整条只剩隐藏工具（无正文、无思考）时才整条不返回**，否则前端会渲染出一个空气泡。<br>**⑤ 继承铁律 10**：`hiddenTools` 是 List，yml 里声明会**整份取代**默认清单而不是合并 —— 配了 `ToolVisibilityDriftTest` 盯住任何 yml 不得声明该键（与 `SseTimeoutDriftTest` / `MemoryWindowDriftTest` 同款）。<br>**⑥ 改构造器签名的连带成本又一次出现**：加 final 字段后 5 个既有测试编译失败（它们直接调全参构造），已逐一补 `null` / mock 并注明「本用例不涉及可见性」—— 与同日上传那次是同款教训。<br>测试 **577→595**（新增 18），0 失败 |
+| 2026-10-07 | **上传接口：类型不支持不再静默消失 + 单次个数上限 10**（agent-mail 与 fronted 对齐后实现，他拍板「a 选 A、b 要」） | 新增 `em/UploadFailCode`、`FileServiceUploadRejectTest`(5)；改 `FileServiceImpl#uploadFile`（`continue` → 逐条 `FAILED` + 个数校验 + 注入 `AgentProperties`）、`SysFile`(+`failCode`，`@TableField(exist=false)` **不入库**)、`KnowledgeFileVO`(+`failCode`)、`FileTypeUtils`(+`supportedExtensionsText`)、`AgentProperties`(+`Upload.maxCount`=10)、4 个 `FileService*Test` 与 `SnowflakeIdPrecisionTest`(构造参数同步)、`docs/前端增量变更.md` | **前端需要同步（已写进 `docs/前端增量变更.md`）：`POST /api/file` 返回数组新增 `failCode`（机器可读失败码，成功为 null）；类型不支持**不再从列表里消失**，改为返回一条 `uploadStatus=FAILED` 记录；单次 > 10 个整批拒绝（200 + `code=1`）。**<br>**① 用户反馈「什么都能传很离谱」的根因<b>不在前端</b>**：原实现 `if (!isSupportedDocument) continue;` —— 文件既不入库也不报错，返回列表里直接没有它，前端拿不到任何失败信号。前端加 `accept` 只是掩盖，后端本就该拒绝。改为**逐条标记失败**（fronted 选的 A 方案：坏文件不毁整批），与 OSS 失败的既有结构一致。<br>**② `failCode` 是为 fronted 的验收要求「必须能区分『类型不支持』与『超出配额』」加的** —— 只靠 `failReason` 中文文案区分不可靠（文案会改/会本地化），而两者处理方式完全不同（换格式 vs 清理空间）。⚠️ 它与 `UploadStatus` 是两个维度，不要合并。<br>**③ `failCode` 刻意 `@TableField(exist = false)` 不入库**：它只服务当次响应，落库没有意义，加列要付迁移成本（铁律 6）。列表页渲染用 `failReason`（给人看），分支判断用 `failCode`（给代码看）。<br>**④ 个数上限放在配额校验<b>之前</b>**：这是请求级问题，没必要为一个必然失败的请求先查配额。<br>**⑤ 反向验证已做**：把实现改回 `continue`，`FileServiceUploadRejectTest` 两条用例立刻变红（`expected: <1> but was: <0>` / `<3> but was: <2>`）。<br>**⑥ 教训**：改构造函数签名会连带 5 个测试编译失败（它们直接 `new FileServiceImpl(...)` / `new KnowledgeFileVO(...)` 全参构造）—— `@AllArgsConstructor` 加字段是**破坏性**的，改完要跑全量而不是只跑相关模块。<br>测试 **572→577**（新增 5），0 失败 |
+| 2026-10-06 | **🔴🔴 fix：1M 上下文的模型实际只拿到 2.4 万 token 窗口（prod 残留 `max-tokens: 24000` 盖掉代码默认 300000）+ 前端「聊几次就提示新建会话」误导**；顺带给前端下发真实上下文用量信号 | 改 `application-prod.yml`（删残留 `max-tokens: 24000`）、`application-dev.yml.example`（删同款残留 `100000`）、`context/ContextUsage`（**新增**）、`ChatContext`(+`contextUsage`)、`ChatContextFactory`（估算器改为建一次共用 + 建 `ContextUsage`）、`PgChatMemoryStore`（`forRun` 新增 usage/estimator 参数、加载后回填用量）、`SseResponseConverter`(+`markContextUsage`/`withContext`)、`ChatServiceImpl`（`chat()` 返回后登记快照）、`ProdLatencyGuardTest`（**修正测错对象**）、`ModelCapabilities`/`AgentProperties`（注释订正）、`AGENTS.md` 配置表、`docs/前端增量变更.md`、`docs/模型能力配置（前端）.md`；新增 `MemoryWindowDriftTest`(3)、`ContextUsageSignalTest`(4) | **前端需要同步（已写进 `docs/前端增量变更.md`）：① `finish`/`stopped`/`error` 三事件 `data` 新增可选字段 `contextWindow`/`contextUsed`/`contextMsgs`/`contextRatio`；② 🔴「长会话引导」必须**停止按 12 条消息触发**，改用 `contextRatio >= 0.8`。**<br>**① 根因与 2026-10-05 的「2 分钟被掐断」完全同构**：当天上午压窗口时把 `AgentProperties.Memory.maxTokens` 从 100000 调到 24000，下午证伪后**只把 Java 默认值改回 300000，`application-prod.yml` 里那行没删** —— profile 属性源优先级高于代码默认值，而 `active: prod`。结果 1M 上下文的 `mimo-v2.6-pro/flash` 生效窗口 `min(24000, 1000000−32768)` = **24000（声明值的 2.4%）**，`deepseek-flash` 同样 24000。用户反馈原话：「现在很多模型都是 1M，对话几次就让我 new 窗口，怎么可能那么快」。<br>**② 🔴 更值得记的是：当时三个护栏测试全绿**。`ProdLatencyGuardTest` 用 `new AgentProperties()` 的**代码默认值**去算生效窗口，**从不读 prod 里写了什么** —— 读配置文件的测试却读默认值，等于护栏测了个寂寞。已改为用 prod 实际声明值；报错也拆成「卡在全局天花板」与「卡在模型元数据」两种（修法完全不同，混在一起会把人带沟里 — 反向验证时亲历）。<br>**③ 第二处漂移是新增护栏自己扫出来的**：`application-dev.yml.example` 里还残留 `max-tokens: 100000`。与 `sse.timeout` 同一治理方式：**该键禁止出现在任何 profile yml，唯一事实源收归 `AgentProperties.Memory.maxTokens`**，由 `MemoryWindowDriftTest` 盯（已反向验证：把 24000 塞回去，两条护栏都变红）。<br>**④ 前端误报的第二层原因是结构性的**：它没有「真实用量」可看，只能数消息条数，而条数与占用完全不成正比（一轮带工具调用的 agent 对话能顶几十轮闲聊）。所以补了 `ContextUsage`：记忆存储加载历史后回填条数与估算 token，随收尾事件下发。⚠️ 口径是**加载量（裁剪前）**而非发送量 —— 加载量才是「这个会话积累了多少」，裁剪后永远贴着窗口、看不出趋势；且 `ratio > 1` 正好就是「本轮已开始丢更早历史」的信号。<br>**⑤ 时序坑**：`ContextUsage` 必须在 `chatAssistant.chat()` **返回之后**再登记 —— 历史是 LangChain4j 在 `chat()` 内部同步加载的，读早了是空壳（全 0）。<br>**⑥ 顺带**：估算器原来每次请求 new 两次（给 `TokenWindowChatMemory` 一个、记忆存储一个），BPE 词表冷启动成本付两遍；现在共用一个实例。<br>**⑦ 文档订正**：`docs/模型能力配置（前端）.md` 里 65536/16384 与「全局上限 24000」都是已推翻的旧结论，已改为 131072/32768 与 300000，并写明「填成 1M 也不会真用满，生效值被压到 30 万」（有意兜底，不是 bug）。<br>测试 **565→572**（新增 7），0 失败 |
 | 2026-10-06 | **用户分级配额（NORMAL / TEST / VIP）+ 长期记忆写不进库的修复 + 首字延迟治理** | 新增 `em/UserRole`、`docs/sql/012`、`FileMapper#countSince`、`BoxToolPublishQuotaTest`(3)、`FileServiceFileQuotaTest`(1)；改 `User`（+`role`/`fileQuota`）、`QuotaService(+Impl)`、`FileServiceImpl`、`UserServiceImpl`、`BoxTool`、`MemoryTool`、`UserMemoryService(+Impl)`、`QuotaVO`、`AgentProperties`、`application-prod.yml`、`QuotaServiceTest`(+11)、`ToolFailureContractTest`(+1)、`docs/前端增量变更.md` | **前端需要同步（已写进 `docs/前端增量变更.md`）：`GET /api/user/quota` 纯增量新增 `role` / `fileQuota` / `fileUsed` / `fileRemaining` / `fileUnlimited` 五个字段；上传超限返回 HTTP 200 + `Result{code=1}`（msg 已带「已用/上限/明天 00:00 重置」）。**<br>**① 长期记忆「接口说 ok、库里啥也没有」根因**：`MemoryTool#saveLongMemory` 用 `UserContextHolder.getUserId()`，而工具跑在**流式回调线程**，ThreadLocal 恒为 null → `user_id=null` → 撞 `user_memory.user_id NOT NULL`；**而 `UserMemoryServiceImpl#saveMemory` 带 `@Async`，异常被线程池吞掉** → 工具照常返回 `"ok"`。修复三件套：改用 `RunUserRegistry` 反查（`@ToolMemoryId`）、**去掉 `@Async`**（记账类异步必须有补偿，这里没有）、`saveMemory` 开头对 `userId==null` 直接抛 `UnauthorizedException`。顺带把工具失败文案改成带原因的人话（原来 `"错误，请勿重复"+null`）。<br>**② 顺手修了同款 ThreadLocal 坑**：`BoxTool#download_file` 与 `publish_artifact` 也在工具线程里读 `UserContextHolder` → 传给沙盒的 `user_id` 恒为空，OSS 对象不归属任何用户。已改为 `RunUserRegistry` 反查。<br>**③ 配额拦截点必须选对**：文件（用户上传）拦在 `FileServiceImpl#uploadFile` 的**最前面**（OSS 之前）；产物拦在 **`BoxTool#publish_artifact` 调用 `sandboxClient.downloadFile` 之前** —— 一旦走完 downloadFile，文件已经生成并上传，再拦只能拦住「落库 + 下载卡片」，对象会变成 OSS 孤儿。工具侧返回**结构化失败**（`errorCode=QUOTA_EXCEEDED` + hint 让模型别重试、别用 `download_file` 绕开）而不是抛异常，这样模型能转述给用户。<br>**④ 角色档位**：`NORMAL` 每日 100 万 token / 100 个文件；`TEST` 每日 1000 万 / 不限文件；`VIP` 预留 1000 万 / 1000 个。注册按 `nexus.agent.quota.default-role`（默认 `NORMAL`）写 `role` + `token_quota` + **`token_period=DAILY`** + `file_quota`。⚠️ `token_period` 必须显式写 DAILY：全局默认 `period=NONE`（累计不重置）会让「每天 100 万」变成「一辈子 100 万」。原 `default-quota` 降级为兜底，生产别再依赖。<br>**⑤ `UserRole` 编译坑**：枚举常量的实参里用**简单名**引用本类后声明的 `static final long` 属「非法前向引用」，必须写全限定名 `UserRole.FILE_UNLIMITED`（值是编译期常量，加限定不会读到 0）。<br>**⑥ 测试教训**：Mockito 对 **`Map` 返回值默认给空 Map 而不是 null**，而 `BoxTool` 的判据是 `blocked != null` → 不打桩就会被空 Map 当成「命中拦截」直接返回；必须显式 `when(guard.intercept(...)).thenReturn(null)`。另 `MockitoExtension` 严格模式下，把「配额拦截」用例塞进已有测试类会因 setUp 里的 `saveBatch` 桩用不上而报 `UnnecessaryStubbing`，独立成类更干净。<br>**⑦ 首字延迟**见上一条（commit `02cf00c`）。测试 **505**（新增 15），0 失败，12 人工跳过 |
 | 2026-10-06 | **首字延迟治理（第二轮）：记忆窗口大幅收紧 —— 主因不是 CPU/DB，是发给模型的 prompt 太大** | 改 `AgentProperties.Memory`(maxTokens 100000→24000、新增 `maxHistoryMessages`=200)、`ModelCapabilities`(DEFAULT_CONTEXT_WINDOW 256000→65536、DEFAULT_MAX_OUTPUT_TOKENS 32000→16384)、`PgChatMemoryStore`(改用限量查询 + `CHAT_MEMORY` 埋点)、`ChatMemoryService(+Impl)`、`ChatMemoryMapper(.xml)`(新增 `getRecentForChat`)、`ChatContextFactory`(日志加 window/ctx/out/tools)、`application-prod.yml`(**新增 logging 段覆盖为 info**、修 `deepseek-flash` 元数据 1000000/384000→65536/8192、max-tokens→24000)、`docs/模型能力配置（前端）.md`、`docs/前端增量变更.md`；新增 `ProdLatencyGuardTest`(3)、`ChatMemoryRecentForChatTest`(2)、`ModelCapabilitiesTest`(+1 护栏) | **① 排查方法（值得复用）**：先用 `jshell`/`javac` 跑一个独立基准量化各段 —— 结果 `AiServices.build` 1ms、200 条历史的 BPE 估算 52ms、本地前置合计仅 ~100ms 量级 → **4 秒不在本地 CPU**。真正的量在「发给模型的 prompt 有多大」。<br>**② 真凶（三处配置）**：`memory.max-tokens: 100000` + `deepseek-flash` 填了 `contextWindow: 1000000`/`maxOutputTokens: 384000` → 记忆窗口 = `min(100000, 1000000−384000)` = **10 万 token**。模型吐第一个字前必须把整个 prompt 做 prefill，历史越长越慢（线上实测首字 4 秒、长会话 21 秒，且**越聊越慢**）。同时 384000 会作为 `max_tokens` 原样发给服务商（远超真实上限）。<br>**③ 🔴 生产一直在跑 DEBUG**：`application.yml` 把 `com.huzhijian.nexusagentweb` 设为 debug，而 `application-prod.yml` 没有覆盖 → MyBatis 的 mapper 同在这个包下，**每轮 5~8 条 SQL 连同参数全量同步写 stdout**。已在 prod 显式覆盖为 info（排查延迟要的 `CHAT_PREFLIGHT`/`CHAT_CONTEXT`/`CHAT_MEMORY`/`CHAT_TTFB`/`RUN` 本来就是 INFO，不受影响）。<br>**④ 默认值取向改为「宁小勿大」**：`contextWindow`/`maxOutputTokens` 填大的代价（prefill 拖慢首字、`max_tokens` 超真实上限被 400）**远大于**填小的代价（少带一点上下文）。<br>**⑤ 读历史改为限量**：新增 `getRecentForChat`（SQL 先 `order by create_at desc, id desc limit N` 再外层正序还原）。⚠️ **直接 `order by create_at limit N` 会拿到最早的 N 条，正好相反**。⚠️ `limit<=0` 必须在 Java 层分流走全量 —— SQL 的 `LIMIT 0` 返回 0 行（模型直接失忆）、`LIMIT -1` 报错。<br>**⑥ 护栏测试的方向要钉对**：一开始断言「声明的 contextWindow 不得 > 20 万」，结果误伤了真实宣称 1M 上下文的小米 MIMO —— 但记忆窗口 = `min(max-tokens, 窗口−输出)` 已被 `max-tokens` 兜住，声明大窗口无害。改为断言**实际生效值**（用 `ModelCapabilities.of(Model).memoryWindow(globalMax)` 算一遍）才对。<br>**⑦ 前端需要同步（已写进 `docs/前端增量变更.md` + `docs/模型能力配置（前端）.md`）**：模型编辑表单 placeholder 改 `65536` / `16384`；长会话会开始丢更早的上下文，建议把「新建会话」做得更显眼。测试 **511**（新增 6），0 失败，12 人工跳过 |
 | 2026-10-06 | **新增「停止生成」+ 修「技能多选取消全部反而启用全部」+ SSE 新增 `stopped` 事件** | 新增 `context/RunCancellationRegistry`、`exception/RunCancelledException`、`dto/StopChatDTO`、mapper `existsByRunId`(+XML)；改 `ChatController`(+`/stop`)、`ChatServiceImpl`（3 个中断检查点 + 补落库）、`SseResponseConverter`(+`writeStopped`)、`SseEventType`(+`STOPPED`)、`SkillLoader`(空数组语义)、`ChatMemoryService(+Impl)`、`docs/sse-contract.md`(§3.7)、`docs/前端增量变更.md`；新增 `StopGenerationTest`(12)、`SkillLoaderTest`(+3) | **前端需要同步（已写进 `docs/前端增量变更.md` 与 `docs/sse-contract.md` §3.7）：新增 `POST /api/chat/stop`（`runId`/`sessionId` 二选一，失败也是 200 + `code=1`）；SSE 新增 `stopped` 事件（`data={reason, partial}`），前端**不得**弹错误提示、**不得**触发 `finish` 的自动后续动作；`ChatDTO.skills` 空数组语义从「全部」改为「都不用」。**<br>**① 「断开 SSE ≠ 停止任务」是 2026-10-03 刻意的（断线就丢弃产出、任务还在烧钱是最坏组合），所以「等太久只能干瞪眼」一直缺这条路。**停止与被动断开必须严格分开**：`onTimeout`/关网页仍让任务跑完落库，只有显式 `POST /stop` 才真的停。<br>**② 🔴 langchain4j 的 `TokenStream` 没有 cancel/close** —— 唯一能真正停掉它的办法是让回调链抛异常（内部 `Spliterator` 循环因此终止、上游 HTTP 流取消）。代价：**它会走 `onError`，而 langchain4j 只在 `onCompleteResponse` 时写记忆** → 已生成的那半截回答刷新后消失。补救：按 `run_id` **幂等**补写一条 AI 消息（`existsByRunId` 守卫；重复行会让下一轮锚点定位错位、把整段历史重写一遍）。一个字符都没生成时**不写**（空回答会污染上下文）。<br>**③ 中断要有 3 个检查点**：思考流 / 正文增量 / 工具参数流。只在正文加检查点的话，「思考了 15 秒」和「正在吐几万字符的工具参数」这两种都停不下来。<br>**④ 停止是用户意图不是失败**：新增 `stopped` 事件而**不是**复用 `error`（弹红字会让用户以为出错）；且前端**不应**在 `stopped` 时触发 `finish` 的自动后续动作。<br>**⑤ 🐛 `putIfAbsent` 用错导致停止功能静默失效**（写测试时被抓到）：`register` 已放了 `FALSE`，而 `putIfAbsent` 的语义是「key 不存在才放入」→ 永远返回旧值 `FALSE`、**永远改不了状态**。必须用 `put`（覆盖语义，靠返回的旧值判断是否从运行中改过来）。这类「集合 API 语义搞反」的 bug 编译期与肉眼 review 都发现不了，只有断言 `cancel() == true` 才抓得到。<br>**⑥ 手动叫停不发 `finish`**：所以 `isNewSession` 时**不生成标题**（新会话被叫停 → 会话列表里是空标题）。已知取舍，优先级低。<br>测试 **526**（新增 15），0 失败，12 人工跳过 |
@@ -1608,7 +1668,8 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.sse.timeout` | `1800s` | SSE 连接超时。**必须大于最慢一次模型调用**，否则复杂任务被掐断。⚠️ **不要在任何 profile yml 里写这个键**——写了会盖掉这里的默认（2026-10-05 的「2 分钟中断」就是 prod 残留 120s 干的） |
 | `nexus.agent.sse.flush-max-chars` | `200` | 流式增量合并：攒够这么多字符就推一帧（P2-12，见 §6.14）。调大→帧更少更省但到达略慢 |
 | `nexus.agent.sse.flush-interval` | `60ms` | 流式增量合并的兜底时间阈值（≈16 帧/秒，与屏幕刷新率相当） |
-| `nexus.agent.memory.max-tokens` | `100000` | 对话记忆窗口。只影响送给模型的上下文，**不影响已入库的消息** |
+| `nexus.agent.memory.max-tokens` | `300000` | 对话记忆窗口的**全局天花板**。只影响送给模型的上下文，**不影响已入库的消息**。实际生效值 `= min(本值, 模型的 contextWindow − maxOutputTokens)`。⚠️ **不要在任何 profile yml 里写这个键**——写了会盖掉代码默认（2026-10-06 晚的「1M 模型只剩 2.4 万窗口」就是 prod 残留 24000 干的），有 `MemoryWindowDriftTest` 盯着 |
+| `nexus.agent.memory.max-history-messages` | `200` | 单次对话最多从库里取回多少条历史（SQL 层截断，与上面的 token 窗口是**两套独立机制**） |
 | `nexus.agent.memory.token-estimator-model` | `gpt-4o` | token 估算器用的模型名。只做本地估算、不产生 API 调用；与实际模型不一致会导致窗口裁剪不准 |
 | `nexus.agent.memory.max-results` | `20` | 长期记忆单次检索最多返回多少条（P2-7，见 §6.15）。这些条目会进提示词，太多既费 token 又稀释重点 |
 | `nexus.agent.memory.max-keywords` | `6` | 一次检索最多拆几个关键词。模型可能丢整句话进来，拆太多会让 OR 条件膨胀 |
@@ -1629,6 +1690,7 @@ ls nexus-agent-web/src/main/resources/application-dev.yml   # 不存在就先建
 | `nexus.agent.tools.http-timeout` | `100s` | 工具 HTTP 调用的响应超时。**刻意小于 `sse.timeout`**，以便先返回结构化 `TIMEOUT` 而不是掐断整条流（见 §6.11） |
 | `nexus.agent.tools.duplicate-window` | `60s` | 重复调用判定窗口（见 §6.11） |
 | `nexus.agent.tools.duplicate-threshold` | `2` | 窗口内允许的相同调用次数，超过即拦截并回灌提示；设 `0` 关闭治理 |
+| `nexus.agent.tools.hidden-tools` | `create_box, delete_box, search_user_memory, save_user_data, record_log` | 对**前端**隐藏的工具名（见 §6.21）。照常执行、照常进模型上下文，只是不推 SSE 事件、不进历史。⚠️ **是 List：yml 里声明会整份取代默认清单而非合并**，故任何 profile yml 都不要写这个键（护栏 `ToolVisibilityDriftTest`） |
 | `nexus.agent.cors.enabled` | `false`（prod）/ `true`（dev） | **是否开启跨域**（`CorsConfig`，走 `CorsFilter` 故预检不会撞登录拦截器）。prod 默认关；开启时必须同时给 `allowed-origins` |
 | `nexus.agent.cors.allowed-origins` | 空 | 允许的**前端来源**，逗号分隔（支持 `http://localhost:*`）。⚠️ 空 = 不注册任何规则（等同关闭，**不会**退化成放行所有）；填 `*` 会打 WARN |
 | `nexus.agent.observability.enabled` | `true` | 是否输出每次 Run 的汇总日志（见 §6.12） |

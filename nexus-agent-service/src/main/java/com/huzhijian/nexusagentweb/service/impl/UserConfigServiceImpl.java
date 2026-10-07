@@ -200,11 +200,9 @@ public class UserConfigServiceImpl extends ServiceImpl<UserConfigMapper, UserCon
 
     private String decryptKey(String salt,String encryptKey){
         //            解密，并且只显示前面和末尾
-        String apiKey = EncryptorFactory.text(salt).decrypt(encryptKey);
-        // 换过 salt 或密文被改过时解密会拿到 null，下面 .length() 直接 NPE 变 500
-        if (apiKey == null) {
-            throw new ValidationException("MCP APIKEY 解密失败，请重新设置！");
-        }
+//            2026-10-07：改用带校验的解密 —— 主密钥不一致时会明确报错，而不是返回一串乱码
+//            （乱码在这里会被掩码成 "**xx"，页面上看不出问题，实际请求却 401）
+        String apiKey = EncryptorFactory.decryptChecked(salt, encryptKey, "API Key");
         int keepPrefix=2;
         int keepSuffix=4;
         if (apiKey.length()>keepSuffix+keepPrefix) {

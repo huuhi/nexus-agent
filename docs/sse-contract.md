@@ -103,8 +103,24 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 ```
 
 ⚠️ **`arguments` 是流式片段**：同一个工具调用的 `arguments` 会被拆成多帧逐步补全
-（`{"cmd":` → `{"cmd":"ls` → …）。要展示参数，请**按 `id` 累积拼接**，
+（`{"cmd":` → `{"cmd":"ls` → …）。要展示参数，请**按 `id`（或 `index`）累积拼接**，
 不要每次都当成完整 JSON 去解析（早期帧是非法 JSON）。
+
+> 🔴 **`id` 可能缺失，也可能重复 —— 不要用 `id` 做列表 key**（2026-10-07，frontend 踩坑后钉死）。
+> `id` 由模型/供应商给出，后端原样透传、不做加工，因此：
+> - 流式帧里**除首帧外 `id` 常常不带**（为 `null`）；
+> - 某些供应商的兼容层**压根不回传 tool_call id**，同一批里多条都是 `null`；
+> - 历史接口同样可能拿到 `null`（后端会兜底，见下）。
+>
+> frontend 曾直接用 `call.id` 做 `v-for` 的 key，id 撞车时 Vue patch 拿到 null el，
+> 抛 `Cannot set properties of null (setting '__vnode')`，**整个应用渲染停摆**。
+>
+> **正确做法**：用 **`index`** 做 key（同一批并行调用里 `0,1,2…` 稳定唯一，首帧就有、不会为 null）；
+> 需要跨消息全局唯一时用 `消息id + index`。`id` 只用来和 `tool_execution_result` 配对，
+> 而配对本身也要能接受配不上（见 §3.4）。
+
+**`index` 字段（2026-10-07 新增，可选）**：`toolRequestList[]` 的每项带 `index`（整数）。
+仅 `tool_execution` 事件有；历史接口没有（历史消息里 langchain4j 不带 index，后端改为兜底合成 id）。
 
 ### 3.4 `tool_execution_result`
 
@@ -115,6 +131,21 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 
 用 `id` 与 `tool_execution` 配对。`isError=true` 时 `result` 是结构化错误
 （`{success,errorCode,message,hint}` 的 JSON 文本，见 `AGENTS.md §6.5`）。
+
+⚠️ **配对要能接受"配不上"**：`id` 可能为 `null`（原因同上），
+此时既不能拿 `null` 当 key，也不能假设"有 result 就一定找得到对应 request"。
+建议按 `index` 归位、按 `id` 只做**尽力**配对。
+
+> 🔴 **2026-10-07 起：部分工具调用不会下发这两个事件**（内部的基建动作，如建沙盒、读写长期记忆）。
+> 清单是**配置驱动**的（`nexus.agent.tools.hidden-tools`，默认
+> `create_box` / `delete_box` / `search_user_memory` / `save_user_data` / `record_log`），
+> 后端随时可能调整，所以前端**不要硬编码工具名**做白/黑名单。
+> 契约上的含义：
+> - 一个工具调用要么**两个事件都发**，要么**两个都不发**，不会只发一半；
+> - 同一批并行调用里，可能只发其中几个工具的；
+> - 隐藏工具执行期间**没有任何事件**（画面静默是正常的），连接靠心跳注释帧保活；
+> - 历史接口 `GET /api/history/{sessionId}` 同样过滤，刷新页面也不会冒出来（但**数据库里仍有**，
+>   模型上下文需要它）。
 
 ### 3.5 `artifact`（交付物）
 
