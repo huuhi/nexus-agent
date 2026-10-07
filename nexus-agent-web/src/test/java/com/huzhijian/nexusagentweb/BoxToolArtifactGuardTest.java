@@ -44,7 +44,7 @@ import static org.mockito.Mockito.when;
  *       拒绝发布并删掉坏文件。这层能抓住**任何来源**的字节损坏。</li>
  * </ol>
  */
-@DisplayName("publish_artifact 两道防线 —— 沙盒旧代码要报错，坏文件不能流到用户手里")
+@DisplayName("publish_artifact 防线 —— 坏文件不能流到用户手里（沙盒旧代码只告警不拦）")
 class BoxToolArtifactGuardTest {
 
     private SandboxClient sandboxClient;
@@ -81,19 +81,38 @@ class BoxToolArtifactGuardTest {
     }
 
     @Test
-    @DisplayName("🔴 沙盒响应缺 binary_read 标志 → 判定沙盒代码过旧，明确报错并给部署指引")
-    void outdatedSandboxIsRejected() {
+    @DisplayName("🔴 沙盒缺 binary_read 标志 → **不拦**（文本文件本来没问题，拦下来只是白 outage）")
+    void outdatedSandboxIsNotBlocked() {
         Map<String, Object> resp = new HashMap<>();
         resp.put("url", "https://oss/report.png");
         resp.put("size", 2048); // 旧代码：没有 binary_read 字段
         when(sandboxClient.downloadFile(eq("/home/report.png"), eq("box-1"), eq(7L))).thenReturn(resp);
+        // 模拟魔数校验读不到头（放行路径）
+        when(aliOssUtil.readObjectHead(anyString(), anyInt())).thenReturn(null);
 
         Map<String, Object> result = publish();
 
-        assertEquals("SANDBOX_CODE_OUTDATED", result.get("errorCode"),
-                "旧沙盒必须被明确拒绝 —— 静默放行的结果是用户拿到打不开的 png（10-07 线上复现）");
+        assertEquals(true, result.get("success"),
+                () -> "缺版本标志不该拦截 —— web 与 box 独立部署、升级节奏不同步，"
+                        + "硬拦会导致「只更新 jar 就所有下载全挂」。实际：" + result);
+    }
+
+    @Test
+    @DisplayName("沙盒旧 + 二进制确实坏了 → 魔数校验拦下，且 hint 直接给出修复命令")
+    void corruptedBinaryOnOldSandboxPointsAtTheFix() {
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("url", "https://oss/report.png");
+        resp.put("size", 2048); // 旧代码：无 binary_read
+        when(sandboxClient.downloadFile(eq("/home/report.png"), eq("box-1"), eq(7L))).thenReturn(resp);
+        when(aliOssUtil.readObjectHead(eq("https://oss/report.png"), anyInt()))
+                .thenReturn(new byte[]{(byte) 0xEF, (byte) 0xBF, (byte) 0xBD, 0x50, 0x4E, 0x47, 0x0D, 0x0A});
+
+        Map<String, Object> result = publish();
+
+        assertEquals("SANDBOX_ARTIFACT_CORRUPTED", result.get("errorCode"));
         String hint = String.valueOf(result.get("hint"));
-        assertTrue(hint.contains("nexus_agent_box"), "指引要说到点子上（重新部署沙盒代码）：实际=" + hint);
+        assertTrue(hint.contains("docker compose"),
+                () -> "既然已确认沙盒代码旧，hint 就要直接给修复命令，别让模型和运维猜：" + hint);
     }
 
     @Test

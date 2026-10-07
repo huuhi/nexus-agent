@@ -159,8 +159,9 @@ public class BoxTool implements AgentToolSet {
         Long userId = runUserRegistry.findUserId(memoryId);
         Map<String, Object> result = handleBoxResult(memoryId, safeExecuteToolHandler.mapTool("download_file",
                 () -> sandboxClient.downloadFile(path, resolved, userId)));
-//        2026-10-07：识别「线上沙盒跑旧代码」—— 旧代码按文本读二进制，产物必坏且无从察觉
-        return requireBinaryRead(result, "download_file");
+//        2026-10-07：只记诊断日志，**不拦**（理由见 warnIfSandboxCodeOutdated）
+        warnIfSandboxCodeOutdated(result, "download_file");
+        return result;
     }
 
     /**
@@ -213,10 +214,7 @@ public class BoxTool implements AgentToolSet {
             // 失败（含沙盒失效）原样回传：SafeExecuteToolHandler/handleBoxResult 已经给了模型自纠提示
             return result;
         }
-        result = requireBinaryRead(result, "publish_artifact");
-        if (isFailure(result)) {
-            return result;
-        }
+        result = warnIfSandboxCodeOutdated(result, "publish_artifact");
         Map<String, Object> payload = artifactPayload(result, path, name);
         if (isFailure(payload)) {
             return payload;
@@ -238,43 +236,51 @@ public class BoxTool implements AgentToolSet {
             } catch (Exception e) {
                 log.warn("删除损坏产物失败（忽略）：url={}", url);
             }
-            log.error("产物魔数校验失败，已拒绝发布：path={} 原因={}", path, mismatch);
+            log.error("产物魔数校验失败，已拒绝发布：path={} 原因={} 沙盒代码版本={}",
+                    path, mismatch, result.containsKey(BINARY_READ_FLAG) ? "新" : "旧（缺 binary_read）");
+//            hint 按「沙盒代码确实是旧的」与否给不同说法：旧代码那条要直接给出修复命令，
+//            否则模型和运维都只能猜
+            String hint = result.containsKey(BINARY_READ_FLAG)
+                    ? "沙盒返回了版本标志却仍读出坏文件，可能是文件在生成环节就已损坏。"
+                    + "不要用同一文件反复重试，请换个路径或重新生成。"
+                    : "已确认沙盒代码过旧（响应缺 binary_read 标志）—— 二进制被按文本读取。"
+                    + "请在服务器上更新并重建 box 容器：cd nexus_agent_box && "
+                    + "docker compose -f docker-compose.yml up -d --build，然后重试。";
             return structuredFailure("SANDBOX_ARTIFACT_CORRUPTED",
-                    "产物文件头校验失败：" + mismatch + "（坏文件已删除，未发布）",
-                    "沙盒服务可能在按文本模式读文件（二进制被损坏）。"
-                            + "请确认沙盒侧 nexus_agent_box 已更新到带 binary_read 标志的版本后重试；"
-                            + "不要用同一文件反复重试。");
+                    "产物文件头校验失败：" + mismatch + "（坏文件已删除，未发布）", hint);
         }
         return payload;
     }
 
-    /** 沙盒下载响应里标识「按二进制读」的字段（2026-10-07 起新版 nexus_agent_box 才有） */
+    /**
+     * 沙盒下载响应里标识「按二进制读」的字段（10-05 修复后的 nexus_agent_box 才有）。
+     */
     private static final String BINARY_READ_FLAG = "binary_read";
 
     /**
-     * 🔴 识别「线上沙盒跑旧代码」。
+     * 沙盒代码可能过旧的**诊断**（2026-10-07）。
      * <p>
-     * 10-05 修过「二进制被按文本读」的 P0（E2B SDK format 默认 "text"，非法字节
-     * 全部替换成 U+FFFD）。症状非常有辨识度：png/jpg/docx 打不开，svg/md/html/csv 却正常
-     * —— 因为文本文件没有非法字节。但修复在**沙盒侧**，线上沙盒跑旧代码时
-     * Java 侧无从察觉：响应形状一模一样（{url, size}），用户只会看到产物又坏了。
+     * <b>为什么不直接拦截</b>（曾经的写法已撤回）：本项目 web 与 box <b>独立部署</b>，
+     * 两者升级节奏不同步。若把「缺这个标志」当成硬失败，会出现
+     * 「只更新了 jar、没更新 box → <b>所有</b>文件下载全报错」——
+     * 而那些文件（csv/md/html 等文本类）本来完全没问题，拦下来只是白 outage。
      * <p>
-     * 新版沙盒在下载响应里带 {@code binary_read: true}；缺这个字段就判定沙盒代码过旧，
-     * 给出**明确**的结构化错误与部署指引 —— 明确失败永远优于把坏文件发布给用户。
+     * 真正的拦截是 {@link #magicMismatch} 那道**魔数校验**：只有二进制文件才需要担心被损坏，
+     * 文本文件没有非法字节、怎么解码都不坏。这才是针对性防线。
+     * <p>
+     * 所以这里只<b>打 WARN</b>：沙盒代码老这件事应该在日志里看得见，
+     * 并在真的产出坏文件时作为 hint 提示更新，而不是无条件拦路。
      */
-    private Map<String, Object> requireBinaryRead(Map<String, Object> result, String toolName) {
-        if (result == null || isFailure(result)) {
+    private Map<String, Object> warnIfSandboxCodeOutdated(Map<String, Object> result, String toolName) {
+        if (result == null || isFailure(result) || result.containsKey(BINARY_READ_FLAG)) {
             return result;
         }
-        if (result.containsKey(BINARY_READ_FLAG)) {
-            return result;
-        }
-        log.error("工具 [{}] 收到的沙盒响应缺少 {} 标志 —— 线上沙盒跑的是旧版 nexus_agent_box，"
-                + "二进制文件会被按文本读并损坏", toolName, BINARY_READ_FLAG);
-        return structuredFailure("SANDBOX_CODE_OUTDATED",
-                "沙盒服务的代码版本过旧（下载响应缺少 binary_read 标志），二进制文件会被按文本读并损坏。",
-                "请在沙盒侧重新部署 nexus_agent_box（必要时重建 E2B 模板并设置 E2B_TEMPLATE_ID）后重试。"
-                        + "在沙盒更新之前，请不要重试本工具 —— 结果只会是打不开的文件。");
+        log.warn("工具 [{}]：沙盒响应缺少 {} 标志 —— 线上 box 可能仍是 10-05 之前的旧代码"
+                        + "（二进制会被按文本读，png/jpg/docx 等产物必然损坏）。"
+                        + "若产物确实损坏，先更新并重建 box：cd nexus_agent_box && "
+                        + "docker compose -f docker-compose.yml up -d --build",
+                toolName, BINARY_READ_FLAG);
+        return result;
     }
 
     /** 常见二进制格式的文件头魔数（key = 小写扩展名）。文本类（md/html/csv/svg…）不在表内、不校验 */
