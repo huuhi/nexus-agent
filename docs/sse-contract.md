@@ -50,6 +50,65 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 
 同时设置 SSE 原生字段 **`id: <seq>`**，用于浏览器自动重连时回传 `Last-Event-ID`。
 
+### ⚠️ 数字形态：`Long` 一律是**字符串**，但计量字段不是
+
+后端有一条全局 JSON 序列化规则（`config/JacksonConfig`，2026-10-05 立）：
+**所有 `Long` / `long` 字段序列化成带引号的字符串。**
+
+这不是风格偏好，是修一个必然发生的故障 —— 雪花主键是 **19 位**十进制数
+（如 `2107069112529358849`），而 JS 的 `Number` 精确表示上限只有 **16 位**
+（`Number.MAX_SAFE_INTEGER = 9007199254740991`）。裸数字过一遍 `JSON.parse`
+低位会被直接抹掉（实测抽样 4000 个雪花 ID，**99.6% 被改写**），
+于是「拿 id 去删 / 改」的接口全部落空 —— 那就是 2026-10-05 那个
+「每一行点删除都报文件不存在」的真凶。
+
+**所以看契约时请按字段分辨形态**：
+
+| 形态 | 哪些字段 | 怎么用 |
+|---|---|---|
+| **string** | 各类雪花主键：`id`、`artifact.id`、`attachedFile.id`、`userId`、`supersededBy` | 原样透传，**不要做算术**，也不要与数字混用作 key |
+| **number** | `seq`、`ttfbMs`、`contextWindow` / `contextUsed` / `contextMsgs` / `contextRatio`、`partial`、`index`、`fileSize`、`size`、`total`、`quota` / `used` / `remaining`、`fileQuota` / `fileUsed` / `fileRemaining` | 可以正常参与算术与比较 |
+
+🔴 **这两类混过两次，都是 2026-10-08 修的**：
+
+**第一批（`seq` / `ttfbMs`）**：原本分别声明成 `long` 与 `Long`，被上面那条规则误伤成
+`"7"` / `"6667"`，而契约承诺它们是 number。**后果是静默的** —— 前端在真实链路上抓帧才暴露
+（`{"status":"DONE","ttfbMs":"6667","contextWindow":300000,…}`，
+注意同一帧里 `context*` 是裸数字、`ttfbMs` 带引号）。
+
+> frontend 复核后报告：`seq` 的失效**比预想更早一步** —— 他那边是
+> `typeof env.seq === 'number'` 才走数字分支，字符串 seq 根本进不了跳号检测，
+> 直接掉进 `id` 兜底分支；`id` 再缺就整个检测形同虚设。
+> **不是「算出 NaN」，而是「压根没走到那行」。**
+
+两者已改为 `int`（序号与毫秒数都没有 2^53 精度问题；秒级延迟离 `Integer.MAX_VALUE`
+有三个数量级余量，且 `withTtfb` 里另做了封顶）。
+
+**第二批（`fileSize` / `size` / `total` / 配额）**：同一类误伤。这批**没有改 Java 类型**，
+而是在 `JacksonConfig` 里用 **mixin 精确挑回来**（默认仍是字符串 = 安全的一侧，
+只有显式列出的字段才是数字）：
+
+| 字段 | 位置 | 前端用途 |
+|---|---|---|
+| `fileSize` | 文件列表 / 附件（`SysFile`、`KnowledgeFileVO`） | 格式化体积、算进度 |
+| `size` | `artifact` 事件的 `data.artifact.size` | 同上 |
+| `total` | `Result` 信封（分页） | 分页算术 |
+| `quota` / `used` / `remaining` | `GET /api/user/quota`（token 配额） | 「已用 X / 上限 Y」 |
+| `fileQuota` / `fileUsed` / `fileRemaining` | 同上 + 上传被拒的 error data | 同上 |
+
+⚠️ `artifact.size` 额外做了一次**运行时归一**：它塞在 `Map<String,Object>` 里，
+而 **Map 的值按运行时类型挑序列化器，类级 mixin 管不到** —— 沙盒返回的 JSON number
+小值时是 `Integer`（没事）、大值时是 `Long`（变字符串），同一字段形态会随文件大小漂移。
+现在统一成「能放进 `int` 就用 `int`，否则用 `BigInteger`」，两者都序列化成裸数字。
+
+护栏：`NumberFieldSerializationTest` —— **真的跑一遍 ObjectMapper**
+（且用的是与运行时同源的 `JacksonConfig` customizer）来断言形态，
+而不是断言 Map 里的 Java 对象（那正是第一批能躲过原测试的原因：
+原断言 `assertEquals(1820L, data.get("ttfbMs"))` 时，序列化**还没发生**）。
+它还额外校验「mixin 声明的 getter 在目标类上真实存在」——
+mixin 按方法名匹配，**写错名不会报错，只会静默失效**。
+两批都做了反向验证（去掉修复 → 断言立刻变红，报错原文与实测形态一致）。
+
 ---
 
 ## 2. 事件一览
@@ -61,9 +120,9 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 | 3 | `tool_execution` | 模型发起工具调用，可能多次 | `MessageVO{type:"TOOL_EXECUTION", toolRequestList:[{id,toolName,arguments}]}` |
 | 4 | `tool_execution_result` | 工具返回，每个调用一次 | `MessageVO{type:"TOOL_EXECUTION_RESULT", toolResultVO:{id,toolName,result,isError}}` |
 | 5 | `artifact` | AI 交付文件（P2-10） | `MessageVO{type:"ARTIFACT", artifact:{id,name,url,size,extension,sourcePath}}` |
-| 6 | `finish` | 正常结束，一次 | `{status:"DONE"}` |
-| 7 | `stopped` | **用户主动叫停**，一次（2026-10-06 新增） | `{reason:"用户停止了本次生成", partial:1234}` |
-| 8 | `error` | 运行失败，一次 | `{type:"ERROR", message, hint}` |
+| 6 | `finish` | 正常结束，一次 | `{status:"DONE"}` **＋ 收尾公共字段**（见 §3.6） |
+| 7 | `stopped` | **用户主动叫停**，一次（2026-10-06 新增） | `{reason, partial}` **＋ 收尾公共字段**（见 §3.6） |
+| 8 | `error` | 运行失败，一次 | `{type:"ERROR", message, hint}` **＋ 收尾公共字段**（见 §3.6） |
 
 **顺序保证**：正文缓冲会在「工具事件 / 产物事件 / finish / stopped / error」之前**强制冲刷**，
 所以前端不会看到"正文插到工具卡片后面"的顺序错乱，回复尾部也不会丢。
@@ -159,19 +218,75 @@ event: error                  ← 运行失败（带 runId，可查服务端日�
 ### 3.6 `finish`
 
 ```json
-{"seq":13,"runId":"…","event":"finish","data":{"status":"DONE"}}
+{"seq":13,"runId":"…","event":"finish","data":{
+  "status":"DONE",
+  "ttfbMs":1820,
+  "contextWindow":300000,"contextUsed":12480,"contextMsgs":42,"contextRatio":0.0416
+}}
 ```
 
 v1 是裸字符串 `"DONE"`，v2 改成对象以便携带信封字段。
+
+#### 收尾公共字段 —— `finish` / `stopped` / `error` **三个事件都带**
+
+下面 5 个字段在三个收尾事件上**形状完全一致**（实现上是同一个 `withTtfb(withContext(...))`），
+且**全部可选**：契约上写「可能不存在」，而不是「存在但为 null」。
+所以前端判断用 `"contextRatio" in data`，不要用 `data.contextRatio != null` 之外的多余分支。
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `ttfbMs` | number? | **服务端首字延迟**（ms）：请求进入后端 → 第一个**内容** token 到达（2026-10-06 新增）。🔴 2026-10-08 前实测抓到过 `"6667"`（字符串），已修 —— 见 §1「数字形态」 |
+| `contextWindow` | number? | 本次记忆窗口（token）＝ `min(nexus.agent.memory.max-tokens, 模型上下文窗口 − 最大输出)` |
+| `contextUsed` | number? | 本次从库里加载的历史**估算 token**（裁剪前）。**`-1` = 没算出来** |
+| `contextMsgs` | number? | 本次加载的历史**条数** |
+| `contextRatio` | number? | `contextUsed / contextWindow`，保留 4 位小数。**`> 1` 表示本轮已开始丢更早的历史** |
+
+#### 🔴 为什么必须用 `contextRatio`，不能数消息条数（2026-10-08 钉死）
+
+条数与真实占用**完全不成比例** —— 一轮带沙盒输出 / 检索结果的 agent 交互能顶几十轮纯闲聊。
+
+线上实测（`Agent_Back-20261008092751.log`，session `83bd707f`）：
+
+```
+CHAT_CONTEXT ... window=300000          ← 记忆窗口 30 万 token
+contextUsed ≈ 3.7k, contextRatio ≈ 0.012 ← 实际只用了 1.2%
+CHAT_MEMORY msgs=23                      ← 历史 23 条
+```
+
+**还有 98.8% 的余量**，前端却按早先的「12 条」阈值弹出了
+「这个话题聊了很多轮，模型只记得最近的内容。换话题时建议新建对话」——
+用户的原话是「才那么点，就提示我新建对话，这不是有毛病吗？甚至我这个模型上下文是 1M 的」。
+
+**前端判断口径（与 frontend 于 2026-10-08 约定的最终版）**：
+
+| 条件 | 建议动作 |
+|---|---|
+| `contextRatio >= 0.8` | **软提示**：「这个会话有点长了」 |
+| `contextRatio >= 1.0` | **强提示**：「已开始遗忘早期内容，建议开新会话」 |
+| `contextRatio` 缺失，**或** `contextUsed == -1` | 🔴 **不显示任何提示**（老后端 / 没算出来时宁可不提示，也不要误导） |
+
+⚠️ `contextMsgs` **只能用于展示**（例如「本会话 42 条」），**不得**作为任何触发条件。
+
+⚠️ **口径是「加载量」而非「发送量」**：`contextUsed` 统计的是裁剪**之前**从库里取回的历史规模，
+裁剪后真正发给模型的会更少。对「这个会话积累了多少」这个问题，加载量才是对的
+（裁剪后的值永远贴着窗口，看不出趋势）。
+
+⚠️ **`ttfbMs` 是服务端口径**，不含网络往返与反向代理缓冲，与前端自己测的「首字」**不同源**。
+两边的数对不上时不要互相怀疑，对齐方式：
+`前端 firstTokenMs − data.ttfbMs` = 前端 + 网络段耗时。
+另注：纯思考模型（先 thinking 再正文）该值**偏小**，不能拿它冒充体感延迟。
 
 ### 3.7 `stopped`（2026-10-06 新增）
 
 ```json
 {"seq":9,"runId":"a1b2…","event":"stopped",
- "data":{"reason":"用户停止了本次生成","partial":1234}}
+ "data":{"reason":"用户停止了本次生成","partial":1234,
+         "ttfbMs":1820,
+         "contextWindow":300000,"contextUsed":12480,"contextMsgs":42,"contextRatio":0.0416}}
 ```
 
 用户在界面上点了「停止生成」，由 `POST /api/chat/stop` 触发。
+**载荷里的 `ttfbMs` 与 `context*` 见 §3.6，与 `finish` 完全一致。**
 
 - **`stopped` 不是 `error`**：这是用户的正常意图，不是失败。
   前端**不要**弹错误提示，只要把「思考中 / 生成中」态收掉即可。
@@ -187,8 +302,12 @@ v1 是裸字符串 `"DONE"`，v2 改成对象以便携带信封字段。
 
 ```json
 {"seq":7,"runId":"a1b2…","event":"error",
- "data":{"type":"ERROR","message":"Connection timeout","hint":"请把 runId 提供给开发者，可在服务端日志中检索 \"RUN runId=a1b2…\" 定位本次运行"}}
+ "data":{"type":"ERROR","message":"Connection timeout","hint":"请把 runId 提供给开发者，可在服务端日志中检索 \"RUN runId=a1b2…\" 定位本次运行",
+         "ttfbMs":1820,
+         "contextWindow":300000,"contextUsed":12480,"contextMsgs":42,"contextRatio":0.0416}}
 ```
+
+**载荷里的 `ttfbMs` 与 `context*` 见 §3.6，与 `finish` 完全一致。**
 
 - 出错前会**先把已生成的正文冲刷出去**（这些内容是有效的，不该被吞）。
 - **不推堆栈**：前端读不懂，也可能泄露内部细节。定位靠 `runId` 查服务端日志。

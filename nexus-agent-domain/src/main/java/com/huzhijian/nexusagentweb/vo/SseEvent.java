@@ -29,8 +29,20 @@ import lombok.Data;
 @Data
 @Builder
 public class SseEvent {
-    /** 帧序号，同一次 Run 内从 1 开始单调递增 */
-    private long seq;
+    /**
+     * 帧序号，同一次 Run 内从 1 开始单调递增。
+     * <p>
+     * 🔴 <b>2026-10-08：类型是 {@code int} 而不是 {@code long}，这不是随手选的。</b>
+     * 全局的 {@code JacksonConfig} 把所有 {@code Long}/{@code long} 序列化成<b>字符串</b>
+     * （为雪花 ID 精度，见该类注释）。用一个 {@code long} 装序号，就会被那条规则误伤成
+     * {@code "seq":"7"} —— 而本字段在契约里承诺是 number，且前端拿它做<b>跳号检测</b>
+     * （{@code seq - prev !== 1} 判丢帧）。字符串参与算术会静默得出 {@code NaN}，
+     * 检测永远不报警，正好是最坏的失效方式。
+     * <p>
+     * 序号是「Run 内的自增计数」，不是「跨表主键」，没有 2^53 精度问题，
+     * 用 {@code int} 即可（单次 Run 的帧数远不可能触及 21 亿）。
+     */
+    private int seq;
     /** 本次运行的 trace_id */
     private String runId;
     /** 事件名，取自 {@code SseEventType.value} */

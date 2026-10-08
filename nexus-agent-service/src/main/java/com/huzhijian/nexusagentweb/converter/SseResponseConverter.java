@@ -20,7 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author 胡志坚
@@ -55,9 +55,16 @@ public class SseResponseConverter {
     private final String runId;
     /**
      * 帧序号（P2-5）：从 1 开始单调递增。
-     * 用 {@link AtomicLong} 是因为流式回调跑在线程池里，不保证单线程。
+     * 用 {@link AtomicInteger} 是因为流式回调跑在线程池里，不保证单线程。
+     * <p>
+     * 🔴 <b>2026-10-08：刻意用 {@code int} 而不是 {@code long}。</b>
+     * 全局 {@code JacksonConfig} 把 {@code Long}/{@code long} 序列化成字符串（雪花 ID 精度），
+     * 若这里是 {@code long}，下发给前端的 {@code seq} 会变成 {@code "7"} —— 而契约承诺它是
+     * number 且前端拿它做跳号检测，字符串参与算术静默得出 {@code NaN}，检测永不生效。
+     * 序号没有 2^53 精度问题，{@code int} 足够（详见 {@code SseEvent.seq} 与
+     * {@code NumberFieldSerializationTest}）。
      */
-    private final AtomicLong seq;
+    private final AtomicInteger seq;
     /**
      * 增量缓冲（P2-12）：把逐 token 的增量合并成批次再发，避免"上千个 SSE 帧"。
      * 详见 {@link SseChunkBuffer} 的类注释。
@@ -121,7 +128,7 @@ public class SseResponseConverter {
         this.userId = userId;
         this.message = message;
         this.runId = runId;
-        this.seq = new AtomicLong(0);
+        this.seq = new AtomicInteger(0);
         this.runSent = new AtomicBoolean(false);
         this.chunkBuffer = new SseChunkBuffer(
                 flushMaxChars == null ? 200 : flushMaxChars,
@@ -438,11 +445,26 @@ public class SseResponseConverter {
      * <p>
      * ⚠️ 刻意用「缺字段」而不是「{@code ttfbMs: null}」：契约里写明该字段
      * 「可能不存在」，比「存在但为 null」对前端更省事（少一个 falsy 判断）。
+     * <p>
+     * 🔴 <b>2026-10-08：必须写成 {@code int}，不能直接放 {@code Long}。</b>
+     * 字段本体是 {@code Long}（需要 {@code null} 表示「本次还没测到首字」），
+     * 但全局 {@code JacksonConfig} 把 {@code Long}/{@code long} 一律序列化成<b>字符串</b>
+     * （2026-10-05 为雪花 ID 精度加的，那次是对的）——
+     * 直接放 {@code Long} 会让前端收到 {@code "ttfbMs":"6667"}，而契约承诺 number。
+     * <p>
+     * 这不是纸面问题：frontend 在真实链路上实测抓到就是这个形态
+     * （`{"status":"DONE","ttfbMs":"6667","contextWindow":300000,…}`），
+     * 并指出 {@code data.ttfbMs ?? 本地测量} 会拿到字符串参与算术。
+     * 同批的 {@code context*} 四个字段因为本来就是 {@code int}/{@code double}，
+     * 一直是正常的 number —— 差别只在类型，不在有没有下发。
+     * <p>
+     * 首字毫秒数封顶在 SSE 超时（默认 1800s = 1.8e6 ms），离 {@code Integer.MAX_VALUE}
+     * 有三个数量级余量，{@code int} 装得下；下面仍做一次封顶，避免任何情况下溢出成负数。
      */
     private Map<String, Object> withTtfb(Map<String, Object> data) {
         Long ttfb = this.ttfbMs;
         if (ttfb != null) {
-            data.put("ttfbMs", ttfb);
+            data.put("ttfbMs", (int) Math.min(ttfb, Integer.MAX_VALUE));
         }
         return data;
     }

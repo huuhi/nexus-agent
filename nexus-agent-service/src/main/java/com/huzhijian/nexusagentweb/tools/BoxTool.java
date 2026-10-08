@@ -14,6 +14,7 @@ import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -362,7 +363,7 @@ public class BoxTool implements AgentToolSet {
         artifact.put("extension", extensionOf(fileName));
         Object size = downloadResult.get("size");
         if (size != null) {
-            artifact.put("size", size);
+            artifact.put("size", asJsonNumber(size));
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("success", true);
@@ -372,6 +373,29 @@ public class BoxTool implements AgentToolSet {
     }
 
     /** 从沙盒路径取文件名（含扩展名） */
+    /**
+     * 把 artifact 的 {@code size} 归一化成**会被序列化成 JSON number** 的类型。
+     * <p>
+     * 🔴 2026-10-08：不能直接放原值。全局 {@code JacksonConfig} 把 {@code Long} 序列化成字符串，
+     * 而这里是塞进 {@code Map<String,Object>} —— <b>Map 的值按运行时类型挑序列化器，
+     * 类级别的 mixin 管不到</b>。沙盒返回的 JSON number 被反序列化后，
+     * 小值（&lt; 2^31）恰好是 {@code Integer}（没事），大值是 {@code Long}（变成字符串）——
+     * 于是<b>同一个字段的形态随文件大小漂移</b>，前端只能两态兼容。
+     * <p>
+     * 统一成「能放进 int 就用 int，否则用 {@code BigInteger}」：两者 Jackson 都序列化成
+     * <b>不带引号</b>的 JSON number。用 {@code BigInteger} 而不是 {@code double}，
+     * 是因为整数语义更干净，且 {@code BigInteger} 不会被那条 Long→String 规则碰到。
+     */
+    private static Object asJsonNumber(Object raw) {
+        if (raw instanceof Number number) {
+            long value = number.longValue();
+            return (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE)
+                    ? (Object) (int) value
+                    : BigInteger.valueOf(value);
+        }
+        return raw;
+    }
+
     private static String fileNameOf(String path) {
         if (path == null || path.isBlank()) {
             return "artifact";

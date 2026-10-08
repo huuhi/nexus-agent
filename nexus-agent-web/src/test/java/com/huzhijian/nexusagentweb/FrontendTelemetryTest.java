@@ -46,7 +46,9 @@ class FrontendTelemetryTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> data = lastData(r, "finish");
-        assertEquals(1820L, data.get("ttfbMs"),
+        // ⚠️ 2026-10-08：断言的是 Integer 而不是 Long —— 必须是 int，否则会被全局
+        // Long→String 序列化成 "1820"（frontend 实测抓到过）。形态由 NumberFieldSerializationTest 守。
+        assertEquals(1820, data.get("ttfbMs"),
                 "前端要能直接显示服务端口径的首字延迟，不用再拿浏览器本地测量对表");
         assertEquals("DONE", data.get("status"), "原有字段不能少");
     }
@@ -61,7 +63,7 @@ class FrontendTelemetryTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> data = lastData(r, "stopped");
-        assertEquals(950L, data.get("ttfbMs"));
+        assertEquals(950, data.get("ttfbMs"));
         assertEquals(4, data.get("partial"), "原有字段不能少");
     }
 
@@ -75,7 +77,7 @@ class FrontendTelemetryTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> data = lastData(r, "error");
-        assertEquals(30000L, data.get("ttfbMs"));
+        assertEquals(30000, data.get("ttfbMs"));
         assertEquals("ERROR", data.get("type"), "原有字段不能少");
     }
 
