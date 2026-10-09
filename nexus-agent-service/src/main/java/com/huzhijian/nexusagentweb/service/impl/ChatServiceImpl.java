@@ -36,6 +36,7 @@ import com.huzhijian.nexusagentweb.service.ChatService;
 import com.huzhijian.nexusagentweb.service.QuotaService;
 import com.huzhijian.nexusagentweb.service.UserConfigService;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
+import com.huzhijian.nexusagentweb.tools.ToolSourceStore;
 import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -89,6 +90,8 @@ public class ChatServiceImpl implements ChatService {
     private final UrlGuard urlGuard;
     // 2026-10-07：决定哪些工具调用只后台跑、不下发给前端（见 ToolVisibility 类注释）
     private final ToolVisibility toolVisibility;
+    /** 2026-10-08：工具的结构化结果（目前是搜索来源）由此传给 SSE 转换器 */
+    private final ToolSourceStore toolSourceStore;
 
     @Override
     public SseEmitter chat(ChatDTO chatDTO) {
@@ -177,6 +180,10 @@ public class ChatServiceImpl implements ChatService {
                 runId, ms(tStart, tQuota), ms(tQuota, tConvert), ms(tConvert, tContext),
                 ms(tContext, tReady), ms(tStart, tReady));
 
+//        2026-10-08：把「后端自己的前置耗时」一并交给 writer，随收尾事件下发成 preflightMs。
+//        起因：同一天两次出现「首字 50 多秒，到底是我们慢还是供应商慢」的争论 ——
+//        而 CHAT_PREFLIGHT.total 只有日志里有，用户和前端都看不到。
+//        有了它，ttfbMs − preflightMs 就是**纯模型侧等待**，归因不用再对表。
         SseResponseConverter writer = SseResponseConverter.builder().chatHistoryListService(chatHistoryListService)
                 .sessionId(sessionId)
                 .isNewSession(isNewSession)
@@ -188,7 +195,10 @@ public class ChatServiceImpl implements ChatService {
                 .sseEmitter(sseEmitter)
 //                2026-10-07：把「哪些工具对前端隐藏」的判定交给 writer
                 .toolVisibility(toolVisibility)
+//                2026-10-08：工具结构化来源（搜索来源卡片）的带外出口
+                .toolSourceStore(toolSourceStore)
                 .build();
+        writer.markPreflightMs(ms(tStart, tReady));
 //        🔴 2026-10-06：上下文用量必须在 chat() 返回**之后**再登记 ——
 //        历史是 LangChain4j 在 chat() 内部同步加载的（TokenWindowChatMemory 触发
 //        ChatMemoryStore.getMessages），返回时快照才被回填。传早了前端会收到全 0。
@@ -216,6 +226,10 @@ public class ChatServiceImpl implements ChatService {
         }
 //        「是否已经收到过第一个内容 token」：只用于打一次 CHAT_TTFB（流式回调线程，用原子量）
         AtomicBoolean firstContent = new AtomicBoolean(false);
+//        2026-10-08：「是否已经收到过第一个**任意** token（含思考）」。
+//        与上面那个的差值就是「模型到底是在慢慢想，还是一个字都不来」——
+//        这正是「首字 58 秒」那段里唯一还分不开的部分。
+        AtomicBoolean firstAnyToken = new AtomicBoolean(false);
 
         sseEmitter.onCompletion(writer::finish);
 //        超时/断开只标记"连接没了"，**不终止任务**（2026-10-03）：
@@ -224,13 +238,19 @@ public class ChatServiceImpl implements ChatService {
         sseEmitter.onTimeout(() -> writer.disconnect("SSE 连接超时"));
         sseEmitter.onError(writer::onError);
 
-        tokenStream.onPartialThinking(thinking -> {
+        tokenStream                .onPartialThinking(thinking -> {
 //                    🔴 停止检查点 1/3：思考阶段。思考流可能持续十几秒，
 //                    用户在这期间点「停止」是常态，所以第一站就要能中断
                     throwIfCancelled(runId);
+                    if (firstAnyToken.compareAndSet(false, true)) {
+                        writer.markFirstTokenMs(ms(tStart, System.nanoTime()));
+                    }
                     writer.writeThinking(thinking);
                 })
                 .onPartialResponse(partial -> {
+                    if (firstAnyToken.compareAndSet(false, true)) {
+                        writer.markFirstTokenMs(ms(tStart, System.nanoTime()));
+                    }
 //                    首字延迟（TTFB）：从收到请求到模型吐出第一个内容 token。
 //                    ⚠️ 只有这一条日志能区分「慢在我们这边的前置步骤」还是「慢在供应商」——
 //                    CHAT_PREFLIGHT 的 total 就是这条的下限，差值即模型侧耗时。

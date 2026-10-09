@@ -4,6 +4,7 @@ import com.huzhijian.nexusagentweb.context.ContextUsage;
 import com.huzhijian.nexusagentweb.em.MessageType;
 import com.huzhijian.nexusagentweb.em.SseEventType;
 import com.huzhijian.nexusagentweb.service.ChatHistoryListService;
+import com.huzhijian.nexusagentweb.tools.ToolSourceStore;
 import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.vo.MessageVO;
 import com.huzhijian.nexusagentweb.vo.SseEvent;
@@ -105,6 +106,18 @@ public class SseResponseConverter {
      */
     private final ToolVisibility toolVisibility;
 
+    /**
+     * 工具结构化结果的带外出口（2026-10-08 新增）。
+     * <p>
+     * 为什么需要它：工具由 LangChain4j 自动执行，结果到业务层时<b>已经是字符串</b>，
+     * 拿不到原始结构；而给前端渲染「来源卡片」的那份数据又不能混进字符串
+     * （那串是要进模型上下文与历史消息的）。于是工具把结构存在这里，
+     * 发 {@code tool_execution_result} 时按 sessionId + 工具名取走。
+     * <p>
+     * 允许为 {@code null}（单测用 builder 时不传）：视为「没有任何工具带来源」，保持既有行为。
+     */
+    private final ToolSourceStore toolSourceStore;
+
     /** 共享心跳调度池（单线程、daemon）：任务很轻（一次 send），cancel 后线程复用，避免每请求泄漏线程 */
     private static final java.util.concurrent.ScheduledExecutorService HEARTBEAT_POOL =
             java.util.concurrent.Executors.newScheduledThreadPool(1, r -> {
@@ -113,11 +126,28 @@ public class SseResponseConverter {
                 return t;
             });
 
-    @Builder
+    /**
+     * 兼容构造器：不传来源暂存器（等价于「没有任何工具带来源」）。
+     * <p>
+     * 存在的唯一理由：本类有大量既有用例是<b>按位置</b> new 的，给上面的构造器加参数会
+     * 让它们全部编译不过 —— 这是本项目重复踩过好几次的坑（加字段/改构造器 → 别的模块
+     * 测试编译失败）。生产链路走 {@link #SseResponseConverter(SseEmitter, boolean, ChatHistoryListService, String, Long, String, String, Integer, Long, ToolVisibility, ToolSourceStore)}，
+     * 这里只是给测试留的后门。
+     */
     public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService,
                                 String sessionId, Long userId, String message, String runId,
                                 Integer flushMaxChars, Long flushIntervalMillis,
                                 ToolVisibility toolVisibility) {
+        this(sseEmitter, isNewSession, chatHistoryListService, sessionId, userId, message, runId,
+                flushMaxChars, flushIntervalMillis, toolVisibility, null);
+    }
+
+    @Builder
+    public SseResponseConverter(SseEmitter sseEmitter, boolean isNewSession, ChatHistoryListService chatHistoryListService,
+                                String sessionId, Long userId, String message, String runId,
+                                Integer flushMaxChars, Long flushIntervalMillis,
+                                ToolVisibility toolVisibility, ToolSourceStore toolSourceStore) {
+        this.toolSourceStore = toolSourceStore;
         this.toolVisibility = toolVisibility;
         this.emitter = sseEmitter;
         this.isNewSession = isNewSession;
@@ -335,12 +365,30 @@ public class SseResponseConverter {
                 .isError(isError)
                 .toolName(request.name())
                 .result(result)
+                .sources(takeSources(request.name(), isError))
                 .build();
         MessageVO msg = MessageVO.builder()
                 .type(MessageType.TOOL_EXECUTION_RESULT)
                 .toolResultVO(vo)
                 .build();
         send(SseEventType.TOOL_EXECUTION_RESULT, msg);
+    }
+
+    /**
+     * 取出本次工具调用的结构化来源（目前只有 {@code web_search} 会带）。
+     * <p>
+     * 没有来源时返回 {@code null} —— 配合 {@code MessageVO.ToolResultVO#sources} 上的
+     * {@code @JsonInclude(NON_NULL)}，序列化后该字段<b>整个消失</b>，前端读到的是
+     * 「字段不存在」而不是 {@code null}，省一个判断。
+     * <p>
+     * 失败的结果不取来源：一方面失败的调用本来也不会记，
+     * 另一方面「报错的结果还挂着来源卡片」是种误导。
+     */
+    private List<Map<String, Object>> takeSources(String toolName, boolean isError) {
+        if (toolSourceStore == null || toolName == null || isError) {
+            return null;
+        }
+        return toolSourceStore.take(sessionId, toolName);
     }
 
     /**
@@ -387,6 +435,52 @@ public class SseResponseConverter {
      * 虽然时序上有 happens-before 兜底，但显式声明更清晰。
      */
     private volatile Long ttfbMs;
+
+    /**
+     * 本次运行的**首帧延迟**（毫秒）：请求进入后端 → 收到模型的<b>第一个任意 token</b>
+     * （思考内容也算）。
+     * <p>
+     * 🔴 与 {@link #ttfbMs}（第一个<b>正文</b> token）的差值，正是 2026-10-08 那个
+     * 「首字 58 秒」悬案里唯一还缺的一段：
+     * <pre>
+     * preflightMs                      = 后端自己的准备（配额/上下文/MCP/技能）
+     * firstTokenMs − preflightMs       = 供应商排队（连接已建立，但一个字都不来）
+     * ttfbMs      − firstTokenMs       = 模型思考 / 生成（字在慢慢往外蹦）
+     * </pre>
+     * 三段分开之后，「服务器慢 / 供应商排队 / 模型想太久」不再需要猜。
+     */
+    private volatile Long firstTokenMs;
+
+    /**
+     * 登记首帧延迟（第一个 token，含思考）。由 {@code ChatServiceImpl} 在
+     * {@code onPartialThinking} / {@code onPartialResponse} 首次触发时调用；只记第一次。
+     */
+    public void markFirstTokenMs(long millis) {
+        this.firstTokenMs = millis;
+    }
+
+    /**
+     * 本次运行**后端自己的前置耗时**（毫秒）：收到请求 → 模型请求真正发出之前
+     * （配额校验、消息转换、上下文构建＝模型匹配 / MCP 工具列表 / 技能解析）。
+     * <p>
+     * 🔴 为什么要单独下发（2026-10-08）：同一天出现两次「首字 50 多秒，到底是我们慢还是
+     * 供应商慢」的争论，而这个数**只有服务端日志里有**（`CHAT_PREFLIGHT ... total=`），
+     * 前端和用户都看不到，于是只能靠猜。有了它：
+     * <pre>
+     * ttfbMs − preflightMs = 纯模型侧等待
+     * </pre>
+     * 归因从此不用再对表。实测典型值：24ms（缓存命中）/ 969ms / 5845ms（MCP+技能 TTL 过期重建）。
+     * <p>
+     * 与 {@link #ttfbMs} 同一口径：都是**服务端**测量，不含网络往返与反代缓冲。
+     */
+    private volatile Long preflightMs;
+
+    /**
+     * 登记后端前置耗时。不调用也不会出错，只是收尾事件里不会有 {@code preflightMs} 字段。
+     */
+    public void markPreflightMs(long millis) {
+        this.preflightMs = millis;
+    }
 
     /**
      * 记录本次运行的服务端首字延迟。由 {@code ChatServiceImpl} 在收到第一个内容 token 时调用。
@@ -460,11 +554,23 @@ public class SseResponseConverter {
      * <p>
      * 首字毫秒数封顶在 SSE 超时（默认 1800s = 1.8e6 ms），离 {@code Integer.MAX_VALUE}
      * 有三个数量级余量，{@code int} 装得下；下面仍做一次封顶，避免任何情况下溢出成负数。
+     * <p>
+     * 2026-10-08 起本方法顺带塞入 {@code preflightMs}（后端前置耗时，见 {@link #preflightMs}）：
+     * 两者一起下发才能做归因 —— {@code ttfbMs − preflightMs} 就是<b>纯模型侧等待</b>。
      */
     private Map<String, Object> withTtfb(Map<String, Object> data) {
         Long ttfb = this.ttfbMs;
         if (ttfb != null) {
             data.put("ttfbMs", (int) Math.min(ttfb, Integer.MAX_VALUE));
+        }
+        Long firstToken = this.firstTokenMs;
+        if (firstToken != null) {
+            data.put("firstTokenMs", (int) Math.min(firstToken, Integer.MAX_VALUE));
+        }
+        Long preflight = this.preflightMs;
+        if (preflight != null) {
+//            同样是 int：Long 会被全局 Jackson 配置序列化成字符串（与 ttfbMs 同源）
+            data.put("preflightMs", (int) Math.min(preflight, Integer.MAX_VALUE));
         }
         return data;
     }

@@ -24,6 +24,7 @@ import com.huzhijian.nexusagentweb.observability.RunMetricsReporter;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import com.huzhijian.nexusagentweb.service.impl.ChatServiceImpl;
 import com.huzhijian.nexusagentweb.skills.SkillLoader;
+import com.huzhijian.nexusagentweb.tools.ToolSourceStore;
 import com.huzhijian.nexusagentweb.tools.ToolVisibility;
 import com.huzhijian.nexusagentweb.utils.UrlGuard;
 import org.junit.jupiter.api.AfterEach;
@@ -102,7 +103,9 @@ class GetModelListContractTest {
                 userConfigService,
                 new UrlGuard(false),
                 // 2026-10-07：工具可见性判定，本用例不碰（mock 后 isHidden 一律 false）
-                mock(ToolVisibility.class));
+                mock(ToolVisibility.class),
+                // 2026-10-08：搜索来源的带外出口，本用例不碰（真实例即可，无外部调用）
+                new ToolSourceStore());
     }
 
     @AfterEach

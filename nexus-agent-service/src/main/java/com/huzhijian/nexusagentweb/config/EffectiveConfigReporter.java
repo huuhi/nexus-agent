@@ -105,6 +105,18 @@ public class EffectiveConfigReporter {
                 String.valueOf(agentProperties.getTools().getDuplicateThreshold()),
                 "线上见过 search_user_memory 连调 5 次（每次关键词不同 → 拦不住）"));
 
+//        ===== 联网搜索 / 正文提取：开关状态必须能在启动日志里一眼看到 =====
+//        2026-10-08：用户反馈「我在服务器配了 TAVILY_API_KEY，但 AI 说没有这个工具」。
+//        这类问题 100% 是**环境变量没进入进程**（配了没重启 / 容器没重建 / 加了但没生效），
+//        而在此之前它**完全没有可见的痕迹** —— 工具只是静默不注册，模型那边就像没这个能力。
+//        所以把状态（含 Key 的长度与形态）打进这张快照：一眼就能区分
+//        「没配」「配了但进程没读到」「配了但值不对」。
+        String tavilyStatus = describeTavilyKey();
+        rows.add(row("联网搜索(web_search)", "TAVILY_API_KEY", tavilyStatus,
+                "🔴 Key 只走环境变量（不进配置库）；没配时工具集**不注册** —— 模型看不到 web_search，而不是调用了才报错"));
+        rows.add(row("正文提取(web_extract)", "TAVILY_API_KEY", tavilyStatus,
+                "与 web_search 共用同一个 Key 与同一个免费额度池"));
+
         int nameWidth = rows.stream().mapToInt(r -> r[0].length()).max().orElse(10);
         int valWidth = rows.stream().mapToInt(r -> r[2].length()).max().orElse(10);
         valWidth = Math.min(valWidth, 34);
@@ -141,6 +153,26 @@ public class EffectiveConfigReporter {
 
     private static String[] row(String name, String key, String value, String note) {
         return new String[]{name, key, value, note};
+    }
+
+    /**
+     * {@code TAVILY_API_KEY} 的状态描述。
+     * <p>
+     * 🔴 <b>绝不打印 Key 本体</b>，只报「有没有 / 多长 / 形态对不对」——
+     * 这三条足以定位「配了却不生效」，又不会把凭据写进日志（日志是会外发、会归档的）。
+     * <p>
+     * 为什么连形态都要报：Key 从网页上复制时经常少复制几位或多带空格，
+     * 那种情况环境变量是"有"的、工具也注册了，但一调用就是 401 ——
+     * 有了形态提示，不用等到调用才发现。
+     */
+    private static String describeTavilyKey() {
+        String raw = System.getenv("TAVILY_API_KEY");
+        if (raw == null || raw.isBlank()) {
+            return "未启用（env TAVILY_API_KEY 未设置或为空）";
+        }
+        String key = raw.trim();
+        String shape = key.startsWith("tvly-") ? "形态正确" : "⚠️ 前缀不是 tvly-，请确认复制完整";
+        return "已启用（长度 " + key.length() + "，" + shape + "）";
     }
 
     /**

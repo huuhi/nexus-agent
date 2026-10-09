@@ -54,6 +54,80 @@ class FrontendTelemetryTest {
     }
 
     @Test
+    @DisplayName("finish 事件带 preflightMs（后端自己的前置耗时）—— 有了它才能区分「谁慢」")
+    void finishCarriesPreflight() {
+        Recorder r = new Recorder();
+        r.markPreflightMs(24);
+        r.markTtfb(25623);
+        r.writeContent("正文");
+        r.finish();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = lastData(r, "finish");
+//        同样必须断言 Integer：Long 会被全局配置序列化成字符串
+        assertEquals(24, data.get("preflightMs"),
+                "后端前置耗时必须下发 —— 它是「这次慢是谁的锅」的唯一凭据（日志里才有 CHAT_PREFLIGHT）");
+
+//        归因口径：两者相减就是纯模型侧等待（2026-10-08 实测一轮：25.6s 首字里后端只占 24ms）
+        int modelWait = (Integer) data.get("ttfbMs") - (Integer) data.get("preflightMs");
+        assertEquals(25599, modelWait, "ttfbMs − preflightMs 应当等于纯模型侧等待");
+    }
+
+    @Test
+    @DisplayName("🔴 firstTokenMs 把「供应商排队」和「模型思考」分开（首字 58s 悬案的最后一块）")
+    void firstTokenSplitsQueueingFromThinking() {
+//        场景 A：请求发出去后一个字都不来（供应商排队 12s），接着很快出正文
+        Recorder queued = new Recorder();
+        queued.markPreflightMs(24);
+        queued.markFirstTokenMs(12024);
+        queued.markTtfb(12600);
+        queued.writeContent("正文");
+        queued.finish();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> a = lastData(queued, "finish");
+        assertEquals(24, a.get("preflightMs"));
+        assertEquals(12024, a.get("firstTokenMs"));
+        assertEquals(12000, (Integer) a.get("firstTokenMs") - (Integer) a.get("preflightMs"),
+                "这段是供应商排队：连接建了但一个字都不来");
+        assertEquals(576, (Integer) a.get("ttfbMs") - (Integer) a.get("firstTokenMs"),
+                "这段是模型思考/生成");
+
+//        场景 B：字很快就来了，但思考了很久才出正文 —— 同样是"首字慢"，归因完全不同
+        Recorder thinking = new Recorder();
+        thinking.markPreflightMs(24);
+        thinking.markFirstTokenMs(1800);
+        thinking.markTtfb(51000);
+        thinking.writeContent("正文");
+        thinking.finish();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> b = lastData(thinking, "finish");
+        assertEquals(1776, (Integer) b.get("firstTokenMs") - (Integer) b.get("preflightMs"),
+                "供应商没排队 —— 这个数很小");
+        assertEquals(49200, (Integer) b.get("ttfbMs") - (Integer) b.get("firstTokenMs"),
+                "全花在模型思考上 —— 用户能看到「思考中」在爬，只能换模型或等");
+    }
+
+    @Test
+    @DisplayName("没登记前置耗时时不出现 preflightMs（与 ttfbMs 同一套「缺失而非 null」约定）")
+    void preflightAbsentWhenUnset() {
+        Recorder r = new Recorder();
+        r.writeContent("正文");
+        r.finish();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = lastData(r, "finish");
+        assertFalse(data.containsKey("preflightMs"), () -> "实际：" + data);
+//        反向验证：登记了就一定出现，否则上面那条是恒真断言
+        Recorder r2 = new Recorder();
+        r2.markPreflightMs(7);
+        r2.writeContent("正文");
+        r2.finish();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data2 = lastData(r2, "finish");
+        assertTrue(data2.containsKey("preflightMs"), () -> "实际：" + data2);
+    }
+
+    @Test
     @DisplayName("stopped 事件也带 ttfbMs（被叫停时用户同样想知道等了多久）")
     void stoppedCarriesTtfb() {
         Recorder r = new Recorder();

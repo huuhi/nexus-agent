@@ -1,5 +1,6 @@
 package com.huzhijian.nexusagentweb.vo;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.huzhijian.nexusagentweb.em.MessageType;
 import lombok.Builder;
 import lombok.Data;
@@ -139,5 +140,31 @@ public class MessageVO {
         private String toolName;
         private String result;
         private Boolean isError;
+
+        /**
+         * 结构化来源（2026-10-08 新增，<b>可选</b>）：目前只有 {@code web_search} 的结果会带。
+         * <p>
+         * 用途：前端渲染「已搜索 N 个来源 + 来源卡片 + 正文 [1] 角标」那条 UI。
+         * 元素形态见 {@code docs/sse-contract.md} 的 {@code tool_execution_result} 小节：
+         * {@code {index:int, title:string, url:string, snippet:string}}。
+         * <p>
+         * ⚠️ 为什么它与 {@code result} 是两份而不是合并：
+         * {@code result} 是要进<b>模型上下文与历史消息</b>的纯文本，而本字段只给 UI ——
+         * 混进去等于每次搜索多烧一份 token，且会把历史消息撑大。
+         * <p>
+         * ⚠️ <b>仅在实时流里下发</b>：历史消息由 {@code ChatMemoryServiceImpl} 从库里恢复，
+         * 库里只存了工具结果的文本，**没有**这份结构 —— 所以刷新页面后来源卡片不在，
+         * 前端必须容忍该字段缺失（这是已知取舍，不是 bug）。
+         * <p>
+         * 🔴 {@code index} 必须是 {@code int} 而非 {@code Long}：全局 {@code JacksonConfig}
+         * 会把 {@code Long}/{@code long} 序列化成字符串（雪花 ID 精度），
+         * 写成 {@code Long} 前端就会收到 {@code "1"}（2026-10-08 {@code ttfbMs} 同源坑）。
+         * <p>
+         * {@code NON_NULL}：绝大多数工具没有来源，不加这行每个工具结果都会多一个
+         * {@code "sources": null}，既难看又逼前端多写一个 falsy 判断。
+         * 「字段不存在」比「存在但为 null」对前端更省事（契约里也是这么写的）。
+         */
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        private List<Map<String, Object>> sources;
     }
 }

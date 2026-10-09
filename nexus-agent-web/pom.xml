@@ -10,7 +10,7 @@
     <artifactId>nexus-agent-web</artifactId>
     <name>nexus-agent-web</name>
     <description>REST 接口层与应用启动入口</description>
-    <version>0.0.2</version>
+    <version>1.0</version>
     <properties>
         <java.version>21</java.version>
     </properties>

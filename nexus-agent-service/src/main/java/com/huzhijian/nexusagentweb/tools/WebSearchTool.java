@@ -6,6 +6,7 @@ import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -50,6 +51,9 @@ public class WebSearchTool implements AgentToolSet {
 
     private static final String TAVILY_ENDPOINT = "https://api.tavily.com/search";
 
+    /** 工具名：公开给模型的名字与 {@code ToolSourceStore} 的键必须是同一个，抽出来防漂移 */
+    private static final String TOOL_NAME = "web_search";
+
     @Override
     public String key() {
         return "websearch";
@@ -62,25 +66,79 @@ public class WebSearchTool implements AgentToolSet {
 
     private final AgentProperties properties;
     private final ToolCallGuard toolCallGuard;
-    /** 解析后的 Key；null = 未配置（工具集不注册） */
+    /** 结构化结果的带外出口：把「来源」交给 SSE，而不用污染给模型看的文本 */
+    private final ToolSourceStore sourceStore;
+    /**
+     * 解析后的 Key；null = 未配置（工具集不注册）。
+     * <p>
+     * 🔴 <b>不要给它加 {@code @Value}，也不要写成 {@code = ""}</b>（2026-10-09 事故，实测复现）：
+     * <ul>
+     *   <li>加 {@code @Value("${TAVILY_API_KEY}")} 且环境变量没配时，Spring 的
+     *       {@code PropertySourcesPlaceholderConfigurer} 用 {@code resolveRequiredPlaceholders}
+     *       解析，直接抛
+     *       {@code PlaceholderResolutionException: Could not resolve placeholder 'TAVILY_API_KEY'}
+     *       —— 被包装成 {@code Injection of autowired dependencies failed}，
+     *       然后<b>整个应用起不来</b>。这与本工具「没配 Key 就不注册、其它功能照常」的设计直接冲突：
+     *       一个可选功能的缺失，不该升级成全局不可用。</li>
+     *   <li>就算配了 Key 也仍然坏：{@code private final String x = ""} 是<b>编译期常量</b>，
+     *       javac 会把类内所有读取<b>常量折叠</b>成 {@code ""}。实测（JDK21 + Spring 6.2.17）：
+     *       反射查字段确实被写成了 {@code "abc"}，但 getter 读到的还是 {@code ""}。
+     *       于是 {@code apiKey != null} 恒为 true —— 没配 Key 时工具照样注册，然后每次调用 401。</li>
+     * </ul>
+     * 结论：Key 一律由构造器读 {@code System.getenv} 后赋值（见下面两个构造器），
+     * 与 {@code WebExtractTool} 保持同一套写法。护栏见 {@code ValueInjectionGuardTest}。
+     */
     private final String apiKey;
     private final HttpClient httpClient;
 
-    public WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard) {
-        this(properties, toolCallGuard, System.getenv("TAVILY_API_KEY"));
+    /**
+     * 🔴 这个 {@code @Autowired} 不是装饰，少了它整个应用起不来（2026-10-08 容器启动失败事故）。
+     * <p>
+     * Spring 的构造器注入推断规则是：**只有当类"恰好有一个"构造器时**，才会无条件拿它去做注入。
+     * 一旦出现两个及以上构造器、又没有任何一个标了 {@code @Autowired}，
+     * Spring 就选不出来，退回「无参构造 + 字段注入」这条路 ——
+     * 而本类没有无参构造器，于是上下文 refresh 直接失败：
+     * <pre>
+     * BeanInstantiationException: Failed to instantiate [WebSearchTool]: No default constructor found
+     * </pre>
+     * 并且沿着依赖链把整个应用拉挂
+     * （chatController ← chatServiceImpl ← chatContextFactory ← toolRegistry ← webSearchTool）。
+     * <p>
+     * 为什么会踩到：下面那个 4 参构造器是为了让单测能注入显式 Key 才加的（包级可见），
+     * 加的时候没意识到它打破了「唯一构造器」这个前提。
+     * <b>今后本类再新增构造器，生产用的这个必须保持 {@code @Autowired}。</b>
+     * <p>
+     * ⚠️ 2026-10-09 补记：事故发生后有人「修」过一次，做法是把这个生产构造器<b>整段注释掉</b>、
+     * 只留下测试用的那个 —— 那样确实让 {@code BeanConstructorInjectionGuardTest} 变绿了
+     * （单构造器不算二义），却把 Key 的来源换成了 {@code @Value}（见 {@link #apiKey} 的说明），
+     * 结果是「没配 Key 应用就起不来」，换个姿势炸得更大。
+     * <b>正确修法只有一个：保留两个构造器，给生产这个标 {@code @Autowired}。</b>
+     */
+    @Autowired
+    public WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, ToolSourceStore sourceStore) {
+        this(properties, toolCallGuard, sourceStore, System.getenv("TAVILY_API_KEY"));
     }
 
-    /** 供测试注入显式 Key（包级可见）；production 一律走 public 构造器读环境变量 */
-    WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, String envKey) {
+    /** 供测试注入显式 Key（包级可见）；production 一律走上面的 {@code @Autowired} 构造器读环境变量 */
+    WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, ToolSourceStore sourceStore,
+                  String envKey) {
         this.properties = properties;
         this.toolCallGuard = toolCallGuard;
+        this.sourceStore = sourceStore;
 //        🔴 Key 只走环境变量（铁律 4）：写进 yml 会随仓库泄漏，且轮换要改代码
         this.apiKey = envKey == null || envKey.isBlank() ? null : envKey.trim();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         if (apiKey == null) {
-            log.info("联网搜索未启用：未配置环境变量 TAVILY_API_KEY（websearch 工具集不注册，模型看不到 web_search）");
+//        2026-10-08：用户配了 Key 却反馈「AI 说没有这个工具」。环境变量是**进程启动时**
+//        一次性读入的，配完不重启进程永远读不到 —— 所以这里必须把「怎么确认、怎么修」
+//        直接写在日志里，而不是只说一句"没启用"。
+//        用 WARN 而不是 INFO：这是用户明确期望的功能缺失，应该在日志里能被一眼扫到。
+            log.warn("联网搜索未启用：环境变量 TAVILY_API_KEY 未设置或为空 —— web_search 工具集**不注册**，"
+                    + "模型会直接说「没有这个工具」（而不是调用了才报错）。"
+                    + "排查：① 确认容器/进程真的带了这个环境变量；② **改完必须重启进程**（env 只在启动时读一次）；"
+                    + "③ 重启后看启动日志里的「生效配置快照」，那一行会写明它读到没有。");
         } else {
             log.info("联网搜索已启用（Tavily，单次最多 {} 条结果）", properties.getWebsearch().getMaxResults());
         }
@@ -101,7 +159,7 @@ public class WebSearchTool implements AgentToolSet {
      * </pre>
      * 没命中时明确说"没有找到"，绝不能返回空串 —— 模型无法区分"没结果"和"工具坏了"。
      */
-    @Tool(name = "web_search",
+    @Tool(name = TOOL_NAME,
             value = "联网搜索最新信息。当问题涉及实时数据（新闻、价格、版本、天气、体育赛事等）"
                     + "或你不确定/训练截止之后的事实时使用。query 用具体的关键词组合，不要传整句话。")
     public String webSearch(@ToolMemoryId Object memoryId,
@@ -143,6 +201,7 @@ public class WebSearchTool implements AgentToolSet {
                 return "error:搜索服务返回 " + response.statusCode() + "。请勿重复调用。";
             }
 
+            recordSources(memoryId, response.body());
             return formatResults(response.body(), query);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -190,6 +249,73 @@ public class WebSearchTool implements AgentToolSet {
             log.warn("web_search 响应解析失败：{}", e.getMessage());
             return "error:搜索结果解析失败。请勿重复调用。";
         }
+    }
+
+    /**
+     * 抽取**结构化**来源列表 —— 前端「已搜索 N 个来源」的卡片数据。
+     * <p>
+     * 与 {@link #formatResults(String, String)} 是同一份数据的两种形态：
+     * 那边是要喂给模型的文本，这边是要喂给 UI 的结构。
+     * 走 {@code ToolSourceStore} 带外下发，而不是拼进返回值 ——
+     * 返回值是要进模型上下文与历史消息的，多一份 JSON 就是白烧 token。
+     * <p>
+     * {@code index} 是 <b>1 开始</b>且与 {@link #formatResults} 的编号严格对齐：
+     * 模型在回答里写 {@code [3]}，前端就能直接取 {@code sources[2]}。
+     * <p>
+     * 🔴 {@code index} 必须写成 {@code int}：全局 {@code JacksonConfig} 会把
+     * {@code Long}/{@code long} 序列化成字符串（雪花 ID 精度），写成 {@code Long}
+     * 会让前端收到 {@code "1"} 而不是 {@code 1} —— 与 2026-10-08 {@code ttfbMs}
+     * 那个坑完全同源。
+     */
+    static List<Map<String, Object>> sources(String responseBody) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(responseBody);
+            com.fasterxml.jackson.databind.JsonNode results = root.get("results");
+            if (results == null || !results.isArray() || results.isEmpty()) {
+                return List.of();
+            }
+            List<Map<String, Object>> list = new ArrayList<>();
+            int index = 0;
+            for (com.fasterxml.jackson.databind.JsonNode item : results) {
+                String title = textOf(item, "title");
+                String url = textOf(item, "url");
+                if ((title == null || title.isBlank()) && (url == null || url.isBlank())) {
+                    continue; // 与 formatResults 同一套过滤规则，两边编号才对得上
+                }
+                index++;
+                Map<String, Object> source = new LinkedHashMap<>();
+                source.put("index", index);
+                source.put("title", title == null ? "" : title);
+                source.put("url", url == null ? "" : url);
+//                摘要只给一小段：这是 SSE 帧载荷，不是模型上下文，没必要把全文搬过去
+                source.put("snippet", clip(textOf(item, "content"), MAX_SNIPPET_CHARS));
+                list.add(source);
+            }
+            return list;
+        } catch (Exception e) {
+            log.warn("web_search 来源抽取失败（不影响给模型的文本）：{}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 摘要上限：够 hover 显示一句，又不至于让 SSE 帧膨胀 */
+    private static final int MAX_SNIPPET_CHARS = 240;
+
+    private static String clip(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        String s = text.strip();
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
+    /** 把结构化来源交给 SSE（带外），失败与否都不影响本工具的返回值 */
+    private void recordSources(Object memoryId, String responseBody) {
+        if (sourceStore == null) {
+            return;
+        }
+        sourceStore.record(memoryId, TOOL_NAME, sources(responseBody));
     }
 
     private static String textOf(com.fasterxml.jackson.databind.JsonNode node, String field) {

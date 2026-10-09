@@ -616,10 +616,53 @@ public class AgentProperties {
          */
         private int maxResults = 5;
 
+
+
         /**
          * 搜索请求超时。搜索应该在几秒内返回 —— 对话链路上工具慢一秒用户就多等一秒。
          */
         private Duration timeout = Duration.ofSeconds(15);
+
+        // ==================== 以下为 /extract（正文提取）的配置 ====================
+
+        /**
+         * 单次 {@code web_extract} 最多提交多少个 URL（1~20）。
+         * <p>
+         * 🔴 默认 5 是刻意对着<b>计费边界</b>定的：Tavily 的 extract 是
+         * 「每 5 个<b>成功</b>提取的 URL 扣 1 credit」（advanced 则扣 2）。
+         * 取不到 5 个也照样扣 —— 所以一次请求恰好 5 个 URL 时单位成本最低；
+         * 第 6 个开始就要多扣一份。20 是 API 侧硬性上限。
+         */
+        private int extractMaxUrls = 5;
+
+        /**
+         * 单个 URL 最多保留多少字符正文。
+         * <p>
+         * 这是<b>护上下文</b>的闸门，不是省流量的：一个完整网页动辄几万字符，
+         * 全量塞进工具结果会直接顶掉记忆窗口。默认 6000（约 1.5 页中文），
+         * 够模型读懂主要内容，又不至于把上下文吃光。
+         */
+        private int extractMaxCharsPerUrl = 6000;
+
+        /**
+         * 一次调用返回正文的<b>总</b>字符上限（默认 20000）。
+         * 即使每个 URL 都没超单条上限，5 条加起来也能到 3 万 —— 总量必须再卡一道。
+         */
+        private int extractMaxTotalChars = 20000;
+
+        /**
+         * 提取请求超时。basic 的官方默认是 10s、上限 60s；这里取 20s：
+         * 抓正文比搜索明显更慢（要真的去取页面），但仍在一次工具调用的容忍范围内。
+         */
+        private Duration extractTimeout = Duration.ofSeconds(20);
+
+        /**
+         * 是否用 advanced 提取深度（能拿到表格和内嵌内容、成功率更高）。
+         * <p>
+         * ⚠️ 默认 false —— advanced 的单价<b>翻倍</b>（每 5 个 URL 扣 2 credit 而不是 1），
+         * 而对话场景绝大多数只是「读一下这篇文章」，basic 够用。
+         */
+        private boolean extractAdvanced = false;
     }
 
     @Data

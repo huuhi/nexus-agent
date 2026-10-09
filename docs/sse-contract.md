@@ -206,6 +206,47 @@ mixin 按方法名匹配，**写错名不会报错，只会静默失效**。
 > - 历史接口 `GET /api/history/{sessionId}` 同样过滤，刷新页面也不会冒出来（但**数据库里仍有**，
 >   模型上下文需要它）。
 
+#### 🔴 `sources` —— 搜索来源（2026-10-08 新增，给「来源卡片」UI 用）
+
+> 用途：用户拍板要做那种 Perplexity 式的展示 —— 回答上方一行「已搜索 N 个来源」+
+> 来源横排卡片，正文里遇到 `[1]` 这类角标时映射成可点链接。
+
+**只有 `toolName === "web_search"` 且 `isError === false` 的结果才会带这个字段**；
+其余工具（含今天的 `web_extract`）**整个没有它** —— 连 `null` 都没有
+（后端用了 `@JsonInclude(NON_NULL)`），所以判断请写
+`Array.isArray(vo.sources)` 或 `"sources" in vo`，**不要**写 `vo.sources?.length > 0` 之外的自然假设。
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `index` | number | 从 **1** 开始。与模型看到的编号**严格对齐**：模型在回答里写 `[3]` → 取 `sources[2]` |
+| `title` | string | 结果标题，可能为空串（此时用 URL 兜底展示） |
+| `url` | string | 来源地址 |
+| `snippet` | string | 摘要，**最多 240 字符**，超了会截断并加 `…` |
+
+```json
+{"seq":9,"runId":"…","event":"tool_execution_result",
+ "data":{"type":"TOOL_EXECUTION_RESULT","toolResultVO":{
+   "id":"call_1","toolName":"web_search","isError":false,
+   "result":"1. 2026年高考报名人数\n   https://…\n   共 1300 万人…",
+   "sources":[
+     {"index":1,"title":"2026年高考报名人数","url":"https://example.com/a","snippet":"共 1300 万人，创历史新高。"},
+     {"index":2,"title":"第二条标题","url":"https://example.com/b","snippet":"另一段摘要。"}
+   ]}}}
+```
+
+⚠️ **三条必须接受的边界（做不到就会渲染崩或者显示错乱）**：
+
+1. **历史消息里没有 `sources`。** 该字段只存在于实时流；`GET /api/history/{sessionId}`
+   恢复出来的旧消息没有它（数据库只存了结果的文本）。**刷新页面后来源卡片不回来是预期行为**，
+   前端必须容忍缺失，不能当作异常。
+2. **一次搜索对应一次消费。** 每条 `tool_execution_result` 只会带上它自己那次搜索的来源，
+   不会重复下发同一批（同一会话里连续搜两次，两次事件各带各的）。
+3. **`isError=true` 的结果一定没有 `sources`**，且不会把来源"攒"给后面的事件。
+
+🔴 **`index` 是 number，不是字符串。** 这项目全局有个规则：所有 `Long`/`long` 会被序列化成字符串
+（为雪花 ID 精度）。`index` 特意用了 `int` 才躲开 —— 2026-10-08 的 `ttfbMs` 就是被这条规则
+坑成 `"6667"` 的。收到字符串形态即为回归，请立刻反馈。
+
 ### 3.5 `artifact`（交付物）
 
 ```json
@@ -229,13 +270,31 @@ v1 是裸字符串 `"DONE"`，v2 改成对象以便携带信封字段。
 
 #### 收尾公共字段 —— `finish` / `stopped` / `error` **三个事件都带**
 
-下面 5 个字段在三个收尾事件上**形状完全一致**（实现上是同一个 `withTtfb(withContext(...))`），
+下面 7 个字段在三个收尾事件上**形状完全一致**（实现上是同一个 `withTtfb(withContext(...))`），
 且**全部可选**：契约上写「可能不存在」，而不是「存在但为 null」。
 所以前端判断用 `"contextRatio" in data`，不要用 `data.contextRatio != null` 之外的多余分支。
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
 | `ttfbMs` | number? | **服务端首字延迟**（ms）：请求进入后端 → 第一个**内容** token 到达（2026-10-06 新增）。🔴 2026-10-08 前实测抓到过 `"6667"`（字符串），已修 —— 见 §1「数字形态」 |
+| `preflightMs` | number? | **后端自己的前置耗时**（ms）：收到请求 → 把请求发给模型之前（配额校验 + 消息转换 + 上下文构建＝模型匹配 / MCP 工具列表 / 技能解析）。2026-10-08 新增。实测典型值：24ms（缓存命中）/ 969ms / 5845ms（MCP + 技能 TTL 过期重建） |
+| `firstTokenMs` | number? | **首帧延迟**（ms）：收到请求 → 模型的**第一个任意 token**（思考内容也算）。2026-10-08 新增。 |
+
+#### 🔴 延迟三段归因（`preflightMs` / `firstTokenMs` / `ttfbMs` 三者连用）
+
+这三个字段合起来，能把一次「怎么这么慢」**彻底拆开**，不再需要猜：
+
+```
+preflightMs                 = 后端自己的准备（配额 / 上下文 / MCP / 技能）
+firstTokenMs − preflightMs  = 供应商排队（连接已建立，但一个字都不来）
+ttfbMs      − firstTokenMs  = 模型思考 / 生成（字在往外蹦，只是慢）
+```
+
+| 哪一段大 | 意味着 | 该找谁 |
+|---|---|---|
+| `preflightMs` 大 | 我们自己的准备慢（典型是 MCP / 技能缓存过期重建） | 后端 |
+| `firstTokenMs − preflightMs` 大 | 请求发出去了，供应商半天不给第一个字 | 供应商排队 / 限流 |
+| `ttfbMs − firstTokenMs` 大 | 模型在慢慢思考（UI 上能看到"思考中"在爬） | 模型本身，只能换模型或等 |
 | `contextWindow` | number? | 本次记忆窗口（token）＝ `min(nexus.agent.memory.max-tokens, 模型上下文窗口 − 最大输出)` |
 | `contextUsed` | number? | 本次从库里加载的历史**估算 token**（裁剪前）。**`-1` = 没算出来** |
 | `contextMsgs` | number? | 本次加载的历史**条数** |

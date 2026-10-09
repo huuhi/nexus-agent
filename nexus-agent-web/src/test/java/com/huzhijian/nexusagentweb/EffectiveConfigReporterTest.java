@@ -13,6 +13,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
@@ -46,6 +47,44 @@ class EffectiveConfigReporterTest {
 
         assertDoesNotThrow(reporter::report,
                 "配置快照是纯观测手段，任何配置状态下都不能让应用起不来");
+    }
+
+    @Test
+    @DisplayName("🔴 配置快照里必须能查到 TAVILY_API_KEY 的状态，且绝不打印 Key 本体")
+    void snapshotSelfChecksTavilyKeyWithoutLeakingIt() {
+        EffectiveConfigReporter reporter = new EffectiveConfigReporter(
+                new AgentProperties(), mock(ConfigurableEnvironment.class));
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory
+                        .getLogger(EffectiveConfigReporter.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            reporter.report();
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        String printed = appender.list.stream()
+                .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                .reduce("", String::concat);
+
+        assertTrue(printed.contains("联网搜索(web_search)"),
+                "启动快照里必须能查到联网搜索的状态 —— 这是「配了 Key 却不生效」的唯一自查入口，"
+                        + "2026-10-08 用户正是因为看不到它才反复怀疑代码");
+        assertTrue(printed.contains("正文提取(web_extract)"), "正文提取共用同一个 Key，也要能查到");
+        assertTrue(printed.contains("TAVILY_API_KEY"), "要写明查的是哪个环境变量");
+
+//        🔴 只报长度与形态，绝不打印 Key 本体 —— 日志是会外发、会归档的。
+//        本机若恰好配了这个变量，这里会真的抓到泄漏；CI 上没配则是空跑（无害）。
+        String envKey = System.getenv("TAVILY_API_KEY");
+        if (envKey != null && !envKey.isBlank()) {
+            assertFalse(printed.contains(envKey.trim()),
+                    "配置快照把 API Key 本体打进日志了 —— 日志会外发也会归档，绝不能出现");
+        }
     }
 
     @Test
