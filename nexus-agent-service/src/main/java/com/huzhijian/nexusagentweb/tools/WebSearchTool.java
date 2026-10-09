@@ -7,6 +7,7 @@ import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -69,7 +70,7 @@ public class WebSearchTool implements AgentToolSet {
     /** 结构化结果的带外出口：把「来源」交给 SSE，而不用污染给模型看的文本 */
     private final ToolSourceStore sourceStore;
     /**
-     * 解析后的 Key；null = 未配置（工具集不注册）。
+     * 解析后的 Key；null / 空 = 未配置（工具集不注册）。
      * <p>
      * 🔴 <b>不要给它加 {@code @Value}，也不要写成 {@code = ""}</b>（2026-10-09 事故，实测复现）：
      * <ul>
@@ -85,60 +86,58 @@ public class WebSearchTool implements AgentToolSet {
      *       反射查字段确实被写成了 {@code "abc"}，但 getter 读到的还是 {@code ""}。
      *       于是 {@code apiKey != null} 恒为 true —— 没配 Key 时工具照样注册，然后每次调用 401。</li>
      * </ul>
-     * 结论：Key 一律由构造器读 {@code System.getenv} 后赋值（见下面两个构造器），
-     * 与 {@code WebExtractTool} 保持同一套写法。护栏见 {@code ValueInjectionGuardTest}。
+     * 结论：值由<b>构造器参数</b>传进来（见下面那个构造器），字段保持普通 final。
+     * 护栏见 {@code ValueInjectionGuardTest}。
      */
     private final String apiKey;
     private final HttpClient httpClient;
 
     /**
-     * 🔴 这个 {@code @Autowired} 不是装饰，少了它整个应用起不来（2026-10-08 容器启动失败事故）。
+     * 🔴 唯一的生产/测试入口都走这里 —— 构造器<b>只有一个</b>，所以 Spring 无条件用它做注入
+     * （「恰好一个构造器」是 Spring 唯一会无条件采用的形态），
+     * 单测也可以直接 {@code new WebSearchTool(props, guard, store, "tvly-test-key")}。
      * <p>
-     * Spring 的构造器注入推断规则是：**只有当类"恰好有一个"构造器时**，才会无条件拿它去做注入。
-     * 一旦出现两个及以上构造器、又没有任何一个标了 {@code @Autowired}，
-     * Spring 就选不出来，退回「无参构造 + 字段注入」这条路 ——
-     * 而本类没有无参构造器，于是上下文 refresh 直接失败：
-     * <pre>
-     * BeanInstantiationException: Failed to instantiate [WebSearchTool]: No default constructor found
-     * </pre>
-     * 并且沿着依赖链把整个应用拉挂
-     * （chatController ← chatServiceImpl ← chatContextFactory ← toolRegistry ← webSearchTool）。
+     * <b>为什么不再保留第二个构造器</b>：2026-10-08 的启动事故根因就是
+     * 「为了给单测注入 Key 而额外加了一个构造器」→ 两个构造器都没有 {@code @Autowired} →
+     * Spring 选不出来 → 退回无参实例化 → 整个应用起不来。
+     * 反正参数签名本来就够用（单测和 Spring 传的是同一个东西：Key 字符串），
+     * <b>让两个入口合并成一个构造器，这类风险就不存在了</b>。
      * <p>
-     * 为什么会踩到：下面那个 4 参构造器是为了让单测能注入显式 Key 才加的（包级可见），
-     * 加的时候没意识到它打破了「唯一构造器」这个前提。
-     * <b>今后本类再新增构造器，生产用的这个必须保持 {@code @Autowired}。</b>
-     * <p>
-     * ⚠️ 2026-10-09 补记：事故发生后有人「修」过一次，做法是把这个生产构造器<b>整段注释掉</b>、
-     * 只留下测试用的那个 —— 那样确实让 {@code BeanConstructorInjectionGuardTest} 变绿了
-     * （单构造器不算二义），却把 Key 的来源换成了 {@code @Value}（见 {@link #apiKey} 的说明），
-     * 结果是「没配 Key 应用就起不来」，换个姿势炸得更大。
-     * <b>正确修法只有一个：保留两个构造器，给生产这个标 {@code @Autowired}。</b>
+     * 🔴 Key 的取值走 {@link AgentProperties.Websearch#API_KEY_EXPRESSION}：
+     * <b>配置项 {@code nexus.agent.websearch.api-key} 优先，环境变量 {@code TAVILY_API_KEY} 兜底</b>。
+     * 2026-10-09 之前这里写的是 {@code System.getenv("TAVILY_API_KEY")} ——
+     * 那条路径<b>绕开 Spring</b>，导致写在外部 yml / 面板 {@code .env.properties} 里的值
+     * 一律读不到，用户看到的就是「我明明配了，日志说没配」。
+     * 这与 {@code JwtUtil} / {@code EncryptorFactory} 在 2026-10-03 踩过的是同一个坑，
+     * 修法也照同一套（见 {@code RuntimeSecretInitializer}）。
      */
     @Autowired
-    public WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, ToolSourceStore sourceStore) {
-        this(properties, toolCallGuard, sourceStore, System.getenv("TAVILY_API_KEY"));
-    }
-
-    /** 供测试注入显式 Key（包级可见）；production 一律走上面的 {@code @Autowired} 构造器读环境变量 */
-    WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, ToolSourceStore sourceStore,
-                  String envKey) {
+    public WebSearchTool(AgentProperties properties, ToolCallGuard toolCallGuard, ToolSourceStore sourceStore,
+                         @Value(AgentProperties.Websearch.API_KEY_EXPRESSION) String apiKey) {
         this.properties = properties;
         this.toolCallGuard = toolCallGuard;
         this.sourceStore = sourceStore;
-//        🔴 Key 只走环境变量（铁律 4）：写进 yml 会随仓库泄漏，且轮换要改代码
-        this.apiKey = envKey == null || envKey.isBlank() ? null : envKey.trim();
+//        🔴 空串归一成 null：Spring 解析不到时给的是空串（占位符末尾有默认值），
+//        而下面的 enabled() 判断的是 != null。不归一就会「空 Key 也算配了」，
+//        于是工具被注册、每次调用都 401。
+        this.apiKey = apiKey == null || apiKey.isBlank() ? null : apiKey.trim();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
-        if (apiKey == null) {
+        if (this.apiKey == null) {
 //        2026-10-08：用户配了 Key 却反馈「AI 说没有这个工具」。环境变量是**进程启动时**
 //        一次性读入的，配完不重启进程永远读不到 —— 所以这里必须把「怎么确认、怎么修」
 //        直接写在日志里，而不是只说一句"没启用"。
 //        用 WARN 而不是 INFO：这是用户明确期望的功能缺失，应该在日志里能被一眼扫到。
-            log.warn("联网搜索未启用：环境变量 TAVILY_API_KEY 未设置或为空 —— web_search 工具集**不注册**，"
-                    + "模型会直接说「没有这个工具」（而不是调用了才报错）。"
-                    + "排查：① 确认容器/进程真的带了这个环境变量；② **改完必须重启进程**（env 只在启动时读一次）；"
-                    + "③ 重启后看启动日志里的「生效配置快照」，那一行会写明它读到没有。");
+//        2026-10-09：现在有**两条**配置路径，报错必须把两条都写出来 ——
+//        否则用户只会反复检查自己写的那一条（线上就是这么绕了半天的）。
+            log.warn("联网搜索未启用：配置项 {} 与环境变量 TAVILY_API_KEY 都没有值 —— web_search 工具集**不注册**，"
+                            + "模型会直接说「没有这个工具」（而不是调用了才报错）。"
+                            + "两条路任选其一：① 在外部配置（如 conf/nexus-override.yml 或面板的 .env.properties）里写 {}: tvly-xxx；"
+                            + "② 在进程环境变量里写 TAVILY_API_KEY=tvly-xxx。"
+                            + "⚠️ 无论走哪条，改完都要**重启进程**；重启后看启动日志的「生效配置快照」，那一行会写明读到没有、以及来源是哪一条。",
+                    AgentProperties.Websearch.API_KEY_PROPERTY,
+                    AgentProperties.Websearch.API_KEY_PROPERTY);
         } else {
             log.info("联网搜索已启用（Tavily，单次最多 {} 条结果）", properties.getWebsearch().getMaxResults());
         }

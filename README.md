@@ -192,7 +192,7 @@ docker compose -f docker-compose.server.yml logs -f app
 `system-models` 写在 `application-prod.yml` 里，而这个文件是**打进 jar / 镜像**的 ——
 直接改仓库里的 yml 就得重新 package + 重新上传，运维上很折腾。
 
-**已实测验证**外部 yml 优先级高于 jar 内配置（`ExternalConfigOverrideProbe` 用 Spring Boot
+**已实测验证**外部 yml 优先级高于 jar 内配置（`ExternalConfigOverrideTest` 用 Spring Boot
 真实 ConfigData 机制验证），所以挂一个外部文件即可，**改完重启就生效**：
 
 ```bash

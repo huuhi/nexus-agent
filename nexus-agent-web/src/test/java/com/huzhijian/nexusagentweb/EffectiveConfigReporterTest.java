@@ -50,10 +50,18 @@ class EffectiveConfigReporterTest {
     }
 
     @Test
-    @DisplayName("🔴 配置快照里必须能查到 TAVILY_API_KEY 的状态，且绝不打印 Key 本体")
-    void snapshotSelfChecksTavilyKeyWithoutLeakingIt() {
+    @DisplayName("🔴 配置快照里必须能查到 TAVILY Key 的状态，且绝不打印 Key 本体")
+    void snapshotSelfChecksTavilyKeyWithoutLeakingIt() throws Exception {
         EffectiveConfigReporter reporter = new EffectiveConfigReporter(
                 new AgentProperties(), mock(ConfigurableEnvironment.class));
+
+        // 🔴 2026-10-09：Key 的读取从 System.getenv 改成 @Value 注入后，
+        // 不塞值的话下面「绝不打印本体」那条就是**空跑**（字段恒为 null，怎么都不会泄漏）。
+        // 这里显式塞一个假的进去，让它真的能被抓到。
+        String fakeKey = "tvly-SHOULD-NOT-APPEAR-IN-LOG-0123456789";
+        java.lang.reflect.Field field = EffectiveConfigReporter.class.getDeclaredField("tavilyApiKey");
+        field.setAccessible(true);
+        field.set(reporter, fakeKey);
 
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory
@@ -76,14 +84,21 @@ class EffectiveConfigReporterTest {
                 "启动快照里必须能查到联网搜索的状态 —— 这是「配了 Key 却不生效」的唯一自查入口，"
                         + "2026-10-08 用户正是因为看不到它才反复怀疑代码");
         assertTrue(printed.contains("正文提取(web_extract)"), "正文提取共用同一个 Key，也要能查到");
-        assertTrue(printed.contains("TAVILY_API_KEY"), "要写明查的是哪个环境变量");
+        assertTrue(printed.contains("TAVILY_API_KEY"), "要写明查的是哪条环境变量");
+        assertTrue(printed.contains("nexus.agent.websearch.api-key"),
+                "也要写明配置项的名字 —— 2026-10-09 的现场就是用户写在配置文件里却读不到，"
+                        + "只报环境变量名会把人往错误方向引");
 
-//        🔴 只报长度与形态，绝不打印 Key 本体 —— 日志是会外发、会归档的。
-//        本机若恰好配了这个变量，这里会真的抓到泄漏；CI 上没配则是空跑（无害）。
+//        🔴 只报长度与形态（+来源），绝不打印 Key 本体 —— 日志是会外发、会归档的。
+        assertFalse(printed.contains(fakeKey),
+                "配置快照把 API Key 本体打进日志了 —— 日志会外发也会归档，绝不能出现");
+        assertTrue(printed.contains("长度 " + fakeKey.length()),
+                "应该报长度，用户靠它判断「是不是只复制了一部分」");
+
+        // 反向验证：本机若恰好也配了真实环境变量，同样不能漏出去
         String envKey = System.getenv("TAVILY_API_KEY");
         if (envKey != null && !envKey.isBlank()) {
-            assertFalse(printed.contains(envKey.trim()),
-                    "配置快照把 API Key 本体打进日志了 —— 日志会外发也会归档，绝不能出现");
+            assertFalse(printed.contains(envKey.trim()), "真实环境变量里的 Key 也不能出现在日志里");
         }
     }
 

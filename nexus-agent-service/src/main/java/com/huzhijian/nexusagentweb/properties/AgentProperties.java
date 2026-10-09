@@ -599,12 +599,49 @@ public class AgentProperties {
      * 走 <b>Tavily</b>（{@code https://api.tavily.com/search}）—— LLM 生态事实标准，
      * 免费档每月 1000 次，返回 title/url/content 摘要，对模型友好。
      * <p>
-     * ⚠️ 按铁律 4（密钥不进代码/配置库）：API Key **只走环境变量 {@code TAVILY_API_KEY}**，
-     * 这里刻意**不提供** yml 配置项。没配 Key 时整个工具集**不注册**
-     * （模型看不到这个工具，而不是调用了才报错）。
+     * 🔴 <b>API Key 的读法（2026-10-09 修正）</b>：配置项
+     * {@value #API_KEY_PROPERTY} 优先，环境变量 {@code TAVILY_API_KEY} 兜底 ——
+     * 由 {@link #API_KEY_EXPRESSION} 这个占位符表达式统一表达，
+     * 三个消费方（{@code WebSearchTool} / {@code WebExtractTool} / {@code EffectiveConfigReporter}）
+     * <b>都引用同一个常量</b>，避免各写一份后漂移。
+     * <p>
+     * ⚠️ 曾经这里写的是「Key 只走环境变量，刻意不提供 yml 配置项」，工具直接调
+     * {@code System.getenv("TAVILY_API_KEY")}。那个写法有坑（2026-10-09 线上复现）：
+     * {@code System.getenv} <b>绕开 Spring</b>，所以写在外部 yml（{@code nexus-override.yml}）、
+     * 面板生成的 {@code .env.properties} 里的值<b>一律读不到</b>，用户看到的现象就是
+     * 「我明明写到配置文件里了，日志却说没配置」。
+     * <p>
+     * 这与 {@code JwtUtil} / {@code EncryptorFactory} 在 <b>2026-10-03</b> 踩过的是同一个坑
+     * （见 {@code RuntimeSecretInitializer} 的类注释），当时确立的修法就是「密钥走 Spring，
+     * 配置项优先 + 同名环境变量兜底」——本次只是让 {@code web_search} 回到同一套写法。
+     * <p>
+     * <b>仍然不违反铁律 4</b>：本类里没有 Key 的<b>值</b>，只有一个占位符表达式；
+     * 值来自仓库之外（外部 yml / 进程环境变量），不会随仓库泄漏。
+     * 没配 Key 时整个工具集<b>不注册</b>（模型看不到这个工具，而不是调用了才报错）。
      */
     @Data
     public static class Websearch {
+
+        /**
+         * 联网搜索 / 正文提取共用的 API Key 的配置项名。
+         * <p>
+         * 写成 {@code nexus.agent.websearch.api-key}（而不是仅靠环境变量）是为了让
+         * 外部配置文件也能配到它；同名环境变量 {@code TAVILY_API_KEY} 作为兜底。
+         */
+        public static final String API_KEY_PROPERTY = "nexus.agent.websearch.api-key";
+
+        /**
+         * Key 的取值表达式：<b>配置项优先，环境变量兜底</b>。
+         * <p>
+         * 🔴 默认值（末尾那个空的 {@code :}）不能省：没有它时，两处都没配会让 Spring 抛
+         * {@code Could not resolve placeholder}，把「一个可选功能没配」升级成「整个应用起不来」
+         * （2026-10-09 就是这么炸的，见 {@code ValueInjectionGuardTest}）。
+         * <p>
+         * 是 {@code public static final String} 的<b>常量拼接</b>，所以可以直接用在注解里。
+         */
+        public static final String API_KEY_EXPRESSION =
+                "${" + API_KEY_PROPERTY + ":${TAVILY_API_KEY:}}";
+
         /**
          * 总开关（默认开）。它只控制「配了 Key 就启用」——
          * 没配 Key 时无论本值是什么，工具集都不会注册。

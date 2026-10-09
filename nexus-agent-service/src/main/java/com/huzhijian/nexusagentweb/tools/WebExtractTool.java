@@ -9,6 +9,7 @@ import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -89,35 +90,42 @@ public class WebExtractTool implements AgentToolSet {
      * 🔴 这个 {@code @Autowired} 不是装饰 —— 本类有多个构造器（其余给单测注入 Key / 端点用），
      * 一旦没有它 Spring 会选不出构造器、退回无参实例化，而本类没有无参构造器，
      * 结果是<b>整个应用起不来</b>（2026-10-08 事故，见 {@code BeanConstructorInjectionGuardTest}）。
+     * <p>
+     * 🔴 Key 的取值走 {@link AgentProperties.Websearch#API_KEY_EXPRESSION}：
+     * <b>配置项 {@code nexus.agent.websearch.api-key} 优先，环境变量 {@code TAVILY_API_KEY} 兜底</b>。
+     * 2026-10-09 之前这里是 {@code System.getenv("TAVILY_API_KEY")} —— 那条路径绕开 Spring，
+     * 写在外部 yml / 面板 {@code .env.properties} 里的值一律读不到（与 {@code JwtUtil} /
+     * {@code EncryptorFactory} 在 2026-10-03 踩过的是同一个坑）。
      */
     @Autowired
-    public WebExtractTool(AgentProperties properties, UrlGuard urlGuard, ToolCallGuard toolCallGuard) {
-        this(properties, urlGuard, toolCallGuard, System.getenv("TAVILY_API_KEY"));
+    public WebExtractTool(AgentProperties properties, UrlGuard urlGuard, ToolCallGuard toolCallGuard,
+                          @Value(AgentProperties.Websearch.API_KEY_EXPRESSION) String apiKey) {
+        this(properties, urlGuard, toolCallGuard, apiKey, TAVILY_EXTRACT_ENDPOINT);
     }
 
-    /** 供测试注入显式 Key（包级可见）；production 一律走上面的 {@code @Autowired} 构造器读环境变量 */
-    WebExtractTool(AgentProperties properties, UrlGuard urlGuard, ToolCallGuard toolCallGuard, String envKey) {
-        this(properties, urlGuard, toolCallGuard, envKey, TAVILY_EXTRACT_ENDPOINT);
-    }
-
-    /** 供测试改写到本地假服务（包级可见） */
+    /** 供测试改写到本地假服务（包级可见）；同时也用于测试注入显式 Key */
     WebExtractTool(AgentProperties properties, UrlGuard urlGuard, ToolCallGuard toolCallGuard,
                    String envKey, String endpoint) {
         this.properties = properties;
         this.urlGuard = urlGuard;
         this.toolCallGuard = toolCallGuard;
-//        🔴 Key 只走环境变量（铁律 4）：写进 yml 会随仓库泄漏，且轮换要改代码
+//        🔴 空串归一成 null：Spring 解析不到时给的是空串（占位符末尾有默认值），
+//        而下面 enabled() 判断的是 != null。不归一就会「空 Key 也算配了」→ 工具注册了但每次 401。
         this.apiKey = envKey == null || envKey.isBlank() ? null : envKey.trim();
         this.endpoint = endpoint;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
-        if (apiKey == null) {
+        if (this.apiKey == null) {
 //        与 web_search 共用同一个 Key，排查口径也一致（见 WebSearchTool 的同款日志）：
-//        环境变量只在进程启动时读一次，配完不改进程永远不生效。
-            log.warn("正文提取未启用：环境变量 TAVILY_API_KEY 未设置或为空 —— web_extract 工具集**不注册**。"
-                    + "它与 web_search 共用同一个 Key；改完 env 必须重启进程，"
-                    + "并到启动日志的「生效配置快照」里核对那一行。");
+//        2026-10-09 起有**两条**配置路径，报错必须把两条都写出来 ——
+//        否则用户只会反复检查自己写的那一条。
+            log.warn("正文提取未启用：配置项 {} 与环境变量 TAVILY_API_KEY 都没有值 —— web_extract 工具集**不注册**。"
+                            + "它与 web_search 共用同一个 Key；两条路任选其一：① 外部配置文件里写 {}: tvly-xxx；"
+                            + "② 进程环境变量里写 TAVILY_API_KEY=tvly-xxx。改完必须重启进程，"
+                            + "并到启动日志的「生效配置快照」里核对那一行（会写明读到没有、以及来源是哪一条）。",
+                    AgentProperties.Websearch.API_KEY_PROPERTY,
+                    AgentProperties.Websearch.API_KEY_PROPERTY);
         } else {
             log.info("正文提取已启用（Tavily，单次最多 {} 个 URL，单条最多 {} 字符）",
                     properties.getWebsearch().getExtractMaxUrls(),

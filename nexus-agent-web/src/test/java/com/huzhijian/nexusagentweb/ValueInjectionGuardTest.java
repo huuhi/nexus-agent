@@ -8,8 +8,11 @@ import org.springframework.context.annotation.ClassPathScanningCandidateComponen
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -95,11 +98,28 @@ class ValueInjectionGuardTest {
                 if (Modifier.isFinal(field.getModifiers())) {
                     offenders.add(label + "（final 字段：" + value.value() + "）");
                 }
-                Matcher m = PLACEHOLDER.matcher(value.value());
-                while (m.find()) {
-                    if (!m.group(1).contains(":")) {
-                        offenders.add(label + "（占位符 ${" + m.group(1)
-                                + "} 没有默认值 → 缺配置时整个应用起不来）");
+                checkPlaceholdersHaveDefaults(value, label, offenders);
+            }
+            // 🔴 构造器 / 方法参数上的 @Value 也要查（2026-10-09 把密钥注入挪到构造器参数后补的）。
+            // 参数没有「final 折叠」问题，但「占位符缺默认值 → 整个应用起不来」这条一模一样：
+            // 参数解析发生在容器 refresh 期间，一样会把依赖链上所有 bean 一起拉挂。
+            for (Constructor<?> ctor : type.getDeclaredConstructors()) {
+                Parameter[] params = ctor.getParameters();
+                for (int i = 0; i < params.length; i++) {
+                    Value value = params[i].getAnnotation(Value.class);
+                    if (value != null) {
+                        checkPlaceholdersHaveDefaults(value,
+                                type.getSimpleName() + " 构造器参数[" + i + "]", offenders);
+                    }
+                }
+            }
+            for (Method method : type.getDeclaredMethods()) {
+                Parameter[] params = method.getParameters();
+                for (int i = 0; i < params.length; i++) {
+                    Value value = params[i].getAnnotation(Value.class);
+                    if (value != null) {
+                        checkPlaceholdersHaveDefaults(value,
+                                type.getSimpleName() + "." + method.getName() + " 参数[" + i + "]", offenders);
                     }
                 }
             }
@@ -134,6 +154,12 @@ class ValueInjectionGuardTest {
                 "${X:} 有默认值 → 不该报警");
         assertFalse(hasDefaultlessPlaceholder(resolve("GoodNested")),
                 "嵌套 ${X:${Y:}} 每层都有默认值 → 不该报警（现网 WebClientConfig 就是这个写法）");
+
+        // 🔴 构造器参数上的 @Value（2026-10-09 把密钥注入挪到参数后补的判据）
+        assertTrue(hasDefaultlessParam(resolve("BadCtorParam")),
+                "构造器参数上的 @Value 没写默认值 → 必须报警，后果与字段上完全一样（整个应用起不来）");
+        assertFalse(hasDefaultlessParam(resolve("GoodCtorParam")),
+                "构造器参数带 :默认值 → 不该报警，这正是我们现在注入 TAVILY Key 的写法");
     }
 
     /** 坏形态：final + @Value + 字面量初始值（2026-10-09 事故原件） */
@@ -171,7 +197,38 @@ class ValueInjectionGuardTest {
         private String baseUrl;
     }
 
+    /** 坏形态：构造器参数上的 @Value 缺默认值 */
+    @SuppressWarnings("unused")
+    static class BadCtorParam {
+        BadCtorParam(@Value("${TAVILY_API_KEY}") String key) {
+        }
+    }
+
+    /** 好形态：构造器参数带 :默认值（= 现在 web_search 注入 Key 的写法） */
+    @SuppressWarnings("unused")
+    static class GoodCtorParam {
+        GoodCtorParam(@Value("${nexus.agent.websearch.api-key:${TAVILY_API_KEY:}}") String key) {
+        }
+    }
+
     // ==== 内部实现 ====
+
+    /**
+     * 校验一个 {@code @Value} 表达式里的每个 {@code ${...}} 都带了 {@code :默认值}。
+     * <p>
+     * 缺默认值的后果不是「值不对」，而是「<b>缺这项配置时整个应用起不来</b>」：
+     * Spring 用 {@code resolveRequiredPlaceholders} 解析，直接抛
+     * {@code PlaceholderResolutionException}，把「一个可选功能没配」升级成「全局不可用」。
+     */
+    private static void checkPlaceholdersHaveDefaults(Value value, String label, List<String> offenders) {
+        Matcher m = PLACEHOLDER.matcher(value.value());
+        while (m.find()) {
+            if (!m.group(1).contains(":")) {
+                offenders.add(label + "（占位符 ${" + m.group(1)
+                        + "} 没有默认值 → 缺配置时整个应用起不来）");
+            }
+        }
+    }
 
     private static boolean hasFinalValue(Class<?> type) {
         return findValueField(type) != null
@@ -184,6 +241,24 @@ class ValueInjectionGuardTest {
         while (m.find()) {
             if (!m.group(1).contains(":")) {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    /** 反向验证用：该类的某个构造器参数上有没有「缺默认值的 @Value」 */
+    private static boolean hasDefaultlessParam(Class<?> type) {
+        for (Constructor<?> ctor : type.getDeclaredConstructors()) {
+            for (Parameter p : ctor.getParameters()) {
+                Value v = p.getAnnotation(Value.class);
+                if (v != null) {
+                    Matcher m = PLACEHOLDER.matcher(v.value());
+                    while (m.find()) {
+                        if (!m.group(1).contains(":")) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
         return false;

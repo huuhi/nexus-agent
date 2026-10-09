@@ -3,6 +3,7 @@ package com.huzhijian.nexusagentweb.config;
 import com.huzhijian.nexusagentweb.properties.AgentProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
@@ -49,6 +50,20 @@ public class EffectiveConfigReporter {
     /** 🔴 必须是 ConfigurableEnvironment：{@link Environment} 接口没有 {@code getPropertySources()}，
      * 而「这个值来自哪个属性源」正是本类的核心目的。 */
     private final ConfigurableEnvironment environment;
+
+    /**
+     * 联网搜索 / 正文提取共用的 API Key。
+     * <p>
+     * 🔴 必须与 {@code WebSearchTool} / {@code WebExtractTool} <b>用同一个表达式</b>
+     * （都引用 {@link AgentProperties.Websearch#API_KEY_EXPRESSION}），
+     * 否则会出现最糟的一种状态：<b>快照说"已启用"，实际工具没注册</b>（或反过来），
+     * 而这个快照存在的全部意义就是回答「到底配到了没有」。
+     * <p>
+     * ⚠️ 不能是 {@code final}（常量折叠会让读取恒为字面量，See {@code ValueInjectionGuardTest}），
+     * 这里走的是非 final 字段注入 —— 本类是纯观测组件，字段注入不影响任何业务时序。
+     */
+    @Value(AgentProperties.Websearch.API_KEY_EXPRESSION)
+    private String tavilyApiKey;
 
     /**
      * {@code system-models} 是<b>列表</b>配置：外部文件里写一份就会
@@ -107,14 +122,17 @@ public class EffectiveConfigReporter {
 
 //        ===== 联网搜索 / 正文提取：开关状态必须能在启动日志里一眼看到 =====
 //        2026-10-08：用户反馈「我在服务器配了 TAVILY_API_KEY，但 AI 说没有这个工具」。
-//        这类问题 100% 是**环境变量没进入进程**（配了没重启 / 容器没重建 / 加了但没生效），
+//        这类问题的根因是**配置没进到读取方**（配了没重启 / 容器没重建 / 写在了读不到的地方），
 //        而在此之前它**完全没有可见的痕迹** —— 工具只是静默不注册，模型那边就像没这个能力。
-//        所以把状态（含 Key 的长度与形态）打进这张快照：一眼就能区分
-//        「没配」「配了但进程没读到」「配了但值不对」。
+//        所以把状态（含 Key 的长度与形态、以及**来源是哪一条**）打进这张快照。
+//        2026-10-09：读取方式从 System.getenv 改成「配置项优先 + 环境变量兜底」，
+//        本行也跟着改读同一个源，并额外报出「命中的是哪一条」——
+//        因为「写在 override.yml 里却说没配」正是那天的现场。
         String tavilyStatus = describeTavilyKey();
-        rows.add(row("联网搜索(web_search)", "TAVILY_API_KEY", tavilyStatus,
-                "🔴 Key 只走环境变量（不进配置库）；没配时工具集**不注册** —— 模型看不到 web_search，而不是调用了才报错"));
-        rows.add(row("正文提取(web_extract)", "TAVILY_API_KEY", tavilyStatus,
+        rows.add(row("联网搜索(web_search)", AgentProperties.Websearch.API_KEY_PROPERTY, tavilyStatus,
+                "🔴 两条路任选其一：配置项 nexus.agent.websearch.api-key（外部 yml / 面板 .env.properties）"
+                        + "或环境变量 TAVILY_API_KEY；没配时工具集**不注册** —— 模型看不到 web_search，而不是调用了才报错"));
+        rows.add(row("正文提取(web_extract)", AgentProperties.Websearch.API_KEY_PROPERTY, tavilyStatus,
                 "与 web_search 共用同一个 Key 与同一个免费额度池"));
 
         int nameWidth = rows.stream().mapToInt(r -> r[0].length()).max().orElse(10);
@@ -156,23 +174,47 @@ public class EffectiveConfigReporter {
     }
 
     /**
-     * {@code TAVILY_API_KEY} 的状态描述。
+     * {@code web_search} / {@code web_extract} 那个 Key 的状态描述。
      * <p>
-     * 🔴 <b>绝不打印 Key 本体</b>，只报「有没有 / 多长 / 形态对不对」——
-     * 这三条足以定位「配了却不生效」，又不会把凭据写进日志（日志是会外发、会归档的）。
+     * 🔴 <b>绝不打印 Key 本体</b>，只报「有没有 / 多长 / 形态对不对 / 从哪来」——
+     * 这几条足以定位「配了却不生效」，又不会把凭据写进日志（日志是会外发、会归档的）。
      * <p>
      * 为什么连形态都要报：Key 从网页上复制时经常少复制几位或多带空格，
-     * 那种情况环境变量是"有"的、工具也注册了，但一调用就是 401 ——
-     * 有了形态提示，不用等到调用才发现。
+     * 那种情况是"有值"的、工具也注册了，但一调用就是 401 —— 有了形态提示，不用等到调用才发现。
+     * <p>
+     * 为什么要报<b>来源</b>：2026-10-09 的现场就是「用户把 Key 写在
+     * {@code nexus-override.yml} 里，日志却说没配置」。当时读取方用的是 {@code System.getenv}，
+     * 看不见配置文件。现在两条路都通了，于是日志有义务说清楚<b>到底是哪一条命中的</b> ——
+     * 否则用户仍然无法判断自己写的那处有没有被读到（尤其是同时写了两处、而其中一处写错的时候）。
      */
-    private static String describeTavilyKey() {
-        String raw = System.getenv("TAVILY_API_KEY");
-        if (raw == null || raw.isBlank()) {
-            return "未启用（env TAVILY_API_KEY 未设置或为空）";
+    private String describeTavilyKey() {
+        String raw = tavilyApiKey == null ? "" : tavilyApiKey.trim();
+        if (raw.isEmpty()) {
+            return "未配置（配置项 " + AgentProperties.Websearch.API_KEY_PROPERTY + " 与 env TAVILY_API_KEY 都没有值）";
         }
-        String key = raw.trim();
-        String shape = key.startsWith("tvly-") ? "形态正确" : "⚠️ 前缀不是 tvly-，请确认复制完整";
-        return "已启用（长度 " + key.length() + "，" + shape + "）";
+        String shape = raw.startsWith("tvly-") ? "形态正确" : "⚠️ 前缀不是 tvly-，请确认复制完整";
+        return "已启用（长度 " + raw.length() + "，" + shape + "；来源：" + tavilyKeySource() + "）";
+    }
+
+    /**
+     * Key 值命中的是哪一条路径：配置项（外部 yml / 面板 .env.properties）还是环境变量。
+     * <p>
+     * 判据是「配置项这个键在 Environment 里存不存在」：不存在就说明值是靠环境变量兜底拿到的。
+     * 全程 try/catch —— 本类只是观测手段，<b>绝不能因为任意环境实现（含测试里的 mock）
+     * 把应用启动搞挂</b>。
+     */
+    private String tavilyKeySource() {
+        if (environment == null) {
+            return "未知（无 Environment）";
+        }
+        try {
+            if (environment.containsProperty(AgentProperties.Websearch.API_KEY_PROPERTY)) {
+                return "配置项 " + AgentProperties.Websearch.API_KEY_PROPERTY;
+            }
+        } catch (Exception e) {
+            return "未知（读取配置源失败：" + e.getClass().getSimpleName() + "）";
+        }
+        return "环境变量 TAVILY_API_KEY";
     }
 
     /**
